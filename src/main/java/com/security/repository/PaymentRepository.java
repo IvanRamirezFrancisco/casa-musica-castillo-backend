@@ -68,4 +68,10 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     /** Reconciliación: Buscar todos los pagos en ciertos estados donde la orden está CANCELLED */
     @org.springframework.data.jpa.repository.Query("SELECT p FROM Payment p JOIN p.order o WHERE o.status = com.security.enums.OrderStatus.CANCELLED AND p.status IN :statuses")
     List<Payment> findActivePaymentsForCancelledOrders(@org.springframework.data.repository.query.Param("statuses") Collection<PaymentTransactionStatus> statuses);
+
+    /** Reconciliación: Buscar pagos pendientes por proveedor y fecha de creación */
+    List<Payment> findByProviderAndStatusInAndCreatedAtBefore(
+            PaymentProvider provider,
+            Collection<PaymentTransactionStatus> statuses,
+            java.time.LocalDateTime createdAt);
 }

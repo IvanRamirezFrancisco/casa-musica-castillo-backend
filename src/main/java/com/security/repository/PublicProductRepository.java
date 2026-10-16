@@ -87,43 +87,101 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
      * @param brandId    ID de marca (null = sin filtro)
      * @param pageable   paginación (el servicio limita a máx. 50 por página)
      */
-    @Query("""
-            SELECT DISTINCT p FROM Product p
+    /**
+     * Catálogo genérico SIN keyword. Soporta orden dinámico del Pageable (price, newest, featured, etc).
+     */
+    @Query(value = """
+            SELECT p FROM Product p
             LEFT JOIN FETCH p.category cat
             LEFT JOIN FETCH p.brand br
             WHERE p.active = true
-              AND (CAST(:keyword AS string) IS NULL
-                   OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%'))
-                   OR LOWER(p.sku)  LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%')))
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
-            ORDER BY p.createdAt DESC
+            """,
+           countQuery = """
+            SELECT COUNT(p) FROM Product p
+            LEFT JOIN p.category cat
+            LEFT JOIN p.brand br
+            WHERE p.active = true
+              AND (:categoryId IS NULL OR cat.id = :categoryId)
+              AND (:brandId    IS NULL OR br.id  = :brandId)
             """)
-    Page<Product> findCatalog(
-            @Param("keyword") String keyword,
+    Page<Product> findCatalogWithoutKeyword(
             @Param("categoryId") Long categoryId,
             @Param("brandId") Long brandId,
             Pageable pageable);
 
     /**
-     * Query de conteo separada para la paginación del catálogo (evita DISTINCT
-     * en la query de conteo, que puede ser costoso).
+     * Catálogo CON keyword. Utiliza ranking CASE (relevancia).
+     * El Pageable debe pasarse con Sort.unsorted() para evitar colisiones de ORDER BY.
      */
-    @Query("""
-            SELECT COUNT(DISTINCT p.id) FROM Product p
+    @Query(value = """
+            SELECT p FROM Product p
+            LEFT JOIN FETCH p.category cat
+            LEFT JOIN FETCH p.brand br
+            WHERE p.active = true
+              AND (
+                   CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+              )
+              AND (:categoryId IS NULL OR cat.id = :categoryId)
+              AND (:brandId    IS NULL OR br.id  = :brandId)
+            ORDER BY 
+              CASE 
+                   WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 2
+                   WHEN :categoryIntentId IS NOT NULL AND cat.id = :categoryIntentId THEN 3
+                   WHEN :brandIntentId IS NOT NULL AND br.id = :brandIntentId THEN 4
+                   WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 5
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('% ', CAST(:escapedOriginal AS string), ' %') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('% ', CAST(:escapedCanonical AS string), ' %') ESCAPE '\\' THEN 7
+                   WHEN CAST(function('unaccent', LOWER(cat.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 8
+                   WHEN CAST(function('unaccent', LOWER(br.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 10
+                   WHEN CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 11
+                   ELSE 12 END ASC,
+              p.featured DESC,
+              p.createdAt DESC,
+              p.id ASC
+            """,
+           countQuery = """
+            SELECT COUNT(p) FROM Product p
             LEFT JOIN p.category cat
             LEFT JOIN p.brand br
             WHERE p.active = true
-              AND (CAST(:keyword AS string) IS NULL
-                   OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%'))
-                   OR LOWER(p.sku)  LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%')))
+              AND (
+                   CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+              )
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
             """)
-    long countCatalog(
-            @Param("keyword") String keyword,
+    Page<Product> findCatalogWithKeyword(
+            @Param("exactOriginal") String exactOriginal,
+            @Param("escapedOriginal") String escapedOriginal,
+            @Param("exactCanonical") String exactCanonical,
+            @Param("escapedCanonical") String escapedCanonical,
+            @Param("categoryIntentId") Long categoryIntentId,
+            @Param("brandIntentId") Long brandIntentId,
             @Param("categoryId") Long categoryId,
-            @Param("brandId") Long brandId);
+            @Param("brandId") Long brandId,
+            Pageable pageable);
 
     // ── 4. Detalle de producto activo ─────────────────────────────────────────
 

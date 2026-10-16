@@ -11,6 +11,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -39,6 +44,7 @@ import java.util.List;
 public class PaymentEventService {
 
     private final PaymentEventRepository paymentEventRepository;
+    private final PlatformTransactionManager transactionManager;
 
     // ── Constantes de tipo de evento ──────────────────────────────────
 
@@ -82,28 +88,47 @@ public class PaymentEventService {
      * @param context    Contexto informativo (no incluir datos sensibles)
      * @return PaymentEvent guardado, o null si fallo (no lanza excepción)
      */
-    @Transactional
+    // Quitado @Transactional para usar TransactionTemplate + afterCommit
     public PaymentEvent recordInternalEvent(Payment payment, Order order,
                                             PaymentProvider provider,
                                             String eventType, String context) {
+        PaymentEvent event = new PaymentEvent();
+        event.setPayment(payment);
+        event.setOrder(order);
+        event.setProvider(provider);
+        event.setEventType(eventType);
+        event.setProcessed(true);
+        event.setProcessedAt(LocalDateTime.now());
+        event.setProcessedBy("INTERNAL");
+        event.setErrorMessage(context);
+
+        if (TransactionSynchronizationManager.isSynchronizationActive() && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    saveEventInNewTransaction(event, eventType, order, payment);
+                }
+            });
+            // Retorna null (o el evento sin ID) temporalmente, porque se guarda asincrónicamente al commit.
+            // Esto es seguro ya que nadie depende del ID del evento interno inmediatamente.
+            return event;
+        } else {
+            return saveEventInNewTransaction(event, eventType, order, payment);
+        }
+    }
+
+    private PaymentEvent saveEventInNewTransaction(PaymentEvent event, String eventType, Order order, Payment payment) {
         try {
-            PaymentEvent event = new PaymentEvent();
-            event.setPayment(payment);
-            event.setOrder(order);
-            event.setProvider(provider);
-            event.setEventType(eventType);
-            event.setProcessed(true);
-            event.setProcessedAt(LocalDateTime.now());
-            event.setProcessedBy("INTERNAL");
-            event.setErrorMessage(context);
-
-            PaymentEvent saved = paymentEventRepository.save(event);
-            log.debug("[PaymentEvent] Evento interno registrado: {} | order={} | payment={}",
-                    eventType,
-                    order != null ? order.getId() : null,
-                    payment != null ? payment.getId() : null);
-            return saved;
-
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+            transactionTemplate.setPropagationBehavior(Propagation.REQUIRES_NEW.value());
+            return transactionTemplate.execute(status -> {
+                PaymentEvent saved = paymentEventRepository.save(event);
+                log.debug("[PaymentEvent] Evento interno registrado: {} | order={} | payment={}",
+                        eventType,
+                        order != null ? order.getId() : null,
+                        payment != null ? payment.getId() : null);
+                return saved;
+            });
         } catch (Exception e) {
             log.warn("[PaymentEvent] No se pudo registrar evento interno '{}': {}", eventType, e.getMessage());
             return null;

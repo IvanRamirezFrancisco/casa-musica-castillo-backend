@@ -51,6 +51,8 @@ public class PaymentService {
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
     private final MercadoPagoService mercadoPagoService;
+    private final OrderTimelineEventService timelineEventService;
+    private final OrderPickupService orderPickupService;
 
     // ── Estados que se consideran "activos" (bloquean creación de nuevos) ───
     private static final List<PaymentTransactionStatus> ACTIVE_STATUSES = List.of(
@@ -170,10 +172,48 @@ public class PaymentService {
         payment.setPaidAt(LocalDateTime.now());
         Payment saved = paymentRepository.save(payment);
 
-        // Sincronizar orden (caché/resumen)
         Order order = orderRepository.findById(payment.getOrder().getId()).orElse(null);
         if (order != null) {
+            OrderStatus prevOrderStatus = order.getStatus();
+            PaymentStatus prevPaymentStatus = order.getPaymentStatus();
+            
             order.setPaymentStatus(PaymentStatus.PAID);
+            
+            if (order.getStatus() == OrderStatus.PENDING) {
+                order.setStatus(OrderStatus.CONFIRMED);
+                log.info("[PaymentService] Orden {} confirmada automáticamente al marcar pago PAID", order.getId());
+            }
+            
+            // Generar código de recolección si aplica
+            if ("PICKUP_STORE".equals(order.getDeliveryType())) {
+                orderPickupService.generatePickupCode(order);
+            }
+            
+            orderRepository.save(order);
+            
+            User actorUser = null;
+            if (actorUserId != null) {
+                actorUser = userRepository.findById(actorUserId).orElse(null);
+            }
+            
+            timelineEventService.recordEvent(
+                order,
+                "PAYMENT_APPROVED",
+                "Pago Aprobado",
+                "El pago fue aprobado y la orden actualizada. Fuente: " + source,
+                prevOrderStatus,
+                order.getStatus(),
+                prevPaymentStatus,
+                order.getPaymentStatus(),
+                order.getShippingStatus(),
+                order.getShippingStatus(),
+                actorUser,
+                actorUserId != null ? "ADMIN" : "SYSTEM",
+                "PAYMENT_SERVICE",
+                "BOTH",
+                null
+            );
+            
             // Actualizar transaction_id (campo legacy para frontend existente)
             String txRef = payment.getProviderPaymentId() != null
                     ? payment.getProviderPaymentId()

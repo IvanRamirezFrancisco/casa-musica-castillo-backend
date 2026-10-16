@@ -47,5 +47,7 @@ render.yaml
 owasp-suppressions.xml
 git-filter-repo
 
+render-backend.env.local
+
 # Test resources
 src/test/

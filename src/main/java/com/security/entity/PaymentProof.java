@@ -58,6 +58,21 @@ public class PaymentProof {
     @Column(name = "file_size_bytes", nullable = false)
     private Long fileSizeBytes;
 
+    @Column(name = "storage_provider", length = 50)
+    private String storageProvider;
+
+    @Column(name = "storage_key", length = 1024)
+    private String storageKey;
+
+    @Column(name = "file_url", length = 2048)
+    private String fileUrl;
+
+    @Column(name = "resource_type", length = 50)
+    private String resourceType;
+
+    @Column(name = "storage_folder", length = 500)
+    private String storageFolder;
+
     @Column(name = "reference_number", length = 100)
     private String referenceNumber;
 
@@ -108,6 +123,11 @@ public class PaymentProof {
     public void setReviewedBy(User reviewedBy) { this.reviewedBy = reviewedBy; }
     public void setReviewedAt(LocalDateTime reviewedAt) { this.reviewedAt = reviewedAt; }
     public void setRejectionReason(String rejectionReason) { this.rejectionReason = rejectionReason; }
+    public void setStorageProvider(String storageProvider) { this.storageProvider = storageProvider; }
+    public void setStorageKey(String storageKey) { this.storageKey = storageKey; }
+    public void setFileUrl(String fileUrl) { this.fileUrl = fileUrl; }
+    public void setResourceType(String resourceType) { this.resourceType = resourceType; }
+    public void setStorageFolder(String storageFolder) { this.storageFolder = storageFolder; }
     
     public Long getId() { return id; }
     public Order getOrder() { return order; }
@@ -126,4 +146,9 @@ public class PaymentProof {
     public String getRejectionReason() { return rejectionReason; }
     public String getStoredFilename() { return storedFilename; }
     public String getStoragePath() { return storagePath; }
+    public String getStorageProvider() { return storageProvider; }
+    public String getStorageKey() { return storageKey; }
+    public String getFileUrl() { return fileUrl; }
+    public String getResourceType() { return resourceType; }
+    public String getStorageFolder() { return storageFolder; }
 }

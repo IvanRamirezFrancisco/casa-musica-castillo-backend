@@ -8,8 +8,17 @@ import lombok.Data;
 @Data
 public class CheckoutRequest {
 
-    @NotBlank(message = "La dirección de envío es obligatoria")
     private String shippingAddress;
+
+    private String deliveryOption;
+    
+    private String state;
+    
+    private String city;
+    
+    private String postalCode;
+    
+    private java.util.List<AuthorizedPersonDTO> authorizedPersons;
 
     @NotBlank(message = "La dirección de facturación es obligatoria")
     private String billingAddress;

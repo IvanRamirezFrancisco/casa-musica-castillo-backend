@@ -12,6 +12,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import com.security.security.UserPrincipal;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -39,6 +41,7 @@ import java.util.Set;
 public class AdminPaymentController {
 
     private final PaymentService paymentService;
+    private final com.security.service.MercadoPagoWebhookService mercadoPagoWebhookService;
 
     /** Tamaño máximo de página permitido */
     private static final int MAX_PAGE_SIZE = 100;
@@ -152,6 +155,37 @@ public class AdminPaymentController {
             log.error("Error listando pagos (admin): {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Error interno"));
+        }
+    }
+
+    // ── POST /api/admin/payments/{paymentId}/requery ───────────────
+    @PostMapping("/api/admin/payments/{paymentId}/requery")
+    @PreAuthorize("hasAuthority('PAYMENT_MANAGE') or hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> requeryPayment(
+            @PathVariable Long paymentId,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            log.info("POST /api/admin/payments/{}/requery — admin={}", paymentId, adminId);
+            
+            mercadoPagoWebhookService.requeryPayment(paymentId, adminId);
+            
+            return ResponseEntity.ok(Map.of(
+                    "status", "success", 
+                    "message", "Pago reconsultado exitosamente"
+            ));
+
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Payment local no encontrado")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of("error", e.getMessage()));
+            }
+            log.error("Error reconsultando pago {}: {}", paymentId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error interno reconsultando pago: " + e.getMessage()));
         }
     }
 }

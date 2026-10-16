@@ -22,6 +22,9 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.transaction.TransactionException;
+import java.sql.SQLException;
+import org.springframework.dao.DataAccessException;
 
 /**
  * Manejador global de excepciones para toda la aplicación
@@ -30,6 +33,33 @@ import java.util.UUID;
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+        /**
+         * Maneja BadRequestException (solicitudes inválidas).
+         * HTTP 400 - BAD REQUEST
+         *
+         * <p>
+         * Usada por el módulo de analytics de clustering y otros servicios
+         * para rechazar parámetros de entrada inválidos (cluster negativo,
+         * paginación fuera de rango, etc.).
+         * </p>
+         */
+        @ExceptionHandler(BadRequestException.class)
+        public ResponseEntity<ErrorResponse> handleBadRequestException(
+                        BadRequestException ex, WebRequest request) {
+
+                log.warn("Solicitud inválida: {}", ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.BAD_REQUEST.value())
+                                .error("Bad Request")
+                                .message(ex.getMessage())
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+        }
 
         /**
          * Maneja excepciones de carrito no encontrado
@@ -432,6 +462,52 @@ public class GlobalExceptionHandler {
         }
 
         /**
+         * Maneja excepciones de Base de Datos genéricas para evitar fugas de SQL
+         */
+        @ExceptionHandler({SQLException.class, DataAccessException.class})
+        public ResponseEntity<ErrorResponse> handleDatabaseExceptions(
+                        Exception ex, WebRequest request) {
+
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Error de Base de Datos en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                                .error("Database Error")
+                                .message("Ocurrió un error en la base de datos. Inténtalo nuevamente. Código: " + errorId)
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
+         * Maneja excepciones de Transacciones (e.g. TransactionSystemException, RollbackException)
+         */
+        @ExceptionHandler(TransactionException.class)
+        public ResponseEntity<ErrorResponse> handleTransactionSystemException(
+                        TransactionException ex, WebRequest request) {
+
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Error de Transacción en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                                .error("Transaction Error")
+                                .message("No se pudo completar la operación transaccional. Inténtalo nuevamente. Código: " + errorId)
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
          * Maneja todas las excepciones no específicas
          * HTTP 500 - INTERNAL SERVER ERROR
          * Hermético: loguea stack trace completo server-side con errorId, devuelve
@@ -455,6 +531,24 @@ public class GlobalExceptionHandler {
                                 .build();
 
                 return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
+         * Maneja validaciones fallidas de Pickup
+         * HTTP 400 - BAD REQUEST
+         */
+        @ExceptionHandler(PickupValidationException.class)
+        public ResponseEntity<Map<String, Object>> handlePickupValidationException(
+                        PickupValidationException ex, WebRequest request) {
+                
+                log.warn("Error de validación pickup: {}", ex.getMessage());
+                
+                Map<String, Object> response = new HashMap<>();
+                response.put("error", "INVALID_PICKUP_AUTHORIZATIONS");
+                response.put("message", ex.getMessage());
+                response.put("details", ex.getDetails());
+                
+                return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
         }
 
         /**

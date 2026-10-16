@@ -39,12 +39,37 @@ public class LocalStorageService implements StorageService {
 
     @Override
     public StorageUploadResult uploadProductImage(MultipartFile file, Long productId, String folderPath) throws IOException {
-        return storeFile(file, productsLocation, "products");
+        validateImageFile(file);
+        return storeFile(file, productsLocation, "products", null);
     }
 
     @Override
     public StorageUploadResult uploadBrandImage(MultipartFile file, Long brandId, String folderPath) throws IOException {
-        return storeFile(file, brandsLocation, "brands");
+        return storeFile(file, brandsLocation, "brands", null);
+    }
+
+    @Override
+    public StorageUploadResult uploadFile(MultipartFile file, String folderPath) throws IOException {
+        if (file.getSize() > 10 * 1024 * 1024) {
+            throw new IllegalArgumentException("El archivo excede el tamaño máximo permitido de 10MB");
+        }
+        Path location = Paths.get("uploads").resolve(folderPath).toAbsolutePath().normalize();
+        if (!Files.exists(location)) {
+            Files.createDirectories(location);
+        }
+        return storeFile(file, location, folderPath, null);
+    }
+
+    @Override
+    public StorageUploadResult uploadFileWithCustomName(MultipartFile file, String folderPath, String customName, String resourceType) throws IOException {
+        if (file.getSize() > 10 * 1024 * 1024) {
+            throw new IllegalArgumentException("El archivo excede el tamaño máximo permitido de 10MB");
+        }
+        Path location = Paths.get("uploads").resolve(folderPath).toAbsolutePath().normalize();
+        if (!Files.exists(location)) {
+            Files.createDirectories(location);
+        }
+        return storeFile(file, location, folderPath, customName);
     }
 
     @Override
@@ -78,12 +103,10 @@ public class LocalStorageService implements StorageService {
         imageValidator.validateImage(file);
     }
 
-    private StorageUploadResult storeFile(MultipartFile file, Path location, String folderName) throws IOException {
-        validateImageFile(file);
-
-        String originalFilename = StringUtils.cleanPath(file.getOriginalFilename() != null ? file.getOriginalFilename() : "image.jpg");
+    private StorageUploadResult storeFile(MultipartFile file, Path location, String folderName, String customName) throws IOException {
+        String originalFilename = StringUtils.cleanPath(file.getOriginalFilename() != null ? file.getOriginalFilename() : "file.bin");
         String extension = getExtension(originalFilename);
-        String newFilename = UUID.randomUUID().toString() + "." + extension;
+        String newFilename = (customName != null && !customName.isBlank()) ? customName + "." + extension : UUID.randomUUID().toString() + "." + extension;
 
         Path targetLocation = location.resolve(newFilename).normalize();
         if (!targetLocation.startsWith(location)) {
@@ -108,6 +131,9 @@ public class LocalStorageService implements StorageService {
                 .contentType(file.getContentType())
                 .fileSizeBytes(file.getSize())
                 .provider(getProviderName())
+                .resourceType("local")
+                .folder(folderName)
+                .format(extension)
                 .build();
     }
 

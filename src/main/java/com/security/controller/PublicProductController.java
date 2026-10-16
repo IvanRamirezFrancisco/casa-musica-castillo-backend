@@ -31,9 +31,15 @@ import java.util.List;
 public class PublicProductController {
 
     private final PublicProductService publicProductService;
+    private final com.security.service.PublicProductRecommendationService publicProductRecommendationService;
+    private final com.security.service.PublicDemandTrendService publicDemandTrendService;
 
-    public PublicProductController(PublicProductService publicProductService) {
+    public PublicProductController(PublicProductService publicProductService,
+                                   com.security.service.PublicProductRecommendationService publicProductRecommendationService,
+                                   com.security.service.PublicDemandTrendService publicDemandTrendService) {
         this.publicProductService = publicProductService;
+        this.publicProductRecommendationService = publicProductRecommendationService;
+        this.publicDemandTrendService = publicDemandTrendService;
     }
 
     // ── GET /api/public/products (y /api/products) ────────────────────────────
@@ -159,6 +165,53 @@ public class PublicProductController {
     public ResponseEntity<PublicProductDTO> getById(@PathVariable Long id) {
         try {
             return ResponseEntity.ok(publicProductService.getById(id));
+        } catch (EntityNotFoundException ex) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    // ── GET /api/public/products/{id}/recommendations ─────────────────────────
+
+    /**
+     * Devuelve las recomendaciones (productos complementarios) para un producto.
+     *
+     * <p>
+     * Si el ID no existe, o el producto existe pero tiene {@code active = false},
+     * retorna estrictamente <strong>404 Not Found</strong>.
+     * </p>
+     *
+     * @param id ID del producto
+     * @return 200 OK con la lista de recomendaciones, o 404 si no existe/inactivo
+     */
+    @GetMapping("/{id}/recommendations")
+    public ResponseEntity<List<com.security.dto.public_api.PublicProductRecommendationDTO>> getRecommendations(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(publicProductRecommendationService.getRecommendations(id));
+        } catch (EntityNotFoundException ex) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    // ── GET /api/public/products/trending ─────────────────────────────────────
+
+    /**
+     * Devuelve los productos en tendencia basados en el pronóstico de demanda de medias móviles.
+     */
+    @GetMapping("/trending")
+    public ResponseEntity<List<com.security.dto.public_api.PublicTrendingProductDTO>> getTrendingProducts(
+            @RequestParam(defaultValue = "8") int limit) {
+        return ResponseEntity.ok(publicDemandTrendService.getTrendingProducts(limit));
+    }
+
+    // ── GET /api/public/products/{id}/trend-status ────────────────────────────
+
+    /**
+     * Verifica de forma segura si un producto está en tendencia.
+     */
+    @GetMapping("/{id}/trend-status")
+    public ResponseEntity<com.security.dto.public_api.ProductTrendStatusDTO> getTrendStatus(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(publicDemandTrendService.getProductTrendStatus(id));
         } catch (EntityNotFoundException ex) {
             return ResponseEntity.notFound().build();
         }

@@ -4,10 +4,17 @@ import com.security.dto.CancelOrderRequest;
 import com.security.dto.CheckoutRequest;
 import com.security.dto.OrderDTO;
 import com.security.dto.PaymentInstructionsResponse;
+import com.security.dto.PricePreviewRequest;
+import com.security.dto.PricePreviewResponse;
+import com.security.dto.ShippingCalculationResult;
 import com.security.security.UserPrincipal;
 import com.security.service.OrderService;
 import com.security.service.BankTransferSettingsService;
 import com.security.service.PaymentProofService;
+import com.security.service.DeliveryMethodService;
+import com.security.service.ShoppingCartService;
+import com.security.entity.ShoppingCart;
+import com.security.service.OrderPickupService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,6 +53,52 @@ public class OrderController {
     private final OrderService orderService;
     private final PaymentProofService paymentProofService;
     private final BankTransferSettingsService bankTransferSettingsService;
+    private final com.security.service.OrderTimelineEventService timelineEventService;
+    private final DeliveryMethodService deliveryMethodService;
+    private final ShoppingCartService shoppingCartService;
+    private final OrderPickupService orderPickupService;
+
+    @PostMapping("/checkout/price-preview")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<?> pricePreview(
+            @Valid @RequestBody PricePreviewRequest request,
+            Authentication authentication) {
+        try {
+            Long userId = extractUserId(authentication);
+            if (userId == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
+
+            ShoppingCart cart = shoppingCartService.getOrCreateCartForUser(userId);
+            ShippingCalculationResult deliveryResult = deliveryMethodService.calculateDelivery(
+                    request.getDeliveryOption(), request.getState(), request.getCity(), request.getPostalCode()
+            );
+
+            PricePreviewResponse response = new PricePreviewResponse();
+            response.setSubtotal(cart.getSubtotal());
+            response.setTax(cart.getTax());
+            
+            BigDecimal shippingCost = deliveryResult.getShippingCost() != null ? deliveryResult.getShippingCost() : BigDecimal.ZERO;
+            response.setShipping(shippingCost);
+            response.setTotal(cart.getTotal().add(shippingCost));
+            
+            response.setDeliveryMethod(deliveryResult.getDeliveryMethod());
+            response.setDeliveryLabel(deliveryResult.getDeliveryLabel());
+            response.setRequiresAddress(deliveryResult.isRequiresAddress());
+            response.setRequiresQuote(deliveryResult.isRequiresQuote());
+            response.setCanProceedToPayment(deliveryResult.isCanProceedToPayment());
+            response.setMessage(deliveryResult.getMessage());
+            response.setContactWhatsapp(deliveryResult.getContactWhatsapp());
+            response.setContactPhone(deliveryResult.getContactPhone());
+            response.setQuoteMessage(deliveryResult.getQuoteMessage());
+            response.setBusinessHours(deliveryResult.getBusinessHours());
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Error en price-preview: {}", e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
 
     @PostMapping("/checkout")
     @PreAuthorize("isAuthenticated()")
@@ -113,6 +166,77 @@ public class OrderController {
         } catch (RuntimeException e) {
             log.warn("Orden no encontrada: {}", e.getMessage());
             return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("/orders/my/{id}/pickup-code")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<?> getPickupCode(
+            @PathVariable Long id,
+            Authentication authentication) {
+        try {
+            Long userId = extractUserId(authentication);
+            if (userId == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
+
+            OrderDTO orderDto = orderService.getOrderById(id);
+            if (!orderDto.getUserId().equals(userId)) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("error", "No tienes permiso para ver esta orden"));
+            }
+
+            com.security.entity.Order orderEntity = orderService.getOrderEntityById(id);
+
+            boolean canShowCode = true;
+            String message = "Código disponible para recolección.";
+
+            if (!"PICKUP_STORE".equals(orderEntity.getDeliveryType())) {
+                canShowCode = false;
+                message = "Esta orden no es para recoger en tienda.";
+            } else if (orderEntity.getPaymentStatus() != com.security.enums.PaymentStatus.PAID) {
+                canShowCode = false;
+                message = "El pedido debe estar pagado para ver el código.";
+            } else if (orderEntity.getStatus() == com.security.enums.OrderStatus.CANCELLED || orderEntity.getStatus() == com.security.enums.OrderStatus.COMPLETED) {
+                canShowCode = false;
+                message = "El código de recolección ya no está disponible.";
+            } else if (orderEntity.getPickupStatus() != com.security.enums.PickupStatus.READY_FOR_PICKUP) {
+                canShowCode = false;
+                if (orderEntity.getPickupStatus() == com.security.enums.PickupStatus.PICKED_UP || 
+                    orderEntity.getPickupStatus() == com.security.enums.PickupStatus.CANCELLED) {
+                    message = "El código de recolección ya no está disponible.";
+                } else {
+                    message = "El código estará disponible cuando tu pedido esté listo para recoger.";
+                }
+            } else if (orderEntity.getPickupCodeEncrypted() == null) {
+                canShowCode = false;
+                message = "El código de recolección aún no está disponible.";
+            }
+
+            if (!canShowCode) {
+                return ResponseEntity.ok(Map.of(
+                        "pickupCode", (Object) null,
+                        "pickupCodeAvailable", false,
+                        "message", message
+                ));
+            }
+
+            String decryptedCode = orderPickupService.decryptPickupCode(orderEntity.getPickupCodeEncrypted());
+
+            return ResponseEntity.ok()
+                    .header("Cache-Control", "no-store, max-age=0")
+                    .body(Map.of(
+                            "pickupCode", decryptedCode,
+                            "pickupCodeAvailable", true,
+                            "message", message,
+                            "pickupStatus", orderEntity.getPickupStatus().name(),
+                            "last4", orderEntity.getPickupCodeLast4() != null ? orderEntity.getPickupCodeLast4() : ""
+                    ));
+
+        } catch (Exception e) {
+            log.error("Error al obtener código de recolección: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error interno del servidor."));
         }
     }
 
@@ -184,9 +308,17 @@ public class OrderController {
                     userId, orderId, file, referenceNumber, bankName, amountDeclared, transferDate, notes);
             
             return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn("Error de validación al subir comprobante para orden {}: {}", orderId, e.getMessage());
+            String msg = e.getMessage();
+            if (msg != null && msg.contains(":")) {
+                String[] parts = msg.split(":", 2);
+                return ResponseEntity.badRequest().body(Map.of("error", parts[0].trim(), "message", parts[1].trim()));
+            }
+            return ResponseEntity.badRequest().body(Map.of("error", "VALIDATION_ERROR", "message", msg));
         } catch (RuntimeException e) {
-            log.warn("Error al subir comprobante para orden {}: {}", orderId, e.getMessage());
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+            log.warn("Error de ejecución al subir comprobante para orden {}: {}", orderId, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("error", "UPLOAD_FAILED", "message", e.getMessage()));
         } catch (Exception e) {
             log.error("Error interno subiendo comprobante: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -216,7 +348,7 @@ public class OrderController {
 
     @GetMapping("/orders/my/{orderId}/payment-proof/file")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Resource> getMyPaymentProofFile(
+    public ResponseEntity<?> getMyPaymentProofFile(
             @PathVariable Long orderId,
             Authentication authentication) {
         try {
@@ -255,7 +387,9 @@ public class OrderController {
                     .body(response.resource());
         } catch (RuntimeException e) {
             log.warn("No se pudo descargar comprobante de orden {}: {}", orderId, e.getMessage());
-            return ResponseEntity.notFound().build();
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(java.util.Map.of("error", e.getMessage()));
         }
     }
 
@@ -269,4 +403,23 @@ public class OrderController {
         }
         return null;
     }
+    @GetMapping("/orders/my/{id}/timeline")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<java.util.List<com.security.dto.response.OrderTimelineEventDTO>> getMyOrderTimeline(
+            @PathVariable Long id,
+            Authentication authentication) {
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        // Validación explícita de propiedad (Prevención IDOR)
+        OrderDTO order = orderService.getOrderById(id);
+        if (!order.getUserId().equals(userId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build(); // O FORBIDDEN
+        }
+
+        return ResponseEntity.ok(timelineEventService.getCustomerTimeline(id));
+    }
+
 }

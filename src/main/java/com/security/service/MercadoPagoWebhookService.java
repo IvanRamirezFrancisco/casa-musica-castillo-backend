@@ -261,6 +261,59 @@ public class MercadoPagoWebhookService {
     }
 
     /**
+     * Reconsulta manual de un pago en Mercado Pago desde el panel de administración o un job.
+     *
+     * @param localPaymentId ID del Payment local (tabla sales.payments)
+     * @param adminId        ID del admin que ejecuta (o null si es sistema)
+     */
+    @Transactional
+    public void requeryPayment(Long localPaymentId, Long adminId) {
+        com.security.entity.Payment localPayment = paymentRepository.findById(localPaymentId)
+                .orElseThrow(() -> new RuntimeException("Payment local no encontrado: " + localPaymentId));
+
+        if (localPayment.getProvider() != PaymentProvider.MERCADO_PAGO) {
+            throw new IllegalArgumentException("El pago no es de Mercado Pago");
+        }
+
+        String providerPaymentId = localPayment.getProviderPaymentId();
+        if (providerPaymentId == null || providerPaymentId.isBlank()) {
+            throw new IllegalArgumentException("El pago local no tiene providerPaymentId asociado. No se puede consultar a MP sin el ID externo.");
+        }
+
+        Long mpPaymentId;
+        try {
+            mpPaymentId = Long.parseLong(providerPaymentId);
+        } catch (NumberFormatException e) {
+            throw new RuntimeException("El providerPaymentId no es un número válido: " + providerPaymentId);
+        }
+
+        // Consultar API de Mercado Pago
+        Payment mpPayment;
+        try {
+            PaymentClient client = new PaymentClient();
+            mpPayment = client.get(mpPaymentId);
+            log.info("[WebhookService] Pago reconsultado de MP. mpPaymentId={}, status={}",
+                    mpPaymentId, mpPayment.getStatus());
+        } catch (Exception e) {
+            log.error("[WebhookService] Error consultando MP en requery para pago {}: {}", mpPaymentId, e.getMessage());
+            throw new RuntimeException("Error comunicando con Mercado Pago para reconsulta: " + e.getMessage());
+        }
+
+        String eventContext = "Reconsulta " + (adminId != null ? "manual admin " + adminId : "automática sistema") + " | mpStatus=" + mpPayment.getStatus();
+        
+        // Aplicar estado (la validación de amounts/currency está dentro de este método)
+        paymentService.applyMercadoPagoStatus(localPayment, mpPayment, "requery_" + System.currentTimeMillis());
+        
+        paymentEventService.recordInternalEvent(
+                localPayment, 
+                localPayment.getOrder(), 
+                PaymentProvider.MERCADO_PAGO, 
+                "REQUERY_COMPLETED", 
+                eventContext
+        );
+    }
+
+    /**
      * Busca el Payment local por external_reference (primario) o provider_payment_id (fallback).
      */
     private com.security.entity.Payment findLocalPayment(Payment mpPayment, String externalRef, Long mpPaymentId) {

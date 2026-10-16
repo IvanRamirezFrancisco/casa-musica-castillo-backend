@@ -82,6 +82,46 @@ public class Order {
     @Column(name = "payment_status", nullable = false, length = 20)
     private PaymentStatus paymentStatus = PaymentStatus.PENDING;
 
+    @Column(name = "shipping_method", length = 50)
+    private String shippingMethod;
+
+    @Column(name = "shipping_label", length = 100)
+    private String shippingLabel;
+
+    @Column(name = "delivery_type", length = 50)
+    private String deliveryType;
+
+    @Column(name = "pickup_address_snapshot", columnDefinition = "TEXT")
+    private String pickupAddressSnapshot;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pickup_status", length = 50)
+    private com.security.enums.PickupStatus pickupStatus = com.security.enums.PickupStatus.NOT_APPLICABLE;
+
+    @Column(name = "pickup_code_hash", length = 255)
+    private String pickupCodeHash;
+
+    @Column(name = "pickup_code_encrypted", length = 255)
+    private String pickupCodeEncrypted;
+
+    @Column(name = "pickup_code_last4", length = 4)
+    private String pickupCodeLast4;
+
+    @Column(name = "pickup_ready_at")
+    private LocalDateTime pickupReadyAt;
+
+    @Column(name = "picked_up_at")
+    private LocalDateTime pickedUpAt;
+
+    @Column(name = "picked_up_by_name", length = 255)
+    private String pickedUpByName;
+
+    @Column(name = "picked_up_by_authorization_id")
+    private Long pickedUpByAuthorizationId;
+
+    @Column(name = "verified_by_admin_id")
+    private Long verifiedByAdminId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "payment_method", length = 30)
     private PaymentMethod paymentMethod;

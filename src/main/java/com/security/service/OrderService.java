@@ -59,7 +59,16 @@ public class OrderService {
     private OrderRepository orderRepository;
 
     @Autowired
+    private OrderStateTransitionService stateTransitionService;
+
+    @Autowired
     private com.security.repository.PaymentProofRepository paymentProofRepository;
+    
+    @Autowired
+    private PaymentProofService paymentProofService;
+
+    @Autowired
+    private OrderTimelineEventService timelineEventService;
 
     @Autowired
     private PaymentService paymentService;
@@ -74,10 +83,22 @@ public class OrderService {
     private ShoppingCartRepository cartRepository;
 
     @Autowired
+    private DeliveryMethodService deliveryMethodService;
+
+    @Autowired
+    private com.security.repository.OrderPickupAuthorizationRepository orderPickupAuthorizationRepository;
+
+    @Autowired
     private ProductRepository productRepository;
 
     @Autowired
+    private OrderPickupService orderPickupService;
+
+    @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private org.springframework.context.ApplicationEventPublisher applicationEventPublisher;
 
     // ==================== LISTAR Y BUSCAR ====================
 
@@ -202,13 +223,20 @@ public class OrderService {
      */
     public OrderDTO getOrderById(Long id) {
         log.info("getOrderById — id={}", id);
-        Order order = orderRepository.findById(id)
-                .orElseThrow(() -> {
-                    log.warn("getOrderById — orden no encontrada con id={}", id);
-                    return new RuntimeException("Orden no encontrada con ID: " + id);
-                });
+        Order order = getOrderEntityById(id);
         log.info("getOrderById — orden encontrada: {}", order.getOrderNumber());
         return convertToDTO(order);
+    }
+    
+    /**
+     * Obtener entidad de orden (Uso interno)
+     */
+    public Order getOrderEntityById(Long id) {
+        return orderRepository.findById(id)
+                .orElseThrow(() -> {
+                    log.warn("getOrderEntityById — orden no encontrada con id={}", id);
+                    return new RuntimeException("Orden no encontrada con ID: " + id);
+                });
     }
 
     /**
@@ -255,23 +283,98 @@ public class OrderService {
         order.setPaymentMethod(request.getPaymentMethod());
         order.setCustomerNotes(request.getNotes());
         
-        // Totales del carrito (confiamos en el cálculo de backend)
+        // Totales del carrito
         order.setSubtotal(cart.getSubtotal());
         order.setTax(cart.getTax());
         order.setDiscount(cart.getDiscount() != null ? cart.getDiscount() : java.math.BigDecimal.ZERO);
         
-        // Cálculo de envío
-        java.math.BigDecimal shipping = java.math.BigDecimal.ZERO;
-        if (cart.getSubtotal().compareTo(new java.math.BigDecimal("1000.00")) < 0) {
-            shipping = new java.math.BigDecimal("50.00");
+        // Cálculo de envío según el método seleccionado
+        com.security.dto.ShippingCalculationResult deliveryResult = deliveryMethodService.calculateDelivery(
+                request.getDeliveryOption(), request.getState(), request.getCity(), request.getPostalCode()
+        );
+
+        if (deliveryResult.isRequiresQuote()) {
+            throw new RuntimeException("Tu envío requiere cotización antes de confirmar la compra.");
         }
-        order.setShipping(shipping);
+        if (!deliveryResult.isCanProceedToPayment()) {
+            throw new RuntimeException(deliveryResult.getMessage());
+        }
+
+        if ("PICKUP_STORE".equals(deliveryResult.getDeliveryMethod())) {
+            List<com.security.dto.AuthorizedPersonDTO> authPersons = request.getAuthorizedPersons();
+            List<String> errors = new java.util.ArrayList<>();
+            
+            if (authPersons == null || authPersons.isEmpty()) {
+                errors.add("Debes registrar al menos una persona autorizada.");
+            } else if (authPersons.size() > 3) {
+                errors.add("Solo puedes registrar hasta 3 personas autorizadas.");
+            } else {
+                java.util.Set<String> normalizedNames = new java.util.HashSet<>();
+                for (int i = 0; i < authPersons.size(); i++) {
+                    com.security.dto.AuthorizedPersonDTO ap = authPersons.get(i);
+                    String prefix = "Persona " + (i + 1) + ": ";
+                    
+                    if (ap.getFullName() == null || ap.getFullName().trim().length() < 5 || ap.getFullName().trim().length() > 80) {
+                        errors.add(prefix + "Ingresa un nombre válido de entre 5 y 80 caracteres.");
+                    } else {
+                        String cleanName = ap.getFullName().trim();
+                        if (!cleanName.matches("^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+$")) {
+                            errors.add(prefix + "El nombre solo puede contener letras y espacios.");
+                        } else {
+                            String normalized = cleanName.toLowerCase()
+                                    .replaceAll("[áàäâã]", "a")
+                                    .replaceAll("[éèëê]", "e")
+                                    .replaceAll("[íìïî]", "i")
+                                    .replaceAll("[óòöôõ]", "o")
+                                    .replaceAll("[úùüû]", "u")
+                                    .replaceAll("\\s+", " ");
+                            if (!normalizedNames.add(normalized)) {
+                                errors.add(prefix + "Esta persona ya está autorizada.");
+                            }
+                            ap.setFullName(cleanName);
+                        }
+                    }
+                    
+                    if (ap.getPhone() != null && !ap.getPhone().trim().isEmpty()) {
+                        String phone = ap.getPhone().trim();
+                        if (!phone.matches("^\\d{10}$")) {
+                            errors.add(prefix + "El teléfono debe tener exactamente 10 dígitos y solo contener números.");
+                        }
+                        ap.setPhone(phone);
+                    }
+                    
+                    if (ap.getRelationship() != null && !ap.getRelationship().trim().isEmpty()) {
+                        String rel = ap.getRelationship().trim();
+                        if (rel.length() > 50 || !rel.matches("^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]+$")) {
+                            errors.add(prefix + "La referencia no debe superar 50 caracteres y solo debe contener letras y espacios.");
+                        }
+                        ap.setRelationship(rel);
+                    }
+                }
+            }
+            
+            if (!errors.isEmpty()) {
+                throw new com.security.exception.PickupValidationException("Revisa las personas autorizadas para recoger el pedido.", errors);
+            }
+        }
+
+        order.setDeliveryType(deliveryResult.getDeliveryMethod());
+        order.setShippingMethod(deliveryResult.getDeliveryMethod());
+        order.setShippingLabel(deliveryResult.getDeliveryLabel());
+        order.setShipping(deliveryResult.getShippingCost() != null ? deliveryResult.getShippingCost() : java.math.BigDecimal.ZERO);
+        
+        if ("PICKUP_STORE".equals(deliveryResult.getDeliveryMethod())) {
+            order.setPickupStatus(com.security.enums.PickupStatus.WAITING_PAYMENT);
+            order.setShippingAddress(null);
+            // El backend usa la config como snapshot
+            order.setPickupAddressSnapshot(deliveryResult.getDeliveryLabel()); 
+        } else {
+            order.setPickupStatus(com.security.enums.PickupStatus.NOT_APPLICABLE);
+        }
         
         // Total final sumando envío
-        java.math.BigDecimal total = cart.getTotal().add(shipping);
+        java.math.BigDecimal total = cart.getTotal().add(order.getShipping());
         order.setTotal(total);
-        
-        // No hay campo couponCode en Order actualmente
         
         // Estados iniciales
         order.setStatus(OrderStatus.PENDING);
@@ -305,6 +408,49 @@ public class OrderService {
         // Guardar orden
         Order savedOrder = orderRepository.save(order);
         
+        // Procesar personas autorizadas para Pickup
+        if ("PICKUP_STORE".equals(deliveryResult.getDeliveryMethod()) && request.getAuthorizedPersons() != null) {
+            for (com.security.dto.AuthorizedPersonDTO apDTO : request.getAuthorizedPersons()) {
+                com.security.entity.OrderPickupAuthorization auth = new com.security.entity.OrderPickupAuthorization();
+                auth.setOrder(savedOrder);
+                auth.setFullName(apDTO.getFullName());
+                auth.setPhone(apDTO.getPhone());
+                auth.setRelationship(apDTO.getRelationship());
+                auth.setIsPrimary(apDTO.isPrimary());
+                orderPickupAuthorizationRepository.save(auth);
+            }
+            try {
+                timelineEventService.recordEvent(
+                    savedOrder, "PICKUP_AUTHORIZED", "Recolección autorizada", "Se registraron personas autorizadas para recoger el pedido.",
+                    null, OrderStatus.PENDING, null, PaymentStatus.PENDING, null, ShippingStatus.PENDING,
+                    user, "CUSTOMER", "ORDER_SERVICE", "BOTH", null
+                );
+            } catch (Exception e) {}
+        }
+        
+        // Registrar evento de creación
+        try {
+            timelineEventService.recordEvent(
+                savedOrder,
+                "ORDER_CREATED",
+                "Orden Creada",
+                "La orden ha sido creada exitosamente.",
+                null,
+                OrderStatus.PENDING,
+                null,
+                PaymentStatus.PENDING,
+                null,
+                ShippingStatus.PENDING,
+                user,
+                "CUSTOMER",
+                "ORDER_SERVICE",
+                "BOTH",
+                null
+            );
+        } catch (Exception e) {
+            log.warn("No se pudo registrar evento de timeline ORDER_CREATED: {}", e.getMessage());
+        }
+        
         // Marcar carrito como convertido
         cart.setStatus("CONVERTED");
         cartRepository.save(cart);
@@ -322,27 +468,34 @@ public class OrderService {
         log.info("cancelOrder — orderId={}, source={}, actorId={}", orderId, source, actorId);
 
         Order order = orderRepository.findById(orderId)
-                .orElseThrow(() -> new RuntimeException("Orden no encontrada"));
+                .orElseThrow(() -> new IllegalArgumentException("Orden no encontrada"));
 
-        // Prevenir doble cancelación
+        // Prevenir doble cancelación o cancelar órdenes ya entregadas
         if (order.getStatus() == OrderStatus.CANCELLED) {
-            throw new RuntimeException("La orden ya se encuentra cancelada.");
+            throw new IllegalStateException("La orden ya se encuentra cancelada.");
+        }
+        if (order.getShippingStatus() == ShippingStatus.DELIVERED) {
+            throw new IllegalStateException("No se puede cancelar una orden que ya fue entregada.");
         }
 
         // Reglas de cancelación según el origen
         if ("CUSTOMER".equals(source)) {
             if (order.getUser() == null || !order.getUser().getId().equals(actorId)) {
-                throw new RuntimeException("No tiene permiso para cancelar esta orden.");
+                throw new IllegalStateException("No tiene permiso para cancelar esta orden.");
             }
             if (order.getStatus() != OrderStatus.PENDING && order.getStatus() != OrderStatus.CONFIRMED) {
-                throw new RuntimeException("Solo puede cancelar órdenes en estado PENDING o CONFIRMED.");
+                throw new IllegalStateException("Solo puede cancelar órdenes en estado PENDING o CONFIRMED.");
             }
         } else if ("ADMIN".equals(source)) {
             if (order.getShippingStatus() == ShippingStatus.SHIPPED || order.getShippingStatus() == ShippingStatus.DELIVERED) {
-                throw new RuntimeException("El pedido ya fue enviado o entregado; inicie un flujo de devolución o incidencia en su lugar.");
+                throw new IllegalStateException("El pedido ya fue enviado o entregado; inicie un flujo de devolución o incidencia en su lugar.");
+            }
+        } else if ("SYSTEM".equals(source) || "SYSTEM_EXPIRATION".equals(source)) {
+            if (order.getStatus() != OrderStatus.PENDING) {
+                log.warn("Se intentó expirar una orden que no está PENDING (ID: {})", orderId);
             }
         } else {
-            throw new RuntimeException("Origen de cancelación desconocido.");
+            throw new IllegalArgumentException("Origen de cancelación desconocido.");
         }
 
         // Restaurar stock
@@ -357,43 +510,94 @@ public class OrderService {
 
         // Actualizar estados
         OrderStatus oldStatus = order.getStatus();
+        PaymentStatus oldPaymentStatus = order.getPaymentStatus();
+        
+        String finalSource = "SYSTEM_EXPIRATION".equals(source) ? "SYSTEM" : source;
+        
         order.setStatus(OrderStatus.CANCELLED);
+        if ("SYSTEM_EXPIRATION".equals(source) && oldPaymentStatus == PaymentStatus.PENDING) {
+            order.setPaymentStatus(PaymentStatus.FAILED);
+        }
+        
         order.setCancelledAt(LocalDateTime.now());
         order.setCancellationReason(reason);
-        order.setCancelSource(source);
+        order.setCancelSource(finalSource);
         order.setCancelledBy(actorId);
 
-        Order savedOrder = orderRepository.save(order);
-        
-        // Sincronización con pagos: cancelar pagos activos
-        try {
-            paymentService.cancelActivePaymentsForOrder(
-                    savedOrder.getId(),
-                    "Pago cancelado automáticamente porque la orden fue cancelada.",
-                    source,
-                    actorId
-            );
-        } catch (Exception e) {
-            log.error("No se pudieron cancelar pagos activos asociados a la orden cancelada. orderId={}, source={}, actorUserId={}", 
-                      savedOrder.getId(), source, actorId, e);
-        }
+        Map<String, Object> oldValues = new HashMap<>();
+        oldValues.put("status", oldStatus.name());
 
-        // Auditoría
+        Order savedOrder;
         try {
-            Map<String, Object> oldValues = new HashMap<>();
-            oldValues.put("status", oldStatus.name());
-            Map<String, Object> newValues = new HashMap<>();
-            newValues.put("status", OrderStatus.CANCELLED.name());
-            newValues.put("cancelSource", source);
-            newValues.put("cancellationReason", reason);
+            savedOrder = orderRepository.saveAndFlush(order);
+        } catch (Exception e) {
+            log.error("Error al persistir cancelación de la orden {}: {}", orderId, e.getMessage());
+            Map<String, Object> failNewValues = new HashMap<>();
+            failNewValues.put("status", OrderStatus.CANCELLED.name());
+            failNewValues.put("cancelSource", finalSource);
+            failNewValues.put("cancellationReason", reason);
+            failNewValues.put("error", "Error de persistencia al cancelar");
 
             auditLogService.log(
                     "ORDER_CANCELLED", "ORDER_STATUS_CHANGE", "ORDER",
-                    orderId, oldValues, newValues, "INFO", true);
-        } catch (Exception auditEx) {
-            log.warn("⚠️ No se pudo registrar audit log para cancelación de orden {}: {}",
-                    orderId, auditEx.getMessage());
+                    orderId, oldValues, failNewValues, "ERROR", false);
+            throw e;
         }
+        
+        // Rechazar comprobantes pendientes
+        paymentProofService.rejectPendingProofsForCancelledOrder(savedOrder.getId(), "Orden cancelada: " + reason, actorId);
+
+        // Sincronización con pagos: cancelar pagos activos
+        paymentService.cancelActivePaymentsForOrder(
+                savedOrder.getId(),
+                "Pago cancelado automáticamente porque la orden fue cancelada.",
+                source,
+                actorId
+        );
+
+        // Auditoría y Timeline
+        Map<String, Object> newValues = new HashMap<>();
+        newValues.put("status", OrderStatus.CANCELLED.name());
+        newValues.put("cancelSource", finalSource);
+        newValues.put("cancellationReason", reason);
+
+                
+        User actorUser = null;
+        if (actorId != null) {
+            actorUser = userRepository.findById(actorId).orElse(null);
+        }
+        
+        String timelineEvt = "SYSTEM_EXPIRATION".equals(source) ? "ORDER_EXPIRED" : "ORDER_CANCELLED";
+        String timelineTitle = "SYSTEM_EXPIRATION".equals(source) ? "Orden Expirada" : "Orden Cancelada";
+
+        String actorType = "CUSTOMER";
+        if ("ADMIN".equals(source)) {
+            actorType = "ADMIN";
+        } else if ("SYSTEM".equals(source) || "SYSTEM_EXPIRATION".equals(source)) {
+            actorType = "SYSTEM";
+        }
+
+        timelineEventService.recordEvent(
+                savedOrder,
+                timelineEvt,
+                timelineTitle,
+                "Motivo: " + reason,
+                oldStatus,
+                OrderStatus.CANCELLED,
+                oldPaymentStatus,
+                savedOrder.getPaymentStatus(),
+                savedOrder.getShippingStatus(),
+                savedOrder.getShippingStatus(),
+                actorUser,
+                actorType,
+                "ORDER_SERVICE",
+                "BOTH",
+                null
+        );
+
+        applicationEventPublisher.publishEvent(new com.security.event.AuditSuccessEvent(
+                this, "ORDER_CANCELLED", "ORDER_STATUS_CHANGE", "ORDER",
+                orderId, oldValues, newValues, "INFO"));
 
         return convertToDTO(savedOrder);
     }
@@ -409,6 +613,14 @@ public class OrderService {
                 .orElseThrow(() -> new RuntimeException("Orden no encontrada"));
 
         OrderStatus oldStatus = order.getStatus();
+        
+        if (oldStatus == newStatus) {
+            return convertToDTO(order);
+        }
+
+        // Usar servicio de transición de estados
+        stateTransitionService.validateOrderStatusTransition(order, newStatus);
+
         order.setStatus(newStatus);
 
         if (newStatus == OrderStatus.CANCELLED) {
@@ -425,11 +637,10 @@ public class OrderService {
                         savedOrder.getId(),
                         "Pago cancelado automáticamente porque la orden fue cancelada.",
                         "ADMIN_STATUS_UPDATE",
-                        null // No tenemos actorId en la firma actual de updateOrderStatus
+                        null
                 );
             } catch (Exception e) {
-                log.error("No se pudieron cancelar pagos activos asociados a la orden cancelada. orderId={}, source={}, actorUserId={}, newStatus={}", 
-                          savedOrder.getId(), "ADMIN_STATUS_UPDATE", null, newStatus, e);
+                log.error("No se pudieron cancelar pagos activos asociados a la orden cancelada. orderId={}", savedOrder.getId(), e);
             }
         }
 
@@ -443,8 +654,26 @@ public class OrderService {
             auditLogService.log(
                     "ORDER_STATUS_CHANGE", "ORDER_STATUS_CHANGE", "ORDER",
                     orderId, oldValues, newValues, "INFO", true);
+                    
+            timelineEventService.recordEvent(
+                    savedOrder,
+                    "ORDER_STATUS_CHANGED",
+                    "Estado de la orden actualizado",
+                    "El estado de la orden cambió de " + oldStatus + " a " + newStatus,
+                    oldStatus,
+                    newStatus,
+                    savedOrder.getPaymentStatus(),
+                    savedOrder.getPaymentStatus(),
+                    savedOrder.getShippingStatus(),
+                    savedOrder.getShippingStatus(),
+                    null, // actorUser no disponible aquí en firma original
+                    "ADMIN",
+                    "ORDER_SERVICE",
+                    "BOTH",
+                    null
+            );
         } catch (Exception auditEx) {
-            log.warn("⚠️ No se pudo registrar audit log para cambio de estado de orden {}: {}",
+            log.warn("⚠️ No se pudo registrar evento de timeline o audit log para cambio de estado de orden {}: {}",
                     orderId, auditEx.getMessage());
         }
 
@@ -466,6 +695,12 @@ public class OrderService {
         if (newStatus == PaymentStatus.PAID && order.getStatus() == OrderStatus.PENDING) {
             order.setStatus(OrderStatus.CONFIRMED);
             log.info("updatePaymentStatus — orden {} confirmada automáticamente al recibir pago", orderId);
+        }
+
+        // Si es pago confirmado y es pickup, generar código
+        if (newStatus == PaymentStatus.PAID && "PICKUP_STORE".equals(order.getDeliveryType())) {
+            orderPickupService.generatePickupCode(order);
+            // order ya fue guardado dentro de generatePickupCode, pero lo volveremos a guardar abajo
         }
 
         Order savedOrder = orderRepository.save(order);
@@ -490,45 +725,66 @@ public class OrderService {
         return convertToDTO(savedOrder);
     }
 
+    public String getPlainPickupCodeForUser(Long orderId, Long userId) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Orden no encontrada"));
+                
+        if (!order.getUser().getId().equals(userId)) {
+            return null;
+        }
+        
+        return orderPickupService.getPlainCodeForCustomer(order);
+    }
+
     /**
      * Actualizar el estado de envío de la orden.
      * Valida que el pago esté confirmado antes de marcar como SHIPPED.
      */
-    public OrderDTO updateShippingStatus(Long orderId, ShippingStatus newStatus, String trackingNumber) {
-        log.info("updateShippingStatus — orderId={}, newStatus={}", orderId, newStatus);
+    public OrderDTO updateShippingStatus(Long orderId, ShippingStatus newShippingStatus, String trackingNumber) {
+        log.info("updateShippingStatus — orderId={}, newStatus={}", orderId, newShippingStatus);
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new RuntimeException("Orden no encontrada"));
 
-        if (newStatus == ShippingStatus.SHIPPED && order.getPaymentStatus() != PaymentStatus.PAID) {
-            log.warn("updateShippingStatus — intento de envío sin pago confirmado en orden {}", orderId);
-            throw new RuntimeException("La orden debe estar pagada antes de marcar como enviada");
+        ShippingStatus oldShippingStatus = order.getShippingStatus();
+        OrderStatus oldOrderStatus = order.getStatus();
+        
+        if (oldShippingStatus == newShippingStatus && 
+            ((trackingNumber == null && order.getTrackingNumber() == null) || 
+             (trackingNumber != null && trackingNumber.equals(order.getTrackingNumber())))) {
+            return convertToDTO(order);
         }
 
-        ShippingStatus oldStatus = order.getShippingStatus();
-        order.setShippingStatus(newStatus);
+        // Validar transición de estado de envío usando la máquina de estados estricta
+        if (oldShippingStatus != newShippingStatus) {
+            stateTransitionService.validateShippingStatusTransition(order, newShippingStatus);
+        }
+
+        order.setShippingStatus(newShippingStatus);
 
         if (trackingNumber != null && !trackingNumber.trim().isEmpty()) {
             order.setTrackingNumber(trackingNumber.trim());
         }
 
-        if (newStatus == ShippingStatus.SHIPPED) {
+        if (newShippingStatus == ShippingStatus.SHIPPED) {
             order.setShippedAt(LocalDateTime.now());
-        } else if (newStatus == ShippingStatus.DELIVERED) {
+        } else if (newShippingStatus == ShippingStatus.DELIVERED) {
             order.setDeliveredAt(LocalDateTime.now());
-            order.setStatus(OrderStatus.COMPLETED);
-            log.info("updateShippingStatus — orden {} marcada como completada al entregar", orderId);
+            if (order.getStatus() != OrderStatus.COMPLETED) {
+                order.setStatus(OrderStatus.COMPLETED);
+                log.info("updateShippingStatus — orden {} marcada como completada al entregar", orderId);
+            }
         }
 
         Order savedOrder = orderRepository.save(order);
-        log.info("updateShippingStatus — estado de envío actualizado de {} a {} para orden {}", oldStatus, newStatus,
+        log.info("updateShippingStatus — estado de envío actualizado de {} a {} para orden {}", oldShippingStatus, newShippingStatus,
                 orderId);
 
         // Auditoría de cambio de estado de envío
         try {
             Map<String, Object> oldValues = new HashMap<>();
-            oldValues.put("shippingStatus", oldStatus != null ? oldStatus.name() : null);
+            oldValues.put("shippingStatus", oldShippingStatus != null ? oldShippingStatus.name() : null);
             Map<String, Object> newValues = new HashMap<>();
-            newValues.put("shippingStatus", newStatus.name());
+            newValues.put("shippingStatus", newShippingStatus.name());
             if (trackingNumber != null && !trackingNumber.trim().isEmpty()) {
                 newValues.put("trackingNumber", trackingNumber.trim());
             }
@@ -536,6 +792,24 @@ public class OrderService {
             auditLogService.log(
                     "ORDER_SHIPPING_CHANGE", "ORDER_STATUS_CHANGE", "ORDER",
                     orderId, oldValues, newValues, "INFO", true);
+                    
+            timelineEventService.recordEvent(
+                    savedOrder,
+                    "SHIPPING_STATUS_CHANGED",
+                    "Estado de envío actualizado",
+                    "El estado de envío cambió de " + oldShippingStatus + " a " + newShippingStatus,
+                    oldOrderStatus,
+                    savedOrder.getStatus(),
+                    savedOrder.getPaymentStatus(),
+                    savedOrder.getPaymentStatus(),
+                    oldShippingStatus,
+                    newShippingStatus,
+                    null, // actorUser no disponible aquí en firma original
+                    "ADMIN",
+                    "SHIPPING",
+                    "BOTH",
+                    null
+            );
         } catch (Exception auditEx) {
             log.warn("⚠️ No se pudo registrar audit log para cambio de envío de orden {}: {}",
                     orderId, auditEx.getMessage());
@@ -622,6 +896,29 @@ public class OrderService {
         dto.setTrackingNumber(order.getTrackingNumber());
         dto.setShippedAt(order.getShippedAt());
         dto.setDeliveredAt(order.getDeliveredAt());
+        
+        dto.setDeliveryType(order.getDeliveryType());
+        dto.setPickupStatus(order.getPickupStatus() != null ? order.getPickupStatus().name() : null);
+        dto.setPickupCodeLast4(order.getPickupCodeLast4());
+        dto.setPickupCodeAvailable(order.getPickupCodeEncrypted() != null);
+        dto.setPickupReadyAt(order.getPickupReadyAt());
+        dto.setPickedUpAt(order.getPickedUpAt());
+        dto.setPickedUpByName(order.getPickedUpByName());
+        dto.setPickedUpByAuthorizationId(order.getPickedUpByAuthorizationId());
+        
+        List<com.security.entity.OrderPickupAuthorization> auths = orderPickupAuthorizationRepository.findByOrderId(order.getId());
+        if (auths != null && !auths.isEmpty()) {
+            List<com.security.dto.AuthorizedPersonDTO> authDtos = auths.stream().map(ap -> {
+                com.security.dto.AuthorizedPersonDTO apDto = new com.security.dto.AuthorizedPersonDTO();
+                apDto.setId(ap.getId());
+                apDto.setFullName(ap.getFullName());
+                apDto.setPhone(ap.getPhone());
+                apDto.setRelationship(ap.getRelationship());
+                apDto.setPrimary(ap.getIsPrimary() != null ? ap.getIsPrimary() : false);
+                return apDto;
+            }).toList();
+            dto.setAuthorizedPersons(authDtos);
+        }
 
         // Items
         List<OrderItemDTO> itemDTOs = order.getItems().stream()

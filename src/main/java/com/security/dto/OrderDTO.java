@@ -81,6 +81,24 @@ public class OrderDTO {
     private LocalDateTime shippedAt;
     private LocalDateTime deliveredAt;
 
+    private String deliveryType; // "PICKUP_STORE", "LOCAL_DELIVERY", "EXTERNAL_SHIPPING_QUOTE"
+    private String shippingMethod;
+    private String shippingLabel;
+
+    // Campos de Recolección en Tienda (Pickup)
+    private String pickupStatus;
+    private String pickupCodeLast4;
+    private Boolean pickupCodeAvailable;
+    private LocalDateTime pickupReadyAt;
+    private LocalDateTime pickedUpAt;
+    private String pickedUpByName;
+    private Long pickedUpByAuthorizationId;
+    
+    // Sólo para el cliente (desencriptado, expuesto condicionalmente en un endpoint separado o si aplica)
+    private String pickupCode;
+    
+    private List<AuthorizedPersonDTO> authorizedPersons = new ArrayList<>();
+
     // ==================== ITEMS ====================
 
     private List<OrderItemDTO> items = new ArrayList<>();

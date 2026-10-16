@@ -1,0 +1,179 @@
+{
+  "version_esquema": 1,
+  "version_modelo": "3.0",
+  "fecha_generacion_utc": "2026-08-02T04:06:05.771656+00:00",
+  "algoritmo": {
+    "nombre": "KMeans",
+    "numero_clusters": 5,
+    "random_state": 42,
+    "n_init": 10
+  },
+  "entrada": {
+    "unidad_analisis": "Una orden completa",
+    "caracteristicas": [
+      "total",
+      "porcentaje_descuento",
+      "porcentaje_envio",
+      "unidades_totales",
+      "productos_distintos",
+      "categorias_distintas",
+      "unidades_por_producto",
+      "proporcion_valor_accesorios",
+      "proporcion_producto_mayor_valor",
+      "precio_unitario_promedio"
+    ],
+    "columnas_log1p": [
+      "total",
+      "precio_unitario_promedio",
+      "porcentaje_envio",
+      "unidades_por_producto"
+    ]
+  },
+  "escalador": {
+    "tipo": "StandardScaler",
+    "media": [
+      7.923433494133783,
+      2.13,
+      0.7583819099846785,
+      1.956,
+      1.857,
+      1.525,
+      0.7247213355405643,
+      0.230299,
+      0.9156835000000001,
+      7.363172626593011
+    ],
+    "escala": [
+      0.950626189635239,
+      3.703120305904198,
+      0.9495269797645302,
+      0.9198173731779586,
+      0.8891293494199817,
+      0.6077622890571609,
+      0.12685059204338267,
+      0.3631684624785032,
+      0.12078457516483634,
+      1.011602566222415
+    ],
+    "varianza": [
+      0.9036901524204134,
+      13.713100000000003,
+      0.9016014853007505,
+      0.8460639999999999,
+      0.7905509999999999,
+      0.369375,
+      0.016091072701756696,
+      0.13189133213899998,
+      0.01458891359775,
+      1.0233397519877756
+    ]
+  },
+  "modelo": {
+    "centroides_escalados": [
+      [
+        -1.6321363799720892,
+        0.20793275302785166,
+        0.4577958440384896,
+        0.613165196099076,
+        -0.9638642572748937,
+        -0.8638245732792134,
+        4.126789022974685,
+        2.1194048479514116,
+        0.6980734078414568,
+        -1.9137452673347817
+      ],
+      [
+        0.46312793713883704,
+        -0.015617924012401035,
+        -0.1817682342997945,
+        0.7853194955083366,
+        0.8704333464601227,
+        0.917257021110918,
+        -0.18679820449845144,
+        -0.33153802457806275,
+        -0.37083142805046876,
+        0.05080305065842528
+      ],
+      [
+        0.3119881827238773,
+        -0.007941487608917407,
+        -0.14453230433217362,
+        -1.0393367508346059,
+        -0.9638642572748926,
+        -0.8638245732792151,
+        -0.24890821928383802,
+        -0.6341382135119514,
+        0.6980734078414562,
+        0.8537521109658869
+      ],
+      [
+        -2.329818800491,
+        0.01185838964190466,
+        1.238521187097168,
+        -1.0393367508346039,
+        -0.9638642572748936,
+        -0.8638245732792135,
+        -0.24890821928383824,
+        2.119404847951412,
+        0.6980734078414568,
+        -1.7684159336149208
+      ],
+      [
+        -1.51215067311246,
+        -0.016481906531988205,
+        0.49416824806975984,
+        0.19779038729632706,
+        0.3159619403701187,
+        -0.8638245732792134,
+        -0.24890821928383824,
+        2.1194048479514116,
+        -2.3994190479149857,
+        -1.646547073959272
+      ]
+    ],
+    "inercia": 3408.201704150305
+  },
+  "metricas_finales": {
+    "silhouette": 0.436732635432428,
+    "davies_bouldin": 0.9583857513703397,
+    "calinski_harabasz": 481.10703779528944
+  },
+  "perfiles_clusters": {
+    "0": {
+      "nombre": "Accesorios por volumen",
+      "descripcion": "Órdenes con varias unidades del mismo accesorio o con repetición de accesorios.",
+      "accion_sugerida": "Aplicar promociones por cantidad y revisar reposición de accesorios frecuentes."
+    },
+    "1": {
+      "nombre": "Instrumento con accesorios",
+      "descripcion": "Órdenes que combinan al menos un instrumento con uno o más accesorios.",
+      "accion_sugerida": "Convertir combinaciones frecuentes en paquetes y reforzar la venta cruzada."
+    },
+    "2": {
+      "nombre": "Instrumento individual",
+      "descripcion": "Órdenes formadas por un instrumento sin accesorios.",
+      "accion_sugerida": "Recomendar accesorios complementarios para aumentar el valor de la compra."
+    },
+    "3": {
+      "nombre": "Accesorio individual",
+      "descripcion": "Órdenes formadas por un solo accesorio.",
+      "accion_sugerida": "Sugerir productos complementarios o recolección en tienda cuando el envío sea proporcionalmente alto."
+    },
+    "4": {
+      "nombre": "Accesorios variados",
+      "descripcion": "Órdenes que combinan varios accesorios diferentes.",
+      "accion_sugerida": "Crear kits de accesorios relacionados y promociones por combinación."
+    }
+  },
+  "regla_asignacion": "Ordenar las diez características, aplicar log1p a las columnas indicadas, estandarizar con la media y escala almacenadas, calcular la distancia euclidiana a cada centroide y seleccionar el centroide más cercano.",
+  "dataset_entrenamiento": {
+    "nombre": "dataset_clustering_patrones_compra_v3_es.csv",
+    "filas": 1000,
+    "columnas": 38
+  },
+  "versiones": {
+    "scikit_learn": "1.7.2",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3"
+  }
+}

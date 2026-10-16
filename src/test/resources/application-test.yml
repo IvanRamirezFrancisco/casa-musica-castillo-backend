@@ -1,0 +1,11 @@
+# Perfil "test": valores NO sensibles, solo para ejecutar la suite de pruebas.
+# Las credenciales de BD de las pruebas siguen viniendo del entorno (PGPASSWORD, PGUSER, DATABASE_URL).
+app:
+  security:
+    jwt:
+      secret: test-only-jwt-secret-do-not-use-anywhere-else-0123456789-abcdefghijklmnopqrstuvwxyz
+
+pickup:
+  code:
+    encryption:
+      key: TestOnlyPickupKey_00000000000000

@@ -50,6 +50,38 @@ public class ProductReviewController {
     }
 
     /**
+     * Verifica la elegibilidad del usuario para reseñar un producto
+     * GET /api/reviews/product/{productId}/eligibility
+     */
+    @GetMapping("/product/{productId}/eligibility")
+    public ResponseEntity<ReviewDTO.EligibilityResponse> checkEligibility(
+            @PathVariable Long productId,
+            Authentication authentication) {
+        
+        log.info("Verificando elegibilidad para producto {}", productId);
+        
+        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.ok(ReviewDTO.EligibilityResponse.builder()
+                    .canReview(false)
+                    .hasPurchased(false)
+                    .alreadyReviewed(false)
+                    .build());
+        }
+        
+        Long userId = getUserIdFromAuth(authentication);
+        if (userId == null) {
+             return ResponseEntity.ok(ReviewDTO.EligibilityResponse.builder()
+                    .canReview(false)
+                    .hasPurchased(false)
+                    .alreadyReviewed(false)
+                    .build());
+        }
+
+        var response = reviewService.checkEligibility(productId, userId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * Obtiene reseñas de un producto con filtros
      * GET /api/reviews/product/{productId}
      */

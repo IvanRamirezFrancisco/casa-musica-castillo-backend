@@ -12,7 +12,8 @@ spring:
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:security_db}}
     username: ${PGUSER:spring_app}
-    password: ${PGPASSWORD:SpringSeguro2026!}
+    # Sin default: la contraseña debe venir del entorno (PGPASSWORD).
+    password: ${PGPASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 5
@@ -20,7 +21,7 @@ spring:
       idle-timeout: 300000
       connection-timeout: 30000
       max-lifetime: 1200000
-      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops
+      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics
 
   jpa:
     hibernate:
@@ -37,13 +38,13 @@ spring:
     enabled: true
     baseline-on-migrate: true
     default-schema: public
-    schemas: public,auth,security,catalog,sales,customer,ops
+    schemas: public,auth,security,catalog,sales,customer,ops,analytics
 
   mail:
     host: ${MAIL_HOST:smtp-relay.brevo.com}
     port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME::9a5a33001@smtp-brevo.com}
-    password: ${MAIL_PASSWORD:m9srNnc8DV12O4wh}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     properties:
       mail:
         smtp:
@@ -65,7 +66,7 @@ app:
 
     # JWT seguro mejorado
     jwt:
-      secret: ${JWT_SECRET:casa-musica-castillo-super-secret-key-2024-production-secure}
+      secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
       access-token-expiration: 900000      # 15 minutos
       refresh-token-expiration: 86400000   # 24 horas
       issuer: casa-musica-castillo
@@ -136,6 +137,14 @@ app:
       suspicious-threshold: 5
       alert-cooldown-minutes: 15
 
+    # Moderacion de Resenas (Product Reviews)
+    reviews:
+      moderation:
+        enabled: true
+        max-links: 2
+        repeated-char-threshold: 5
+        suspicious-to-pending: true
+
   # ============================================================
   # BACKUP DE BASE DE DATOS
   # ============================================================
@@ -154,8 +163,8 @@ app:
     access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
     public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
     webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
-    frontend-base-url: ${FRONTEND_PUBLIC_URL:http://localhost:4200}
-    backend-base-url: ${APP_PUBLIC_URL:http://localhost:8080}
+    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL:http://localhost:4200}
+    backend-base-url: ${BACKEND_PUBLIC_BASE_URL:http://localhost:8080}
   
   
   # Configuración OAuth2.0
@@ -165,7 +174,7 @@ app:
     refresh-token-expiration: 2592000       # 30 días
     redirect-uri-validation: true
 
-  # Configuración CORS
+  # Configuración CORS (legado: solo AdvancedSecurityConfig, perfil deshabilitado)
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200,https://casamusica.com}
   
@@ -184,11 +193,24 @@ app:
   notification:
     sms:
       provider: sinch
-      project-id: ${SINCH_PROJECT_ID:4696842a27654b618a9609091afdb8d9}
-      access-key-id: ${SINCH_ACCESS_KEY_ID:ea55ba6d-0381-4df8-b66b-4afff2ffbeab}
-      secret-key: ${SINCH_SECRET_KEY:39cb2c4b8b87402ba17fb4bbf0fbac45}
+      project-id: ${SINCH_PROJECT_ID:}
+      access-key-id: ${SINCH_ACCESS_KEY_ID:}
+      secret-key: ${SINCH_SECRET_KEY:}
       from-number: ${SINCH_FROM_NUMBER:+447418630656}
       dev-mode: false
+
+# ── CORS (fuente única: SecurityConfig.corsConfigurationSource) ─────────────
+# Lista explícita separada por comas. En producción application-production.yml
+# la hace obligatoria (CORS_ORIGINS, sin default). El default localhost aplica
+# solo a perfiles de desarrollo/test.
+cors:
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://localhost:4300}
+
+# ── Clave AES de códigos de recogida (obligatoria, sin default; 16/24/32 bytes) ──
+pickup:
+  code:
+    encryption:
+      key: ${PICKUP_CODE_ENCRYPTION_KEY}
 
 # ── Supabase Storage (off-site backup vault) ────────────────────────────────
 supabase:

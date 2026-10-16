@@ -39,12 +39,31 @@ public class CloudinaryStorageService implements StorageService {
 
     @Override
     public StorageUploadResult uploadProductImage(MultipartFile file, Long productId, String folderPath) throws IOException {
-        return uploadToCloudinary(file, folderPath);
+        validateImageFile(file);
+        return uploadToCloudinary(file, folderPath, "image", null);
     }
 
     @Override
     public StorageUploadResult uploadBrandImage(MultipartFile file, Long brandId, String folderPath) throws IOException {
-        return uploadToCloudinary(file, folderPath);
+        validateImageFile(file);
+        return uploadToCloudinary(file, folderPath, "image", null);
+    }
+
+    @Override
+    public StorageUploadResult uploadFile(MultipartFile file, String folderPath) throws IOException {
+        // Validamos el tamaño, pero no que sea estrictamente una imagen (puede ser PDF)
+        if (file.getSize() > 10 * 1024 * 1024) {
+            throw new IllegalArgumentException("El archivo excede el tamaño máximo permitido de 10MB");
+        }
+        return uploadToCloudinary(file, folderPath, "auto", null);
+    }
+
+    @Override
+    public StorageUploadResult uploadFileWithCustomName(MultipartFile file, String folderPath, String customName, String resourceType) throws IOException {
+        if (file.getSize() > 10 * 1024 * 1024) {
+            throw new IllegalArgumentException("El archivo excede el tamaño máximo permitido de 10MB");
+        }
+        return uploadToCloudinary(file, folderPath, resourceType, customName);
     }
 
     @Override
@@ -65,21 +84,16 @@ public class CloudinaryStorageService implements StorageService {
         imageValidator.validateImage(file);
     }
 
-    private StorageUploadResult uploadToCloudinary(MultipartFile file, String folder) throws IOException {
-        validateImageFile(file);
-
-        String originalFilename = StringUtils.cleanPath(file.getOriginalFilename() != null ? file.getOriginalFilename() : "image");
+    private StorageUploadResult uploadToCloudinary(MultipartFile file, String folder, String resourceType, String customName) throws IOException {
+        String originalFilename = StringUtils.cleanPath(file.getOriginalFilename() != null ? file.getOriginalFilename() : "file");
         String extension = getExtension(originalFilename);
         
-        // Remove extension from original filename to avoid duplicate extensions in public_id
-        String baseName = originalFilename.contains(".") 
-                ? originalFilename.substring(0, originalFilename.lastIndexOf('.')) 
-                : originalFilename;
+        String publicId = (customName != null && !customName.isBlank()) ? customName : UUID.randomUUID().toString();
 
         Map<String, Object> params = ObjectUtils.asMap(
                 "folder", folder,
-                "public_id", UUID.randomUUID().toString(),
-                "resource_type", "image"
+                "public_id", publicId,
+                "resource_type", resourceType
         );
 
         @SuppressWarnings("unchecked")
@@ -94,6 +108,9 @@ public class CloudinaryStorageService implements StorageService {
                 .contentType(file.getContentType())
                 .fileSizeBytes(file.getSize())
                 .provider(getProviderName())
+                .resourceType(uploadResult.get("resource_type") != null ? uploadResult.get("resource_type").toString() : resourceType)
+                .folder(uploadResult.get("folder") != null ? uploadResult.get("folder").toString() : folder)
+                .format(uploadResult.get("format") != null ? uploadResult.get("format").toString() : extension)
                 .build();
     }
 

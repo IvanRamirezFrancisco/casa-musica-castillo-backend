@@ -32,6 +32,8 @@ public interface OrderRepository extends JpaRepository<Order, Long>, JpaSpecific
 
         Page<Order> findByStatus(OrderStatus status, Pageable pageable);
 
+        List<Order> findByStatus(OrderStatus status);
+
         Page<Order> findByPaymentStatus(PaymentStatus paymentStatus, Pageable pageable);
 
         /**
@@ -83,4 +85,16 @@ public interface OrderRepository extends JpaRepository<Order, Long>, JpaSpecific
         Long countByStatus(OrderStatus status);
 
         boolean existsByOrderNumber(String orderNumber);
+
+        /**
+         * Verifica si un usuario ha comprado un producto en una orden válida
+         */
+        @Query("SELECT COUNT(o) > 0 FROM Order o JOIN o.items i WHERE o.user.id = :userId AND i.product.id = :productId AND o.status IN ('CONFIRMED', 'PROCESSING', 'COMPLETED')")
+        boolean hasUserPurchasedProduct(@Param("userId") Long userId, @Param("productId") Long productId);
+
+        /**
+         * Encuentra las órdenes válidas de un producto por usuario
+         */
+        @Query("SELECT o FROM Order o JOIN o.items i WHERE o.user.id = :userId AND i.product.id = :productId AND o.status IN ('CONFIRMED', 'PROCESSING', 'COMPLETED') ORDER BY o.createdAt DESC")
+        List<Order> findValidOrdersForProduct(@Param("userId") Long userId, @Param("productId") Long productId);
 }

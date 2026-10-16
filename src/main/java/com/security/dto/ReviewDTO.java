@@ -31,11 +31,11 @@ public class ReviewDTO {
         @Max(value = 5, message = "La calificación máxima es 5")
         private Integer rating;
 
-        @Size(max = 200, message = "El título no puede exceder 200 caracteres")
+        @Size(max = 120, message = "El título no puede exceder 120 caracteres")
         private String title;
 
         @NotBlank(message = "El comentario es obligatorio")
-        @Size(min = 10, max = 2000, message = "El comentario debe tener entre 10 y 2000 caracteres")
+        @Size(min = 10, max = 1000, message = "El comentario debe tener entre 10 y 1000 caracteres")
         private String comment;
 
         private Long orderId; // Opcional para verificar compra
@@ -55,11 +55,11 @@ public class ReviewDTO {
         @Max(value = 5, message = "La calificación máxima es 5")
         private Integer rating;
 
-        @Size(max = 200, message = "El título no puede exceder 200 caracteres")
+        @Size(max = 120, message = "El título no puede exceder 120 caracteres")
         private String title;
 
         @NotBlank(message = "El comentario es obligatorio")
-        @Size(min = 10, max = 2000, message = "El comentario debe tener entre 10 y 2000 caracteres")
+        @Size(min = 10, max = 1000, message = "El comentario debe tener entre 10 y 1000 caracteres")
         private String comment;
     }
 
@@ -170,5 +170,20 @@ public class ReviewDTO {
         private String sortBy; // RECENT, HELPFUL, RATING_DESC, RATING_ASC
         private Integer page;
         private Integer size;
+    }
+
+    /**
+     * Respuesta de elegibilidad para reseñar
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class EligibilityResponse {
+        private Boolean canReview;
+        private Boolean hasPurchased;
+        private Boolean alreadyReviewed;
+        private Long reviewId;
+        private String reviewStatus;
     }
 }

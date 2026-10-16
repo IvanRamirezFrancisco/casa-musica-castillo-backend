@@ -55,7 +55,8 @@ public class SecurityConfig {
                 return new BCryptPasswordEncoder(12);
         }
 
-        @Value("${cors.allowed-origins:http://localhost:4200,http://localhost:4300}")
+        // Fuente única de CORS. En producción proviene de CORS_ORIGINS (obligatoria).
+        @Value("${cors.allowed-origins}")
         private List<String> allowedOrigins;
 
         @Bean
@@ -72,15 +73,30 @@ public class SecurityConfig {
         }
 
         /**
-         * Configuración CORS robusta para producción en Railway + Vercel
+         * Configuración CORS: única fuente de verdad (cors.allowed-origins ← CORS_ORIGINS).
          */
         @Bean
         public CorsConfigurationSource corsConfigurationSource() {
                 CorsConfiguration config = new CorsConfiguration();
 
+                // Normalizar: trim, quitar '/' final y descartar vacíos
+                List<String> origins = allowedOrigins.stream()
+                                .map(String::trim)
+                                .map(o -> o.endsWith("/") ? o.substring(0, o.length() - 1) : o)
+                                .filter(o -> !o.isEmpty())
+                                .toList();
+                if (origins.isEmpty()) {
+                        throw new IllegalStateException(
+                                        "CORS_ORIGINS (cors.allowed-origins) está vacío: define una lista explícita de orígenes separada por comas.");
+                }
+                if (origins.contains("*")) {
+                        throw new IllegalStateException(
+                                        "CORS_ORIGINS no puede contener '*' porque allowCredentials=true; usa orígenes explícitos.");
+                }
+
                 // IMPORTANTE: Usar SOLO allowedOriginPatterns cuando allowCredentials es true
                 // NO usar setAllowedOrigins con "*" porque causa error
-                config.setAllowedOriginPatterns(allowedOrigins);
+                config.setAllowedOriginPatterns(origins);
 
                 // Métodos HTTP permitidos
                 config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"));

@@ -5,7 +5,6 @@ import com.security.interceptor.SecurityInterceptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
-import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -32,22 +31,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns("/api/test/public", "/actuator/**");
     }
 
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        // IMPORTANTE: Usar SOLO allowedOriginPatterns cuando allowCredentials es true
-        registry.addMapping("/**")
-                .allowedOriginPatterns(
-                        "http://localhost:4200",
-                        "http://localhost:4300",
-                        "http://localhost:*",
-                        "http://127.0.0.1:*",
-                        "https://fronlogin-production.up.railway.app",
-                        "https://*.railway.app",
-                        "https://*.up.railway.app")
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD")
-                .allowedHeaders("*")
-                .exposedHeaders("Authorization", "Content-Type")
-                .allowCredentials(true)
-                .maxAge(3600);
-    }
+    // CORS: NO se configura aquí. La única fuente de verdad es
+    // SecurityConfig.corsConfigurationSource(), alimentada por la propiedad
+    // cors.allowed-origins (variable de entorno CORS_ORIGINS en producción).
+    // Mantener una segunda configuración en WebMvcConfigurer generaba reglas
+    // contradictorias con orígenes hardcodeados.
 }

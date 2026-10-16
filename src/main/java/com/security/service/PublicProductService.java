@@ -7,6 +7,8 @@ import jakarta.persistence.EntityNotFoundException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,6 +16,11 @@ import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.stream.Collectors;
+import com.security.search.NormalizedSearchQuery;
+import com.security.repository.CategoryRepository;
+import com.security.repository.BrandRepository;
+import com.security.entity.Category;
+import com.security.entity.Brand;
 
 /**
  * Servicio de la API pública para productos del Storefront.
@@ -48,9 +55,18 @@ public class PublicProductService {
     private static final int MAX_KEYWORD_LENGTH = 100;
 
     private final PublicProductRepository publicProductRepository;
+    private final SearchNormalizationService normalizationService;
+    private final CategoryRepository categoryRepository;
+    private final BrandRepository brandRepository;
 
-    public PublicProductService(PublicProductRepository publicProductRepository) {
+    public PublicProductService(PublicProductRepository publicProductRepository,
+                                SearchNormalizationService normalizationService,
+                                CategoryRepository categoryRepository,
+                                BrandRepository brandRepository) {
         this.publicProductRepository = publicProductRepository;
+        this.normalizationService = normalizationService;
+        this.categoryRepository = categoryRepository;
+        this.brandRepository = brandRepository;
     }
 
     // ── Últimos 8 activos ─────────────────────────────────────────────────────
@@ -104,11 +120,61 @@ public class PublicProductService {
             int page,
             int size,
             String sortBy) {
-        String sanitizedKeyword = sanitizeKeyword(keyword);
-        Pageable pageable = safePageable(page, size, sortBy);
-        return publicProductRepository
-                .findCatalog(sanitizedKeyword, categoryId, brandId, pageable)
-                .map(this::toDTO);
+        
+        if (keyword == null || keyword.isBlank()) {
+            Pageable pageable = safePageable(page, size, sortBy);
+            return publicProductRepository
+                    .findCatalogWithoutKeyword(categoryId, brandId, pageable)
+                    .map(this::toDTO);
+        } else {
+            NormalizedSearchQuery query = normalizationService.buildSearchQuery(keyword);
+            
+            Long categoryIntentId = null;
+            Long brandIntentId = null;
+            
+            // Intención de categoría
+            List<Category> allCategories = categoryRepository.findByActiveTrue();
+            for (String variant : query.variants()) {
+                Category cat = allCategories.stream()
+                    .filter(c -> c.getName().equalsIgnoreCase(variant))
+                    .findFirst()
+                    .orElse(null);
+                if (cat != null) {
+                    categoryIntentId = cat.getId();
+                    break;
+                }
+            }
+
+            // Intención de marca
+            List<Brand> allBrands = brandRepository.findAll();
+            for (String variant : query.variants()) {
+                Brand brand = allBrands.stream()
+                    .filter(b -> b.getName().equalsIgnoreCase(variant) && b.getActive())
+                    .findFirst()
+                    .orElse(null);
+                if (brand != null) {
+                    brandIntentId = brand.getId();
+                    break;
+                }
+            }
+
+            String escapedOriginal = normalizationService.escapeForLike(query.normalizedOriginal());
+            String escapedCanonical = normalizationService.escapeForLike(query.canonical());
+            
+            Pageable pageable = PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE), Sort.unsorted());
+            return publicProductRepository
+                    .findCatalogWithKeyword(
+                        query.normalizedOriginal(),
+                        escapedOriginal,
+                        query.canonical(),
+                        escapedCanonical,
+                        categoryIntentId,
+                        brandIntentId,
+                        categoryId,
+                        brandId,
+                        pageable
+                    ).map(this::toDTO);
+        }
     }
 
     // ── Detalle de producto ───────────────────────────────────────────────────
@@ -155,24 +221,7 @@ public class PublicProductService {
         return PageRequest.of(safePage, safeSize, sort);
     }
 
-    /**
-     * Sanitiza el keyword de búsqueda:
-     * <ol>
-     * <li>Trim de espacios.</li>
-     * <li>Truncado a {@value #MAX_KEYWORD_LENGTH} caracteres.</li>
-     * <li>Convierte string vacío a {@code null} (la query omite el filtro).</li>
-     * </ol>
-     */
-    private String sanitizeKeyword(String keyword) {
-        if (!StringUtils.hasText(keyword)) {
-            return null;
-        }
-        String trimmed = keyword.trim();
-        if (trimmed.length() > MAX_KEYWORD_LENGTH) {
-            trimmed = trimmed.substring(0, MAX_KEYWORD_LENGTH);
-        }
-        return trimmed;
-    }
+    // El sanitizeKeyword privado original se elimina porque el SearchNormalizationService hace el trabajo.
 
     // ── Mapeo Entidad → DTO (sin exponer entidades JPA) ───────────────────────
 

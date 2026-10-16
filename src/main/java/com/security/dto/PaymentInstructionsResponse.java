@@ -23,5 +23,7 @@ public class PaymentInstructionsResponse {
     private String orderNumber;
     private String referenceInstructions;
     private String additionalInstructions;
+    private String paymentDeadline;
+    private boolean isPaymentDeadlineExpired;
 
 }

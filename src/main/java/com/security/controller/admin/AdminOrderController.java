@@ -21,7 +21,11 @@ import com.security.security.UserPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import com.security.dto.request.RejectPaymentProofRequest;
+import com.security.dto.PickupVerificationRequest;
+import com.security.service.OrderPickupService;
+import com.security.repository.UserRepository;
 import org.springframework.core.io.Resource;
+import jakarta.validation.Valid;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -64,9 +68,21 @@ public class AdminOrderController {
 
     @Autowired
     private OrderService orderService;
+
+    @Autowired
+    private com.security.service.OrderTimelineEventService timelineEventService;
+    
+    @Autowired
+    private com.security.service.OrderStateTransitionService stateTransitionService;
     
     @Autowired
     private com.security.service.PaymentProofService paymentProofService;
+
+    @Autowired
+    private OrderPickupService orderPickupService;
+
+    @Autowired
+    private UserRepository userRepository;
 
     // ==================== LISTAR Y BUSCAR ====================
 
@@ -233,16 +249,19 @@ public class AdminOrderController {
         } catch (IllegalArgumentException e) {
             log.warn("Estado de orden inválido para orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado inválido. Use: PENDING, CONFIRMED, PROCESSING, COMPLETED, CANCELLED"));
+                    .body(Map.of("error", "INVALID_ORDER_STATUS", "message", "Valor de estado inválido. Use: PENDING, CONFIRMED, PROCESSING, COMPLETED, CANCELLED"));
+        } catch (IllegalStateException e) {
+            log.warn("Transición de estado inválida para orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "INVALID_ORDER_STATUS_TRANSITION", "message", e.getMessage()));
         } catch (RuntimeException e) {
             log.warn("Error de negocio al actualizar estado de orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
+                    .body(Map.of("error", "BAD_REQUEST", "message", e.getMessage()));
         } catch (Exception e) {
             log.error("Error interno al actualizar estado de orden {}: {}", id, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "INTERNAL_SERVER_ERROR", "message", "Error interno del servidor"));
         }
     }
 
@@ -255,43 +274,16 @@ public class AdminOrderController {
      * Requiere ORDER_UPDATE (no hereda ORDER_READ de clase).
      */
     @PatchMapping("/{id}/payment-status")
-    @PreAuthorize("hasAuthority('ORDER_UPDATE')")
+    @PreAuthorize("hasAuthority('SUPER_ADMIN')") // Solo un súper admin podría forzar esto en emergencias extremas
     public ResponseEntity<?> updatePaymentStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
 
-        try {
-            String statusStr = body.get("paymentStatus");
-
-            if (statusStr == null || statusStr.trim().isEmpty()) {
-                return ResponseEntity.badRequest()
-                        .body(Map.of("error", "El campo 'paymentStatus' es requerido"));
-            }
-
-            PaymentStatus newStatus = PaymentStatus.valueOf(statusStr.trim().toUpperCase());
-
-            log.info("PATCH /api/admin/orders/{}/payment-status — nuevo estado: {}", id, newStatus);
-
-            OrderDTO updatedOrder = orderService.updatePaymentStatus(id, newStatus);
-
-            log.info("PATCH /api/admin/orders/{}/payment-status — actualizado correctamente", id);
-
-            return ResponseEntity.ok(updatedOrder);
-
-        } catch (IllegalArgumentException e) {
-            log.warn("Estado de pago inválido para orden {}: {}", id, e.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado de pago inválido. Use: PENDING, PAID, FAILED, REFUNDED, PARTIALLY_REFUNDED"));
-        } catch (RuntimeException e) {
-            log.warn("Error de negocio al actualizar estado de pago de orden {}: {}", id, e.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
-        } catch (Exception e) {
-            log.error("Error interno al actualizar estado de pago de orden {}: {}", id, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
-        }
+        return ResponseEntity.badRequest()
+                .body(Map.of(
+                        "error", "INVALID_PAYMENT_STATUS_TRANSITION",
+                        "message", "El estado de pago no se modifica manualmente. Usa aprobar comprobante, rechazar comprobante o reconsultar Mercado Pago."
+                ));
     }
 
     // FASE 0 - Seguridad - 2026-05-15
@@ -331,16 +323,19 @@ public class AdminOrderController {
         } catch (IllegalArgumentException e) {
             log.warn("Estado de envío inválido para orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado de envío inválido. Use: PENDING, PREPARING, SHIPPED, IN_TRANSIT, DELIVERED, RETURNED"));
+                    .body(Map.of("error", "INVALID_SHIPPING_STATUS", "message", "Valor de estado de envío inválido. Use: PENDING, PREPARING, SHIPPED, IN_TRANSIT, DELIVERED, RETURNED"));
+        } catch (IllegalStateException e) {
+            log.warn("Transición de envío inválida para orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "INVALID_SHIPPING_STATUS_TRANSITION", "message", e.getMessage()));
         } catch (RuntimeException e) {
             log.warn("Error de negocio al actualizar estado de envío de orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
+                    .body(Map.of("error", "BAD_REQUEST", "message", e.getMessage()));
         } catch (Exception e) {
             log.error("Error interno al actualizar estado de envío de orden {}: {}", id, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "INTERNAL_SERVER_ERROR", "message", "Error interno del servidor"));
         }
     }
 
@@ -385,14 +380,10 @@ public class AdminOrderController {
 
             return ResponseEntity.ok(updatedOrder);
 
-        } catch (RuntimeException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             log.warn("Error al cancelar orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
-        } catch (Exception e) {
-            log.error("Error interno al cancelar orden {}: {}", id, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "Bad Request", "message", e.getMessage()));
         }
     }
 
@@ -469,7 +460,7 @@ public class AdminOrderController {
     }
 
     @GetMapping("/{id}/payment-proof/file")
-    public ResponseEntity<Resource> getPaymentProofFile(@PathVariable Long id) {
+    public ResponseEntity<?> getPaymentProofFile(@PathVariable Long id) {
         try {
             com.security.dto.response.PaymentProofFileResponse response = paymentProofService.getAdminPaymentProofFile(id);
 
@@ -500,7 +491,9 @@ public class AdminOrderController {
                     .body(response.resource());
         } catch (RuntimeException e) {
             log.warn("No se pudo descargar comprobante de orden {}: {}", id, e.getMessage());
-            return ResponseEntity.notFound().build();
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(java.util.Map.of("error", e.getMessage()));
         }
     }
 
@@ -514,7 +507,7 @@ public class AdminOrderController {
             log.info("Aprobando comprobante para orden {} por admin {}", id, adminId);
             com.security.dto.response.PaymentProofResponse response = paymentProofService.approvePaymentProof(adminId, id);
             return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             log.warn("Error aprobando comprobante orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -531,8 +524,90 @@ public class AdminOrderController {
             log.info("Rechazando comprobante para orden {} por admin {}", id, adminId);
             com.security.dto.response.PaymentProofResponse response = paymentProofService.rejectPaymentProof(adminId, id, request.getReason());
             return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             log.warn("Error rechazando comprobante orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * GET /api/admin/orders/{id}/timeline
+     * Obtener historial de eventos de una orden.
+     */
+    @GetMapping("/{id}/timeline")
+    @PreAuthorize("hasAuthority('ORDER_READ')")
+    public ResponseEntity<List<com.security.dto.response.OrderTimelineEventDTO>> getOrderTimeline(@PathVariable Long id) {
+        log.info("GET /api/admin/orders/{}/timeline", id);
+        return ResponseEntity.ok(timelineEventService.getAdminTimeline(id));
+    }
+
+    /**
+     * GET /api/admin/orders/{id}/allowed-transitions
+     * Obtener transiciones permitidas y ayuda visual para el estado de una orden.
+     */
+    @GetMapping("/{id}/allowed-transitions")
+    @PreAuthorize("hasAuthority('ORDER_READ')")
+    public ResponseEntity<com.security.dto.response.OrderTransitionsDTO> getAllowedTransitions(@PathVariable Long id) {
+        log.info("GET /api/admin/orders/{}/allowed-transitions", id);
+        
+        com.security.entity.Order order = orderService.getOrderEntityById(id);
+        
+        com.security.dto.response.OrderTransitionsDTO dto = com.security.dto.response.OrderTransitionsDTO.builder()
+                .currentOrderStatus(order.getStatus())
+                .currentPaymentStatus(order.getPaymentStatus())
+                .currentShippingStatus(order.getShippingStatus())
+                .allowedOrderStatuses(stateTransitionService.getAllowedOrderStatuses(order))
+                .allowedShippingStatuses(stateTransitionService.getAllowedShippingStatuses(order))
+                .canUpdateOrderStatus(stateTransitionService.canUpdateOrderStatus(order))
+                .canUpdateShippingStatus(stateTransitionService.canUpdateShippingStatus(order))
+                .canUpdateTrackingNumber(stateTransitionService.canUpdateTrackingNumber(order))
+                .canCancelOrder(stateTransitionService.canCancelOrder(order))
+                .requiresCancelReason(stateTransitionService.requiresCancelReason())
+                .orderStatusHelpMessage(stateTransitionService.getOrderStatusHelpMessage(order))
+                .shippingStatusHelpMessage(stateTransitionService.getShippingStatusHelpMessage(order))
+                .cancelOrderHelpMessage(stateTransitionService.getCancelOrderHelpMessage(order))
+                .build();
+                
+        return ResponseEntity.ok(dto);
+    }
+
+    @PostMapping("/{id}/pickup-ready")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> markReadyForPickup(
+            @PathVariable Long id,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            com.security.entity.User adminUser = userRepository.findById(adminId).orElse(null);
+            
+            orderPickupService.markReadyForPickup(id, adminId, adminUser);
+            
+            return ResponseEntity.ok(Map.of("message", "Orden marcada como lista para recolección"));
+        } catch (Exception e) {
+            log.error("Error al marcar orden {} como lista para recolección: {}", id, e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/pickup-verify")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> verifyPickup(
+            @PathVariable Long id,
+            @Valid @RequestBody PickupVerificationRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            com.security.entity.User adminUser = userRepository.findById(adminId).orElse(null);
+            
+            String ipAddress = httpRequest.getRemoteAddr();
+            String userAgent = httpRequest.getHeader("User-Agent");
+            
+            orderPickupService.verifyAndReleasePickup(id, request.getCode(), request.getPickupAuthorizationId(), request.getNotes(), adminId, adminUser, ipAddress, userAgent);
+            
+            return ResponseEntity.ok(Map.of("message", "Código verificado correctamente. Pedido entregado."));
+        } catch (Exception e) {
+            log.error("Error al verificar código de recolección para orden {}: {}", id, e.getMessage(), e);
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }

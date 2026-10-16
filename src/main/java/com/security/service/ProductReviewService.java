@@ -33,13 +33,17 @@ public class ProductReviewService {
     private final UserRepository userRepository;
     private final OrderRepository orderRepository;
     private final EntityManager entityManager;
+    private final ReviewContentPolicyService policyService;
 
-    /**
-     * Crea una nueva reseña
-     */
     @Transactional
     public ReviewDTO.ReviewResponse createReview(Long userId, ReviewDTO.CreateReviewRequest request) {
         log.info("Usuario {} creando reseña para producto {}", userId, request.getProductId());
+
+        // Validar estricta elegibilidad de compra
+        boolean hasPurchased = orderRepository.hasUserPurchasedProduct(userId, request.getProductId());
+        if (!hasPurchased) {
+            throw new UnauthorizedException("Debes haber comprado este producto en una orden válida para poder reseñarlo");
+        }
 
         // Validar que el usuario no haya reseñado ya este producto
         if (reviewRepository.existsByProductIdAndUserId(request.getProductId(), userId)) {
@@ -52,42 +56,36 @@ public class ProductReviewService {
         Product product = productRepository.findById(request.getProductId())
                 .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
 
+        // Aplicar políticas de moderación
+        var policyResult = policyService.evaluate(request.getTitle(), request.getComment());
+        if (policyResult.getResult() == ReviewContentPolicyService.PolicyResult.REJECT) {
+            throw new BadRequestException("El contenido de la reseña infringe nuestras políticas de la comunidad.");
+        }
+
         // Crear la reseña
         ProductReview review = new ProductReview();
         review.setProduct(product);
         review.setUser(user);
         review.setRating(request.getRating());
-        review.setTitle(request.getTitle());
-        review.setComment(request.getComment());
-        review.setStatus("PENDING"); // Requiere aprobación
-
-        // Verificar si es compra verificada
-        if (request.getOrderId() != null) {
-            Order order = orderRepository.findById(request.getOrderId()).orElse(null);
-            if (order != null && order.getUser().getId().equals(userId)) {
-                review.setOrder(order);
-                review.setVerifiedPurchase(true);
-            }
+        review.setTitle(request.getTitle() != null ? request.getTitle().trim() : null);
+        review.setComment(request.getComment().trim());
+        
+        // Mantener política normal (PENDING siempre) o forzar si la política lo exige
+        review.setStatus("PENDING"); 
+        
+        // El backend toma la autoridad de la orden válida, ignorando lo que envíe el cliente
+        List<Order> validOrders = orderRepository.findValidOrdersForProduct(userId, request.getProductId());
+        if (!validOrders.isEmpty()) {
+            review.setOrder(validOrders.get(0));
         }
+        review.setVerifiedPurchase(true);
 
         ProductReview savedReview = reviewRepository.save(review);
-
-        // Si es compra verificada, aprobar automáticamente
-        if (savedReview.getVerifiedPurchase()) {
-            savedReview.setStatus("APPROVED");
-            reviewRepository.save(savedReview);
-
-            // Recalcular rating del producto
-            recalculateProductRating(product.getId());
-        }
 
         log.info("Reseña creada exitosamente: ID {}", savedReview.getId());
         return buildReviewResponse(savedReview, userId);
     }
 
-    /**
-     * Actualiza una reseña existente
-     */
     @Transactional
     public ReviewDTO.ReviewResponse updateReview(Long reviewId, Long userId, ReviewDTO.UpdateReviewRequest request) {
         log.info("Actualizando reseña {}", reviewId);
@@ -100,12 +98,24 @@ public class ProductReviewService {
             throw new UnauthorizedException("No tienes permiso para editar esta reseña");
         }
 
+        // Aplicar políticas de moderación al actualizar
+        var policyResult = policyService.evaluate(request.getTitle(), request.getComment());
+        if (policyResult.getResult() == ReviewContentPolicyService.PolicyResult.REJECT) {
+            throw new BadRequestException("El contenido de la reseña infringe nuestras políticas de la comunidad.");
+        }
+
+        String oldStatus = review.getStatus();
         review.setRating(request.getRating());
-        review.setTitle(request.getTitle());
-        review.setComment(request.getComment());
+        review.setTitle(request.getTitle() != null ? request.getTitle().trim() : null);
+        review.setComment(request.getComment().trim());
         review.setStatus("PENDING"); // Volver a revisar después de editar
 
         ProductReview updatedReview = reviewRepository.save(review);
+        
+        // Recalcular rating si estaba previamente aprobada, pues acaba de pasar a PENDING
+        if ("APPROVED".equals(oldStatus)) {
+            recalculateProductRating(review.getProduct().getId());
+        }
 
         log.info("Reseña {} actualizada", reviewId);
         return buildReviewResponse(updatedReview, userId);
@@ -159,9 +169,6 @@ public class ProductReviewService {
         return buildReviewResponse(approvedReview, null);
     }
 
-    /**
-     * Rechaza una reseña (ADMIN)
-     */
     @Transactional
     public ReviewDTO.ReviewResponse rejectReview(Long reviewId) {
         log.info("Rechazando reseña {}", reviewId);
@@ -169,8 +176,13 @@ public class ProductReviewService {
         ProductReview review = reviewRepository.findById(reviewId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reseña no encontrada"));
 
+        String oldStatus = review.getStatus();
         review.setStatus("REJECTED");
         ProductReview rejectedReview = reviewRepository.save(review);
+        
+        if ("APPROVED".equals(oldStatus)) {
+            recalculateProductRating(review.getProduct().getId());
+        }
 
         log.info("Reseña {} rechazada", reviewId);
         return buildReviewResponse(rejectedReview, null);
@@ -404,5 +416,30 @@ public class ProductReviewService {
         }
 
         return builder.build();
+    }
+    
+    /**
+     * Verifica la elegibilidad de un usuario para reseñar un producto
+     */
+    @Transactional(readOnly = true)
+    public ReviewDTO.EligibilityResponse checkEligibility(Long productId, Long userId) {
+        log.info("Verificando elegibilidad de usuario {} para producto {}", userId, productId);
+        
+        productRepository.findById(productId)
+                .orElseThrow(() -> new ResourceNotFoundException("Producto no encontrado"));
+                
+        boolean hasPurchased = orderRepository.hasUserPurchasedProduct(userId, productId);
+        ProductReview existingReview = reviewRepository.findByProductIdAndUserId(productId, userId).orElse(null);
+        
+        boolean alreadyReviewed = existingReview != null;
+        boolean canReview = hasPurchased && !alreadyReviewed;
+        
+        return ReviewDTO.EligibilityResponse.builder()
+                .canReview(canReview)
+                .hasPurchased(hasPurchased)
+                .alreadyReviewed(alreadyReviewed)
+                .reviewId(alreadyReviewed ? existingReview.getId() : null)
+                .reviewStatus(alreadyReviewed ? existingReview.getStatus() : null)
+                .build();
     }
 }

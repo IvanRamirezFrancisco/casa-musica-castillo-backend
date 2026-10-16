@@ -25,6 +25,7 @@ public class AlexaProductQueryService {
 
     private final PublicProductRepository publicProductRepository;
     private final CategoryRepository categoryRepository;
+    private final com.security.service.SearchNormalizationService normalizationService;
 
     @Value("${frontend.public.base-url:}")
     private String frontendBaseUrl;
@@ -33,7 +34,10 @@ public class AlexaProductQueryService {
     private String productDetailPath;
 
     public AlexaProductSearchResponseDTO searchProducts(String query, int page, int size) {
-        Page<Product> productPage = publicProductRepository.findCatalog(query, null, null, PageRequest.of(page, size));
+        String exact = normalizationService.normalizeForSearch(query);
+        String escaped = normalizationService.escapeForLike(exact);
+        Page<Product> productPage = publicProductRepository.findCatalogWithKeyword(
+                exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(page, size, org.springframework.data.domain.Sort.unsorted()));
         return buildSearchResponse(query, productPage);
     }
 
@@ -52,7 +56,8 @@ public class AlexaProductQueryService {
         }
 
         if (category != null) {
-            Page<Product> productPage = publicProductRepository.findCatalog(null, category.getId(), null, PageRequest.of(page, size));
+            Page<Product> productPage = publicProductRepository.findCatalogWithoutKeyword(
+                    category.getId(), null, PageRequest.of(page, size, org.springframework.data.domain.Sort.by("featured").descending().and(org.springframework.data.domain.Sort.by("createdAt").descending())));
             if (productPage.getTotalElements() > 0) {
                 return buildSearchResponse(categoryName, productPage);
             }
@@ -61,7 +66,10 @@ public class AlexaProductQueryService {
         // 2. Búsqueda por texto usando aliases
         List<Product> combinedProducts = new java.util.ArrayList<>();
         for (String alias : aliases) {
-            Page<Product> pPage = publicProductRepository.findCatalog(alias, null, null, PageRequest.of(0, 100));
+            String exact = normalizationService.normalizeForSearch(alias);
+            String escaped = normalizationService.escapeForLike(exact);
+            Page<Product> pPage = publicProductRepository.findCatalogWithKeyword(
+                    exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
             for (Product p : pPage.getContent()) {
                 if (combinedProducts.stream().noneMatch(existing -> existing.getId().equals(p.getId()))) {
                     combinedProducts.add(p);
@@ -71,7 +79,10 @@ public class AlexaProductQueryService {
 
         // 3. Fallback al término original si los aliases no arrojan resultados
         if (combinedProducts.isEmpty()) {
-            Page<Product> pPage = publicProductRepository.findCatalog(categoryName, null, null, PageRequest.of(0, 100));
+            String exact = normalizationService.normalizeForSearch(categoryName);
+            String escaped = normalizationService.escapeForLike(exact);
+            Page<Product> pPage = publicProductRepository.findCatalogWithKeyword(
+                    exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
             for (Product p : pPage.getContent()) {
                 if (combinedProducts.stream().noneMatch(existing -> existing.getId().equals(p.getId()))) {
                     combinedProducts.add(p);

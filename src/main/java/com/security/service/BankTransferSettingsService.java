@@ -14,13 +14,20 @@ import com.security.repository.UserRepository;
 import com.security.service.AuditLogService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
 public class BankTransferSettingsService {
+
+    @Value("${bank.transfer.payment-validity-hours:72}")
+    private int paymentValidityHours;
 
     private final BankTransferSettingsRepository bankTransferSettingsRepository;
     private final OrderRepository orderRepository;
@@ -116,6 +123,10 @@ public class BankTransferSettingsService {
 
         BankTransferSettings settings = settingsOpt.get();
 
+        LocalDateTime paymentDeadline = order.getCreatedAt().plusHours(paymentValidityHours);
+        boolean isExpired = LocalDateTime.now().isAfter(paymentDeadline);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+
         return PaymentInstructionsResponse.builder()
                 .configured(true)
                 .bankName(settings.getBankName())
@@ -127,6 +138,8 @@ public class BankTransferSettingsService {
                 .orderNumber(order.getOrderNumber())
                 .referenceInstructions(settings.getReferenceInstructions())
                 .additionalInstructions(settings.getAdditionalInstructions())
+                .paymentDeadline(paymentDeadline.format(formatter))
+                .isPaymentDeadlineExpired(isExpired)
                 .build();
     }
 

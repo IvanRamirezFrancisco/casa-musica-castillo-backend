@@ -7,11 +7,13 @@ spring:
   application:
     name: auth-system
 
-  # Configuración de base de datos PostgreSQL (Railway / variables de entorno)
+  # Base de datos PostgreSQL (Neon). Primario: SPRING_DATASOURCE_*; fallback: DATABASE_URL/PGUSER/PGPASSWORD.
+  # Sin default a localhost: si falta la configuración, el arranque falla con
+  # "Could not resolve placeholder 'DATABASE_URL'" en lugar de conectar a una BD equivocada.
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:security_db}}
-    username: ${SPRING_DATASOURCE_USERNAME:${PGUSER:postgres}}
-    password: ${SPRING_DATASOURCE_PASSWORD:${PGPASSWORD:}}
+    url: ${SPRING_DATASOURCE_URL:${DATABASE_URL}}
+    username: ${SPRING_DATASOURCE_USERNAME:${PGUSER}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${PGPASSWORD}}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 10
@@ -19,7 +21,7 @@ spring:
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1200000
-      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops
+      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics
 
   jpa:
     hibernate:
@@ -35,7 +37,7 @@ spring:
     enabled: true
     baseline-on-migrate: true
     default-schema: public
-    schemas: public,auth,security,catalog,sales,customer,ops
+    schemas: public,auth,security,catalog,sales,customer,ops,analytics
 
   # Límite de subida de archivos (CSV import — máximo lógico 5 MB en CsvController)
   servlet:
@@ -111,7 +113,7 @@ app:
     brevo:
       api-key: ${APP_EMAIL_BREVO_API_KEY}
     resend:
-      api-key: ${RESEND_API_KEY}
+      api-key: ${RESEND_API_KEY:}
     sendgrid:
       api-key: ${SENDGRID_API_KEY:}
     mailgun:
@@ -124,6 +126,16 @@ app:
       project-id: ${APP_NOTIFICATION_SMS_PROJECT_ID}
       access-key-id: ${APP_NOTIFICATION_SMS_ACCESS_KEY_ID}
       secret-key: ${APP_NOTIFICATION_SMS_SECRET_KEY}
+
+  # Mercado Pago Checkout Pro
+  mercadopago:
+    enabled: ${MERCADO_PAGO_ENABLED:false}
+    environment: ${MERCADO_PAGO_ENVIRONMENT:production}
+    access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
+    public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
+    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL}
+    backend-base-url: ${BACKEND_PUBLIC_BASE_URL}
+    webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
 
 # Configuración de CORS para producción
 cors:
@@ -146,6 +158,8 @@ management:
   health:
     db:
       enabled: true
+    mail:
+      enabled: false
 
 # Logging para producción
 logging:
@@ -165,18 +179,6 @@ storage:
 CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:}
 CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:}
 CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:}
-
-# ============================================================
-# MERCADO PAGO - CHECKOUT PRO / PRODUCCIÓN
-# ============================================================
-mercadopago:
-  enabled: ${MERCADO_PAGO_ENABLED:false}
-  environment: ${MERCADO_PAGO_ENVIRONMENT:production}
-  access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
-  public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
-  frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL}
-  backend-base-url: ${BACKEND_PUBLIC_BASE_URL}
-  webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
 
 # ============================================================
 # CONFIGURACION DE LA TIENDA (API Alexa y Públicos)

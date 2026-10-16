@@ -14,4 +14,7 @@ public class StorageUploadResult {
     private String contentType;
     private Long fileSizeBytes;
     private String provider;
+    private String resourceType;
+    private String folder;
+    private String format;
 }
