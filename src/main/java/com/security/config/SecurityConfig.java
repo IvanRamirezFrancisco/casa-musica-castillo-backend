@@ -190,6 +190,7 @@ public class SecurityConfig {
                                                 .requestMatchers(HttpMethod.GET, "/api/categories/**").permitAll()
                                                 .requestMatchers(HttpMethod.GET, "/api/brands/**").permitAll()
                                                 .requestMatchers(HttpMethod.GET, "/api/public/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/reviews/product/**").permitAll()
                                                 .requestMatchers(HttpMethod.GET, "/api/alexa/**").permitAll()
 
                                                 // Autenticación

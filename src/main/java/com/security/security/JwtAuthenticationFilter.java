@@ -35,6 +35,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     // Rutas públicas que NO requieren validación de JWT
     private static final List<String> PUBLIC_PATHS = Arrays.asList(
+            "/api/public/",
             "/api/auth/",
             "/api/2fa/verify",
             "/api/2fa/send-login-code",

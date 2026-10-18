@@ -166,6 +166,7 @@ public class Product {
      */
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
+    @org.hibernate.annotations.BatchSize(size = 50)
     private Set<ProductImage> images = new LinkedHashSet<>();
 
     /**
@@ -178,6 +179,7 @@ public class Product {
      */
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
+    @org.hibernate.annotations.BatchSize(size = 50)
     private Set<ProductAttribute> customAttributes = new LinkedHashSet<>();
 
     /**
