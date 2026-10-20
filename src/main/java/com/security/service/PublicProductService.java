@@ -132,11 +132,12 @@ public class PublicProductService {
             Long categoryIntentId = null;
             Long brandIntentId = null;
             
-            // Intención de categoría
+            // Intención de categoría (insensible a acentos y mayúsculas)
             List<Category> allCategories = categoryRepository.findByActiveTrue();
             for (String variant : query.variants()) {
                 Category cat = allCategories.stream()
-                    .filter(c -> c.getName().equalsIgnoreCase(variant))
+                    .filter(c -> c.getName() != null &&
+                            normalizationService.buildSearchQuery(c.getName()).canonical().equalsIgnoreCase(variant))
                     .findFirst()
                     .orElse(null);
                 if (cat != null) {
@@ -145,11 +146,12 @@ public class PublicProductService {
                 }
             }
 
-            // Intención de marca
+            // Intención de marca (insensible a acentos y mayúsculas)
             List<Brand> allBrands = brandRepository.findAll();
             for (String variant : query.variants()) {
                 Brand brand = allBrands.stream()
-                    .filter(b -> b.getName().equalsIgnoreCase(variant) && b.getActive())
+                    .filter(b -> Boolean.TRUE.equals(b.getActive()) && b.getName() != null &&
+                            normalizationService.buildSearchQuery(b.getName()).canonical().equalsIgnoreCase(variant))
                     .findFirst()
                     .orElse(null);
                 if (brand != null) {
@@ -160,7 +162,11 @@ public class PublicProductService {
 
             String escapedOriginal = normalizationService.escapeForLike(query.normalizedOriginal());
             String escapedCanonical = normalizationService.escapeForLike(query.canonical());
-            
+            List<String> tokens = query.tokens() != null ? query.tokens() : List.of();
+            String token1 = tokens.size() >= 1 ? normalizationService.escapeForLike(tokens.get(0)) : null;
+            String token2 = tokens.size() >= 2 ? normalizationService.escapeForLike(tokens.get(1)) : null;
+            String token3 = tokens.size() >= 3 ? normalizationService.escapeForLike(tokens.get(2)) : null;
+
             Pageable pageable = PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE), Sort.unsorted());
             return publicProductRepository
                     .findCatalogWithKeyword(
@@ -168,6 +174,9 @@ public class PublicProductService {
                         escapedOriginal,
                         query.canonical(),
                         escapedCanonical,
+                        token1,
+                        token2,
+                        token3,
                         categoryIntentId,
                         brandIntentId,
                         categoryId,

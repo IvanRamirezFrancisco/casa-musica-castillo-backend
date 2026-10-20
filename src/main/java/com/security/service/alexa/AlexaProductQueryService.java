@@ -34,10 +34,15 @@ public class AlexaProductQueryService {
     private String productDetailPath;
 
     public AlexaProductSearchResponseDTO searchProducts(String query, int page, int size) {
-        String exact = normalizationService.normalizeForSearch(query);
+        var normQuery = normalizationService.buildSearchQuery(query);
+        String exact = normQuery.canonical();
         String escaped = normalizationService.escapeForLike(exact);
+        List<String> tokens = normQuery.tokens() != null ? normQuery.tokens() : List.of();
+        String token1 = tokens.size() >= 1 ? normalizationService.escapeForLike(tokens.get(0)) : escaped;
+        String token2 = tokens.size() >= 2 ? normalizationService.escapeForLike(tokens.get(1)) : null;
+        String token3 = tokens.size() >= 3 ? normalizationService.escapeForLike(tokens.get(2)) : null;
         Page<Product> productPage = publicProductRepository.findCatalogWithKeyword(
-                exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(page, size, org.springframework.data.domain.Sort.unsorted()));
+                exact, escaped, exact, escaped, token1, token2, token3, null, null, null, null, PageRequest.of(page, size, org.springframework.data.domain.Sort.unsorted()));
         return buildSearchResponse(query, productPage);
     }
 
@@ -69,7 +74,7 @@ public class AlexaProductQueryService {
             String exact = normalizationService.normalizeForSearch(alias);
             String escaped = normalizationService.escapeForLike(exact);
             Page<Product> pPage = publicProductRepository.findCatalogWithKeyword(
-                    exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
+                    exact, escaped, exact, escaped, escaped, null, null, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
             for (Product p : pPage.getContent()) {
                 if (combinedProducts.stream().noneMatch(existing -> existing.getId().equals(p.getId()))) {
                     combinedProducts.add(p);
@@ -82,7 +87,7 @@ public class AlexaProductQueryService {
             String exact = normalizationService.normalizeForSearch(categoryName);
             String escaped = normalizationService.escapeForLike(exact);
             Page<Product> pPage = publicProductRepository.findCatalogWithKeyword(
-                    exact, escaped, exact, escaped, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
+                    exact, escaped, exact, escaped, escaped, null, null, null, null, null, null, PageRequest.of(0, 100, org.springframework.data.domain.Sort.unsorted()));
             for (Product p : pPage.getContent()) {
                 if (combinedProducts.stream().noneMatch(existing -> existing.getId().equals(p.getId()))) {
                     combinedProducts.add(p);

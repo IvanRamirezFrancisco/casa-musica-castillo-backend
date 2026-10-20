@@ -112,7 +112,7 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
             Pageable pageable);
 
     /**
-     * Catálogo CON keyword. Utiliza ranking CASE (relevancia).
+     * Catálogo CON keyword y soporte multi-palabra (tokens) + modelo + ranking de 10 niveles.
      * El Pageable debe pasarse con Sort.unsorted() para evitar colisiones de ORDER BY.
      */
     @Query(value = """
@@ -125,12 +125,45 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
                 OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (p.model IS NOT NULL AND (
+                     CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                  OR CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                ))
                 OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (
+                  :token1 IS NOT NULL
+                  AND (
+                       CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token2 IS NULL
+                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token3 IS NULL
+                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                  )
+                )
               )
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
@@ -138,16 +171,30 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
               CASE 
                    WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
                    WHEN CAST(function('unaccent', LOWER(p.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 2
-                   WHEN :categoryIntentId IS NOT NULL AND cat.id = :categoryIntentId THEN 3
-                   WHEN :brandIntentId IS NOT NULL AND br.id = :brandIntentId THEN 4
-                   WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 5
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('% ', CAST(:escapedOriginal AS string), ' %') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('% ', CAST(:escapedCanonical AS string), ' %') ESCAPE '\\' THEN 7
-                   WHEN CAST(function('unaccent', LOWER(cat.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 8
-                   WHEN CAST(function('unaccent', LOWER(br.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 10
-                   WHEN CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\' OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 11
-                   ELSE 12 END ASC,
+                   WHEN p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 3
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 4
+                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     OR (
+                       :token1 IS NOT NULL AND :token2 IS NOT NULL
+                       AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                       AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                     ) THEN 5
+                   WHEN (:brandIntentId IS NOT NULL AND br.id = :brandIntentId)
+                     OR CAST(function('unaccent', LOWER(br.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
+                   WHEN (:categoryIntentId IS NOT NULL AND cat.id = :categoryIntentId)
+                     OR CAST(function('unaccent', LOWER(cat.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 7
+                   WHEN (:token1 IS NOT NULL AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                     OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\') THEN 8
+                   WHEN CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
+                   ELSE 10 END ASC,
+              CASE WHEN p.stock > 0 THEN 0 ELSE 1 END ASC,
               p.featured DESC,
               p.createdAt DESC,
               p.id ASC
@@ -162,12 +209,45 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
                 OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (p.model IS NOT NULL AND (
+                     CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                  OR CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                ))
                 OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
                 OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (
+                  :token1 IS NOT NULL
+                  AND (
+                       CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token2 IS NULL
+                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token3 IS NULL
+                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
+                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                  )
+                )
               )
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
@@ -177,6 +257,9 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
             @Param("escapedOriginal") String escapedOriginal,
             @Param("exactCanonical") String exactCanonical,
             @Param("escapedCanonical") String escapedCanonical,
+            @Param("token1") String token1,
+            @Param("token2") String token2,
+            @Param("token3") String token3,
             @Param("categoryIntentId") Long categoryIntentId,
             @Param("brandIntentId") Long brandIntentId,
             @Param("categoryId") Long categoryId,

@@ -43,17 +43,26 @@ class SearchNormalizationServiceTest {
     }
 
     @Test
-    void testTypoYaNoEsAlias() {
-        // En base a la FASE 5 del plan técnico, se removieron errores tipográficos como "microfno"
-        NormalizedSearchQuery query = service.buildSearchQuery("microfno");
-        assertEquals("microfno", query.canonical());
-        assertEquals(1, query.variants().size());
+    void testToleranciaErroresTipograficosYTokens() {
+        NormalizedSearchQuery query1 = service.buildSearchQuery("microfno");
+        assertEquals("microfono", query1.canonical());
+        assertTrue(query1.typoCorrected());
+
+        NormalizedSearchQuery query2 = service.buildSearchQuery("guitara yamha");
+        assertEquals("guitarra yamaha", query2.canonical());
+        assertTrue(query2.typoCorrected());
+        assertEquals(List.of("guitarra", "yamaha"), query2.tokens());
+
+        NormalizedSearchQuery query3 = service.buildSearchQuery("acustca");
+        assertEquals("acustica", query3.canonical());
+        assertTrue(query3.typoCorrected());
     }
 
     @Test
     void testEspaciosYTrim() {
         NormalizedSearchQuery query = service.buildSearchQuery("  hola    mundo  ");
         assertEquals("hola mundo", query.normalizedOriginal());
+        assertEquals(List.of("hola", "mundo"), query.tokens());
     }
 
     @Test

@@ -45,7 +45,10 @@ class PublicProductServiceTest {
         Product p = createMockProduct(1L, "Jarana Huasteca", "Jaranas", "Artesanal");
         Page<Product> mockPage = new PageImpl<>(List.of(p));
         
-        when(repository.findCatalogWithKeyword(eq("jaranas"), eq("jaranas"), eq("jarana"), eq("jarana"), isNull(), isNull(), isNull(), isNull(), any(Pageable.class)))
+        when(repository.findCatalogWithKeyword(
+                eq("jaranas"), eq("jaranas"), eq("jarana"), eq("jarana"),
+                eq("jarana"), isNull(), isNull(),
+                isNull(), isNull(), isNull(), isNull(), any(Pageable.class)))
             .thenReturn(mockPage);
             
         Page<PublicProductDTO> result = service.getCatalog("jaranas", null, null, 0, 10, "newest");
@@ -60,7 +63,10 @@ class PublicProductServiceTest {
         Product p = createMockProduct(2L, "Guitarra Acústica", "Guitarras", "Yamaha");
         Page<Product> mockPage = new PageImpl<>(List.of(p));
         
-        when(repository.findCatalogWithKeyword(eq("yamaha"), eq("yamaha"), eq("yamaha"), eq("yamaha"), isNull(), isNull(), isNull(), isNull(), any(Pageable.class)))
+        when(repository.findCatalogWithKeyword(
+                eq("yamaha"), eq("yamaha"), eq("yamaha"), eq("yamaha"),
+                eq("yamaha"), isNull(), isNull(),
+                isNull(), isNull(), isNull(), isNull(), any(Pageable.class)))
             .thenReturn(mockPage);
             
         Page<PublicProductDTO> result = service.getCatalog("Yamaha", null, null, 0, 10, "newest");
@@ -70,10 +76,31 @@ class PublicProductServiceTest {
     }
 
     @Test
+    void testBusquedaMultiPalabraYTypo() {
+        Product p = createMockProduct(3L, "Guitarra Acústica C40", "Guitarras", "Yamaha");
+        Page<Product> mockPage = new PageImpl<>(List.of(p));
+
+        when(repository.findCatalogWithKeyword(
+                eq("guitara yamaha"), eq("guitara yamaha"),
+                eq("guitarra yamaha"), eq("guitarra yamaha"),
+                eq("guitarra"), eq("yamaha"), isNull(),
+                isNull(), isNull(), isNull(), isNull(), any(Pageable.class)))
+            .thenReturn(mockPage);
+
+        Page<PublicProductDTO> result = service.getCatalog("guitara Yamaha", null, null, 0, 10, "newest");
+
+        assertEquals(1, result.getTotalElements());
+        assertEquals("Guitarra Acústica C40", result.getContent().get(0).name());
+    }
+
+    @Test
     void testPaginacionEstableYMaximo() {
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         
-        when(repository.findCatalogWithKeyword(any(), any(), any(), any(), any(), any(), any(), any(), pageableCaptor.capture()))
+        when(repository.findCatalogWithKeyword(
+                any(), any(), any(), any(),
+                any(), any(), any(),
+                any(), any(), any(), any(), pageableCaptor.capture()))
             .thenReturn(new PageImpl<>(List.of()));
             
         service.getCatalog("test", null, null, 0, 1000, "newest");
@@ -88,7 +115,10 @@ class PublicProductServiceTest {
         ArgumentCaptor<String> exactOriginalCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> escapedOriginalCaptor = ArgumentCaptor.forClass(String.class);
         
-        when(repository.findCatalogWithKeyword(exactOriginalCaptor.capture(), escapedOriginalCaptor.capture(), any(), any(), any(), any(), isNull(), isNull(), any(Pageable.class)))
+        when(repository.findCatalogWithKeyword(
+                exactOriginalCaptor.capture(), escapedOriginalCaptor.capture(),
+                any(), any(), any(), any(), any(),
+                any(), any(), isNull(), isNull(), any(Pageable.class)))
             .thenReturn(new PageImpl<>(List.of()));
             
         service.getCatalog("100% Yamaha_SKU", null, null, 0, 10, "newest");

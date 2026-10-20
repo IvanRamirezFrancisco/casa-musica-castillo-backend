@@ -10,6 +10,16 @@ public record NormalizedSearchQuery(
         String original,
         String normalizedOriginal,
         String canonical,
-        List<String> variants
+        List<String> variants,
+        List<String> tokens,
+        boolean typoCorrected
 ) {
+    public NormalizedSearchQuery(
+            String original,
+            String normalizedOriginal,
+            String canonical,
+            List<String> variants
+    ) {
+        this(original, normalizedOriginal, canonical, variants, List.of(), false);
+    }
 }
