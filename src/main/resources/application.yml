@@ -204,7 +204,7 @@ app:
 # la hace obligatoria (CORS_ORIGINS, sin default). El default localhost aplica
 # solo a perfiles de desarrollo/test.
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://localhost:4300}
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://localhost:4300,https://localhost}
 
 # ── Clave AES de códigos de recogida (obligatoria, sin default; 16/24/32 bytes) ──
 pickup:
