@@ -8,6 +8,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.DefaultCorsProcessor;
+import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.mock.env.MockEnvironment;
 
 import java.util.List;
 
@@ -21,6 +24,23 @@ class CorsConfigurationTest {
 
     private static final String VERCEL = "https://frontend.vercel.app";
     private static final String LOCAL = "http://localhost:4200";
+
+    @Test
+    void developmentDefaultsAllowCapacitorButRejectUnknownOrigins() throws Exception {
+        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
+        yaml.setResources(new ClassPathResource("application.yml"));
+        String expression = yaml.getObject().getProperty("cors.allowed-origins");
+        String defaults = new MockEnvironment().resolveRequiredPlaceholders(expression);
+        CorsConfigurationSource source = sourceFor(List.of(defaults.split(",")));
+
+        for (String origin : List.of("https://localhost", LOCAL, "http://localhost:4300")) {
+            MockHttpServletResponse response = preflight(source, origin);
+            assertEquals(200, response.getStatus());
+            assertEquals(origin, response.getHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        }
+        assertEquals(403, preflight(source, "https://unknown.example").getStatus());
+        assertEquals(403, preflight(source, "http://10.0.2.2").getStatus());
+    }
 
     private CorsConfigurationSource sourceFor(List<String> origins) {
         SecurityConfig securityConfig = new SecurityConfig();
