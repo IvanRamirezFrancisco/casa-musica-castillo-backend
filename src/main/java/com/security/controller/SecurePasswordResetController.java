@@ -54,13 +54,13 @@ public class SecurePasswordResetController {
                     "Si tu email está registrado, recibirás un enlace de recuperación dentro de unos minutos."));
 
         } catch (SecurityException e) {
-            logger.warn("Security restriction for password reset: {}", e.getMessage());
+            logger.warn("Security restriction for password reset: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(429).body(new ApiResponse(
                     false,
                     "Has excedido el límite de intentos de recuperación. Inténtalo más tarde."));
 
         } catch (Exception e) {
-            logger.error("Error processing password reset request: {}", e.getMessage());
+            logger.error("Error processing password reset request: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor. Inténtalo más tarde."));
@@ -86,7 +86,7 @@ public class SecurePasswordResetController {
             }
 
         } catch (Exception e) {
-            logger.error("Error verifying reset token: {}", e.getMessage());
+            logger.error("Error verifying reset token: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor."));
@@ -105,8 +105,7 @@ public class SecurePasswordResetController {
             String clientIp = getClientIpAddress(httpRequest);
             String userAgent = httpRequest.getHeader("User-Agent");
 
-            logger.info("Password reset confirmation from IP: {} with token: {}",
-                    LogSanitizer.sanitize(clientIp), LogSanitizer.maskToken(request.getToken()));
+            logger.info("Password reset confirmation from IP: {}", LogSanitizer.sanitize(clientIp));
 
             boolean result = passwordResetService.resetPasswordFromController(
                     request.getToken(),
@@ -125,13 +124,13 @@ public class SecurePasswordResetController {
             }
 
         } catch (SecurityException e) {
-            logger.warn("Security restriction for password reset confirmation: {}", e.getMessage());
+            logger.warn("Security restriction for password reset confirmation: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(429).body(new ApiResponse(
                     false,
                     "Demasiados intentos de restablecimiento. Inténtalo más tarde."));
 
         } catch (Exception e) {
-            logger.error("Error confirming password reset: {}", e.getMessage());
+            logger.error("Error confirming password reset: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor. Inténtalo más tarde."));

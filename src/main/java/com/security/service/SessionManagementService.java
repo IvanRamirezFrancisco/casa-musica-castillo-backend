@@ -43,6 +43,13 @@ public class SessionManagementService {
     @Value("${app.security.session.inactivity-timeout-minutes:15}")
     private int inactivityTimeoutMinutes;
 
+    @jakarta.annotation.PostConstruct
+    void validatePolicy() {
+        if (maxConcurrentSessions < 1 || inactivityTimeoutMinutes < 1) {
+            throw new IllegalStateException("La política de sesiones debe usar límites positivos");
+        }
+    }
+
     /**
      * REQUISITO: Crea nueva sesión con límite de 3 sesiones activas
      * Si count >= 3: Revoca el token más antiguo
@@ -52,6 +59,7 @@ public class SessionManagementService {
         User user = userRepository.findByEmail(userEmail)
                 .orElseThrow(() -> new RuntimeException("Usuario no encontrado: " + userEmail));
 
+        user = userRepository.findByIdForAuthUpdate(user.getId()).orElseThrow();
         String jti = UUID.randomUUID().toString();
         String ipAddress = getClientIpAddress(request);
         String userAgent = request.getHeader("User-Agent");
@@ -63,13 +71,15 @@ public class SessionManagementService {
         logger.debug("Usuario {} tiene {} sesiones activas", user.getEmail(), activeCount);
 
         // Si count >= 3: Encontrar y revocar el token más antiguo
-        if (activeCount >= 3) {
+        while (activeCount >= maxConcurrentSessions) {
             Optional<ActiveSession> oldestSession = activeSessions.stream()
                     .min((s1, s2) -> s1.getCreatedAt().compareTo(s2.getCreatedAt()));
 
             if (oldestSession.isPresent()) {
                 ActiveSession sessionToRevoke = oldestSession.get();
                 sessionRepository.revokeSession(sessionToRevoke.getId());
+                activeSessions.remove(sessionToRevoke);
+                activeCount--;
                 logger.info("Sesion mas antigua revocada por limite de sesiones concurrentes (JTI: {}...)",
                         sessionToRevoke.getJwtTokenId().substring(0, 8));
             }
@@ -221,6 +231,20 @@ public class SessionManagementService {
      */
     public Optional<ActiveSession> getSessionInfo(String jti) {
         return sessionRepository.findByJwtTokenId(jti);
+    }
+
+    public int getMaxConcurrentSessions() { return maxConcurrentSessions; }
+
+    public boolean belongsToUser(String jti, Long userId) {
+        return sessionRepository.findByJwtTokenId(jti)
+                .map(session -> session.getUser().getId().equals(userId)).orElse(false);
+    }
+
+    public boolean revokeOwnedSession(String jti, String email) {
+        var session = sessionRepository.findByJwtTokenId(jti);
+        if (session.isEmpty() || !session.get().getUser().getEmail().equals(email)) return false;
+        sessionRepository.revokeByTokenId(jti);
+        return true;
     }
 
     // Utilidades privadas

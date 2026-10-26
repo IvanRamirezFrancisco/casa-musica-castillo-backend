@@ -67,8 +67,7 @@ app:
     # JWT seguro mejorado
     jwt:
       secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
-      access-token-expiration: 900000      # 15 minutos
-      refresh-token-expiration: 86400000   # 24 horas
+      expiration: 86400000                # TTL oficial HS512: 24 horas
       issuer: casa-musica-castillo
 
     # Autenticación de dos factores

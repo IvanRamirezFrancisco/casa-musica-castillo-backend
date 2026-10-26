@@ -1,5 +1,5 @@
 # Perfil "test": valores NO sensibles, solo para ejecutar la suite de pruebas.
-# Las credenciales de BD de las pruebas siguen viniendo del entorno (PGPASSWORD, PGUSER, DATABASE_URL).
+# PostgreSQL sintético local; los tests de integración fuerzan estas propiedades por encima del entorno.
 app:
   security:
     jwt:
@@ -9,3 +9,15 @@ pickup:
   code:
     encryption:
       key: TestOnlyPickupKey_00000000000000
+
+# Legacy databases predate Flyway V4. Only tests add the reconstructed full baseline.
+spring:
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:55439/backend_hardening_test
+    username: auth_test
+    password: synthetic-test-only
+  flyway:
+    locations: classpath:db/test-baseline,classpath:db/migration
+  task:
+    scheduling:
+      enabled: false

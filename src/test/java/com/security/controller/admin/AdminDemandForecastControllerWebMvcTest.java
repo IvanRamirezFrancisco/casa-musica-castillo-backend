@@ -35,7 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = {"mercadopago.enabled=false", "mercadopago.access_token=test_token"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class AdminDemandForecastControllerWebMvcTest {
+class AdminDemandForecastControllerWebMvcTest extends com.security.support.LocalPostgresIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;

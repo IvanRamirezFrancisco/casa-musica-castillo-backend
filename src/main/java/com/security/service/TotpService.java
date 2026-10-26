@@ -26,8 +26,12 @@ public class TotpService {
     private String issuer;
 
     private final GoogleAuthenticator gAuth;
+    private final java.time.Clock clock;
 
-    public TotpService() {
+    public TotpService() { this(java.time.Clock.systemUTC()); }
+
+    TotpService(java.time.Clock clock) {
+        this.clock = clock;
         this.gAuth = new GoogleAuthenticator();
         log.debug("GoogleAuthenticator inicializado con configuración estándar (ventana 30s)");
     }
@@ -45,7 +49,7 @@ public class TotpService {
             gAuth.getTotpPassword(secret);
             log.debug("Secret TOTP generado y validado correctamente");
         } catch (Exception e) {
-            log.error("Secret TOTP generado pero inválido: {}", e.getMessage());
+            log.error("Secret TOTP generado pero inválido: {}", e.getClass().getSimpleName());
             throw new RuntimeException("Secret generado inválido", e);
         }
 
@@ -71,7 +75,7 @@ public class TotpService {
             return otpAuthUrl;
 
         } catch (Exception e) {
-            log.error("Error generando URL otpauth: {}", e.getMessage());
+            log.error("Error generando URL otpauth: {}", e.getClass().getSimpleName());
             throw new RuntimeException("Error generando URL otpauth", e);
         }
     }
@@ -103,69 +107,30 @@ public class TotpService {
         return base64QR;
     }
 
-    /**
-     * Verifica un código TOTP usando el secret almacenado en la BD.
-     * Intenta con ventana estándar y luego con ventanas de tiempo extendidas.
-     */
-    public boolean verifyCode(String secret, int code) {
+    /** Highest matching counter within the existing ±2 slots; no code is persisted or returned. */
+    public java.util.OptionalLong findMatchingSlot(String secret, String code) {
+        if (secret == null || code == null || !code.matches("[0-9]{6}")) return java.util.OptionalLong.empty();
         try {
-            // Paso 1: Verificar usando authorize() estándar
-            boolean isValid = gAuth.authorize(secret, code);
-            if (isValid) {
-                log.debug("Código TOTP válido con autorización estándar");
-                return true;
-            }
-
-            // Paso 2: Verificación con ventanas de tiempo múltiples (compensación de drift)
-            long timeSlot = System.currentTimeMillis() / 30000L;
-            for (int i = -2; i <= 2; i++) {
-                long testTime = (timeSlot + i) * 30000L;
-                try {
-                    int expectedCode = gAuth.getTotpPassword(secret, testTime);
-                    if (code == expectedCode) {
-                        log.debug("Código TOTP válido en slot temporal {}", i);
-                        return true;
-                    }
-                } catch (Exception ex) {
-                    log.trace("Error en slot temporal {}: {}", i, ex.getMessage());
+            int supplied = Integer.parseInt(code);
+            long currentSlot = clock.millis() / 30000L;
+            for (int offset = 2; offset >= -2; offset--) {
+                long slot = currentSlot + offset;
+                if (slot >= 0 && supplied == gAuth.getTotpPassword(secret, slot * 30000L)) {
+                    return java.util.OptionalLong.of(slot);
                 }
             }
-
-            log.warn("Código TOTP inválido en todos los slots de tiempo probados");
-            return false;
-
-        } catch (Exception e) {
-            log.error("Error crítico en verificación TOTP: {}", e.getMessage(), e);
-            return false;
+        } catch (Exception ex) {
+            log.warn("No se pudo validar TOTP: {}", ex.getClass().getSimpleName());
         }
+        return java.util.OptionalLong.empty();
     }
 
-    /**
-     * Sobrecarga para código como String.
-     */
+    public boolean verifyCode(String secret, int code) {
+        if (code < 0 || code > 999999) return false;
+        return verifyCode(secret, String.format(java.util.Locale.ROOT, "%06d", code));
+    }
+
     public boolean verifyCode(String secret, String code) {
-        try {
-            int codeInt = Integer.parseInt(code);
-            return verifyCode(secret, codeInt);
-        } catch (NumberFormatException e) {
-            log.warn("Código TOTP inválido (no es número)");
-            return false;
-        }
-    }
-
-    /**
-     * Genera el código TOTP actual válido.
-     * Usar solo para debugging/testing.
-     */
-    public String generateCurrentValidCode(String secret) {
-        try {
-            int code = gAuth.getTotpPassword(secret);
-            String formattedCode = String.format("%06d", code);
-            log.debug("Código TOTP de testing generado");
-            return formattedCode;
-        } catch (Exception e) {
-            log.error("Error generando código TOTP actual: {}", e.getMessage());
-            throw new RuntimeException("Error generando código de prueba", e);
-        }
+        return findMatchingSlot(secret, code).isPresent();
     }
 }
