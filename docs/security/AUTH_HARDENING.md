@@ -38,15 +38,15 @@ Los recursos protegidos reciben únicamente `Authorization: Bearer <access JWT>`
 
 PublicAuthRoutes es compartido por SecurityConfig y el filtro; no hay exclusión genérica de auth. Los mappings del controller conservan sus métodos HTTP.
 
-| Ruta | Propósito |
-|---|---|
-| `/api/auth/login`, `/register` | Credenciales / registro |
-| `/api/auth/verify-email`, `/verify`, `/resend-verification` | Verificación de cuenta |
-| `/api/auth/forgot-password`, `/validate-reset-token`, `/reset-password` | Recuperación existente usada por web |
+| Ruta                                                                                            | Propósito                                                           |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `/api/auth/login`, `/register`                                                                  | Credenciales / registro                                             |
+| `/api/auth/verify-email`, `/verify`, `/resend-verification`                                     | Verificación de cuenta                                              |
+| `/api/auth/forgot-password`, `/validate-reset-token`, `/reset-password`                         | Recuperación existente usada por web                                |
 | `/api/auth/password-reset/request`, `/password-reset/confirm`, `/password-reset/verify/{token}` | Contrato alternativo de recuperación existente; no emite access JWT |
-| `/api/auth/check-username/{username}` | Disponibilidad existente |
-| `/api/auth/accept-invitation/{token}`, `/accept-invitation/validate/{token}` | Invitación de staff existente |
-| `/api/2fa/send-login-code`, `/api/2fa/verify` | Preautenticación ligada al challenge |
+| `/api/auth/check-username/{username}`                                                           | Disponibilidad existente                                            |
+| `/api/auth/accept-invitation/{token}`, `/accept-invitation/validate/{token}`                    | Invitación de staff existente                                       |
+| `/api/2fa/send-login-code`, `/api/2fa/verify`                                                   | Preautenticación ligada al challenge                                |
 
 Los paths abreviados en la primera columna comparten `/api/auth`. El resto de auth requiere autenticación, incluidos me/logout/logout-all/sessions/revocación. Enrollment/configuración de 2FA sigue protegido. Se conservan las reglas de catálogo, APIs públicas, RBAC, pedidos, Mercado Pago y Alexa fuera de auth.
 
@@ -65,7 +65,19 @@ Los paths abreviados en la primera columna comparten `/api/auth`. El resto de au
 Solo se crea después de AuthenticationManager y de comprobar la cuenta. Respuesta pendiente:
 
 ```json
-{"success":true,"message":"Two-factor authentication required","data":{"twoFactorRequired":true,"preAuthChallenge":"<opaque-token>","availableMethods":{"EMAIL":true,"GOOGLE_AUTHENTICATOR":false,"BACKUP_CODE":false}}}
+{
+  "success": true,
+  "message": "Two-factor authentication required",
+  "data": {
+    "twoFactorRequired": true,
+    "preAuthChallenge": "<opaque-token>",
+    "availableMethods": {
+      "EMAIL": true,
+      "GOOGLE_AUTHENTICATOR": false,
+      "BACKUP_CODE": false
+    }
+  }
+}
 ```
 
 No incluye access JWT ni datos personales del usuario. El challenge no es JWT ni autentica recursos normales.
@@ -82,11 +94,15 @@ No incluye access JWT ni datos personales del usuario. El challenge no es JWT ni
 ### Contratos de envío y verificación
 
 ```json
-{"preAuthChallenge":"<opaque-token>","method":"EMAIL"}
+{ "preAuthChallenge": "<opaque-token>", "method": "EMAIL" }
 ```
 
 ```json
-{"preAuthChallenge":"<opaque-token>","method":"EMAIL","code":"<user-input>"}
+{
+  "preAuthChallenge": "<opaque-token>",
+  "method": "EMAIL",
+  "code": "<user-input>"
+}
 ```
 
 El usuario se resuelve desde la huella del challenge, nunca desde email/userId aportado por el navegador. Challenge es obligatorio. Errores de input 400, autenticación 401, autorización 403, cuotas 429, fallos internos 5xx saneados.
@@ -158,7 +174,7 @@ TotpExposureProductionTest arranca realmente con perfil production y comprueba a
 
 ### MED-01: TOTP de login de un solo uso
 
-V52__prevent_totp_replay.sql añade exclusivamente `last_verified_totp_slot BIGINT NULL` a auth.login_factor_limits, con check no negativo. No modifica auth.users ni V4–V51. Usuarios existentes empiezan con NULL.
+V52\_\_prevent_totp_replay.sql añade exclusivamente `last_verified_totp_slot BIGINT NULL` a auth.login_factor_limits, con check no negativo. No modifica auth.users ni V4–V51. Usuarios existentes empiezan con NULL.
 
 TotpService usa GoogleAuthenticator para determinar el contador que produce el match dentro de la ventana existente ±2 slots (30 s), sin reducirla. Si hay un match ambiguo se elige el slot más alto. LoginChallengeService actualiza condicionalmente el contador solo si es estrictamente mayor que el último aceptado. El update sucede bajo lock del usuario, en la misma transacción que consume challenge/crea sesión/emite JWT. Rollback de un fallo interno revierte ese estado. Las ventanas de cuotas no borran el contador TOTP.
 
@@ -196,18 +212,18 @@ Frontend dependency remediation is a deployment blocker. No se actualizaron paqu
 
 ## Validación y estado Git finales
 
-| Validación final | Resultado |
-|---|---|
-| mvn test | **205 tests, 0 failures, 0 errors, 0 skipped — BUILD SUCCESS** |
-| mvn verify -Ddependency-check.skip=true | **205 tests, 0 failures, 0 errors, 0 skipped — BUILD SUCCESS**, empaquetado correcto |
-| Suite focal previa de correcciones | 45 tests, 0 failures/errors/skipped; la suite completa final añade y verifica también el rechazo de transacciones ambientales |
-| Auth cubierto por suite final | 57 casos Auth/TOTP/sesiones/logging; ningún test deshabilitado ni assertion reducida para ocultar un fallo |
-| Flyway desde limpio | 50 migraciones versionadas exitosas (baseline test V1 + V4..V52), última 52; V1/V4/V51/V52 success=true, historial validado |
-| Segundo estado válido | backend_hardening_test también muestra 50 migraciones exitosas y última 52 |
-| Producción / artifact | V51/V52 empaquetadas; sin classes JWT alternativo, debug TOTP ni generación de current TOTP; baseline/config test no empaquetados |
-| Dependency Check backend | Intentado, BUILD FAILURE externo NVD HTTP 403 / NoDataException; sin reporte ni inventario CVE utilizable; HIGH/CRITICAL no determinados |
-| Diff check / secretos | git diff --check correcto; revisión manual de diff y nuevos archivos sin secretos reales; patrones private key/live API key/JWT firmado literal: 0 |
-| Dependencias / perfiles | pom.xml y application-production.yml sin diff; TTL oficial 86400000 ms conservado |
+| Validación final                        | Resultado                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| mvn test                                | **205 tests, 0 failures, 0 errors, 0 skipped — BUILD SUCCESS**                                                                                     |
+| mvn verify -Ddependency-check.skip=true | **205 tests, 0 failures, 0 errors, 0 skipped — BUILD SUCCESS**, empaquetado correcto                                                               |
+| Suite focal previa de correcciones      | 45 tests, 0 failures/errors/skipped; la suite completa final añade y verifica también el rechazo de transacciones ambientales                      |
+| Auth cubierto por suite final           | 57 casos Auth/TOTP/sesiones/logging; ningún test deshabilitado ni assertion reducida para ocultar un fallo                                         |
+| Flyway desde limpio                     | 50 migraciones versionadas exitosas (baseline test V1 + V4..V52), última 52; V1/V4/V51/V52 success=true, historial validado                        |
+| Segundo estado válido                   | backend_hardening_test también muestra 50 migraciones exitosas y última 52                                                                         |
+| Producción / artifact                   | V51/V52 empaquetadas; sin classes JWT alternativo, debug TOTP ni generación de current TOTP; baseline/config test no empaquetados                  |
+| Dependency Check backend                | Intentado, BUILD FAILURE externo NVD HTTP 403 / NoDataException; sin reporte ni inventario CVE utilizable; HIGH/CRITICAL no determinados           |
+| Diff check / secretos                   | git diff --check correcto; revisión manual de diff y nuevos archivos sin secretos reales; patrones private key/live API key/JWT firmado literal: 0 |
+| Dependencias / perfiles                 | pom.xml y application-production.yml sin diff; TTL oficial 86400000 ms conservado                                                                  |
 
 Warnings conservados: Flyway existente advierte soporte probado hasta PostgreSQL 15 mientras la instancia local es 18.1; no se actualizó dependencia. Warnings previos de Mockito/ByteBuddy, commons-logging, Lombok/unchecked; transacción ya abierta en seed histórico y schemas existentes. Git avisa normalización LF/CRLF en dos tests anteriores; diff --check no falla.
 
@@ -295,5 +311,4 @@ Frontend: **30/30 Auth/recovery PASS**; suite global bloqueada por **17 errores 
  25 files changed, 295 insertions(+), 1588 deletions(-)
 ```
 
-Stat excluye archivos nuevos sin seguimiento; status identifica creados, modificados y eliminados. Ambas ramas y los tres stashes permanecen intactos; no commit/push/PR/deploy ni cambios móviles/de dependencias.
-
+Stat excluye archivos nuevos sin seguimiento; status identifica creados, modificados y eliminados. Ambas ramas y los tres stashes permanecen intactos; no commit/push/PR/deploy ni cambios móviles/de dependencias
