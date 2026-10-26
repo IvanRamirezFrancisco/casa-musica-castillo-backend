@@ -67,64 +67,6 @@ public class AuthService {
         return convertToUserResponse(user);
     }
 
-    public JwtAuthResponse authenticateUser(LoginRequest loginRequest) {
-        // First authenticate with email and password
-        Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        loginRequest.getEmail(),
-                        loginRequest.getPassword()));
-
-        UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
-        User user = userService.getUserById(userPrincipal.getId());
-
-        // Check if user is enabled
-        if (!user.getEnabled()) {
-            throw new BadRequestException("User account is not verified. Please check your email.");
-        }
-
-        // Check if 2FA is enabled
-        if (user.getTwoFactorEnabled()) {
-            if (loginRequest.getTwoFactorToken() == null || loginRequest.getTwoFactorToken().isEmpty()) {
-                // Return response indicating 2FA is required
-                JwtAuthResponse response = new JwtAuthResponse();
-                response.setTwoFactorRequired(true);
-                response.setUser(convertToUserResponse(user));
-                return response;
-            }
-
-            // Verify 2FA token
-            if (!twoFactorService.verifyToken(user.getId(), loginRequest.getTwoFactorToken())) {
-                throw new BadRequestException("Invalid two-factor authentication token.");
-            }
-        }
-
-        SecurityContextHolder.getContext().setAuthentication(authentication);
-        String jwt = tokenProvider.generateToken(authentication);
-
-        UserResponse userResponse = convertToUserResponse(user);
-
-        return new JwtAuthResponse(jwt, tokenProvider.getExpirationTime(), userResponse);
-    }
-
-    public JwtAuthResponse refreshToken(String token) {
-        if (tokenProvider.validateToken(token)) {
-            Long userId = tokenProvider.getUserIdFromJWT(token);
-            User user = userService.getUserById(userId);
-
-            // Obtener nombres de roles (String directamente)
-            Set<String> roles = user.getRoles().stream()
-                    .map(role -> role.getName())
-                    .collect(Collectors.toSet());
-
-            String newToken = tokenProvider.generateTokenFromUserId(userId, user.getEmail(), roles);
-            UserResponse userResponse = convertToUserResponse(user);
-
-            return new JwtAuthResponse(newToken, tokenProvider.getExpirationTime(), userResponse);
-        }
-
-        throw new BadRequestException("Invalid refresh token");
-    }
-
     public void verifyEmail(String token) {
 
         boolean verified = verificationService.verifyToken(token);
@@ -177,14 +119,6 @@ public class AuthService {
         userResponse.setEmailEnabled(user.getEmailEnabled());
 
         return userResponse;
-    }
-
-    public UserResponse getUserFromToken(String token) {
-        Long userId = tokenProvider.getUserIdFromJWT(token);
-        User user = userRepository.findById(userId).orElse(null);
-        if (user == null)
-            return null;
-        return convertToUserResponse(user);
     }
 
     // ===== MÉTODOS DE GOOGLE AUTHENTICATOR REMOVIDOS =====

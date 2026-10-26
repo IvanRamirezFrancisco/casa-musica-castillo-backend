@@ -30,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Transactional
 @ActiveProfiles("test")
-public class OrderOwnershipIntegrationTest {
+public class OrderOwnershipIntegrationTest extends com.security.support.LocalPostgresIntegrationTest {
 
     @MockBean
     private com.security.config.MercadoPagoConfiguration mercadoPagoConfiguration;

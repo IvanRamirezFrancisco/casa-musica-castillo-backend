@@ -59,20 +59,14 @@ public class AuthController {
     @Autowired
     private SessionManagementService sessionManagementService;
 
+    @Autowired
+    private org.springframework.security.authentication.AuthenticationManager authenticationManager;
+    @Autowired
+    private com.security.service.LoginChallengeService loginChallenges;
+
     @GetMapping("/me")
-    public ResponseEntity<?> getCurrentUser(@RequestHeader("Authorization") String authHeader) {
-        try {
-            String token = authHeader.replace("Bearer ", "");
-            UserResponse user = authService.getUserFromToken(token);
-            if (user == null) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(new ApiResponse(false, "Usuario no autenticado"));
-            }
-            return ResponseEntity.ok(user);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse(false, "Error obteniendo usuario: " + e.getMessage()));
-        }
+    public ResponseEntity<?> getCurrentUser(@org.springframework.security.core.annotation.AuthenticationPrincipal com.security.security.UserPrincipal principal) {
+        return ResponseEntity.ok(userService.getUserResponseById(principal.getId()));
     }
 
     @PostMapping("/register")
@@ -83,7 +77,7 @@ public class AuthController {
                     "User registered successfully. Please check your email to verify your account.", user));
         } catch (Exception e) {
             return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, e.getMessage()));
+                    .body(new ApiResponse(false, "No se pudo completar la solicitud"));
         }
     }
 
@@ -135,39 +129,17 @@ public class AuthController {
             }
 
             // ===== AUTENTICACIÓN =====
-            User user = userService.findByEmail(email).orElse(null);
-            if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
-                // ✅ SOLO registrar intento fallido si NO está bloqueado previamente
-                // Esto evita que el tiempo de bloqueo se acumule con nuevos intentos
-                boolean wasAlreadyLocked = loginSecurityService.isAccountLocked(email);
-
-                if (!wasAlreadyLocked) {
-                    // Registrar intento fallido por email e IP (SOLO si no estaba bloqueado)
-                    loginSecurityService.recordFailedAttempt(email);
-                    loginSecurityService.recordFailedAttempt(clientIp);
-                }
-
-                // Verificar si ahora está bloqueado para dar mensaje apropiado
-                if (loginSecurityService.isAccountLocked(email)) {
-                    long remainingMinutes = loginSecurityService.getLockoutRemainingMinutes(email);
-                    long remainingSeconds = loginSecurityService.getLockoutRemainingSeconds(email);
-
-                    String message = String.format("Has excedido el número máximo de intentos. " +
-                            "Cuenta bloqueada por %d minutos.", remainingMinutes);
-
-                    // Crear respuesta con información detallada para el frontend
-                    Map<String, Object> errorData = new HashMap<>();
-                    errorData.put("message", message);
-                    errorData.put("remainingTimeSeconds", remainingSeconds);
-                    errorData.put("remainingTimeMinutes", remainingMinutes);
-
-                    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                            .body(errorData);
-                }
-
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+            org.springframework.security.core.Authentication authenticated;
+            try {
+                authenticated = authenticationManager.authenticate(
+                        new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(email, loginRequest.getPassword()));
+            } catch (org.springframework.security.core.AuthenticationException ex) {
+                loginSecurityService.recordFailedAttempt(email);
+                loginSecurityService.recordFailedAttempt(clientIp);
+                return ResponseEntity.status((loginSecurityService.isAccountLocked(email) || loginSecurityService.isAccountLocked(clientIp)) ? 429 : 401)
                         .body(new ApiResponse(false, "Credenciales inválidas"));
             }
+            User user = userService.getUserByEmail(email);
 
             // ===== VERIFICAR SI LA CUENTA ESTÁ HABILITADA =====
             if (!user.getEnabled()) {
@@ -178,8 +150,6 @@ public class AuthController {
             }
 
             // ===== LOGIN EXITOSO - Limpiar intentos fallidos =====
-            loginSecurityService.clearFailedAttempts(email);
-            loginSecurityService.clearFailedAttempts(clientIp);
 
             UserResponse userResponse = userService.convertToUserResponse(user);
 
@@ -195,20 +165,7 @@ public class AuthController {
             boolean requiresTwoFactor = hasGoogleAuth || hasEmail2FA;
 
             if (requiresTwoFactor) {
-                Map<String, Object> data = new HashMap<>();
-                data.put("twoFactorRequired", true);
-                data.put("user", userResponse);
-
-                // Indicar qué métodos 2FA están disponibles
-                Map<String, Boolean> availableMethods = new HashMap<>();
-                availableMethods.put("GOOGLE_AUTHENTICATOR", hasGoogleAuth);
-                availableMethods.put("EMAIL", hasEmail2FA);
-                // Backup codes disponibles como alternativa solo si existen Y hay otro método
-                // activo
-                availableMethods.put("BACKUP_CODE", hasBackupCodes);
-                data.put("availableMethods", availableMethods);
-
-                return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", data));
+                return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", loginChallenges.create(user.getId())));
             }
 
             // Si NO tiene métodos 2FA principales activos (Google/Email), login normal
@@ -224,6 +181,8 @@ public class AuthController {
                     userPrincipal, null, userPrincipal.getAuthorities());
 
             String token = jwtTokenProvider.generateToken(authToken, request);
+            loginSecurityService.clearFailedAttempts(email);
+            loginSecurityService.clearFailedAttempts(clientIp);
 
             // Obtener información de sesiones activas para incluir en la respuesta
             long activeSessions = sessionManagementService.getActiveSessionCount(user.getEmail());
@@ -236,7 +195,7 @@ public class AuthController {
             // Agregar información adicional sobre sesiones
             Map<String, Object> sessionInfo = new HashMap<>();
             sessionInfo.put("activeSessions", activeSessions);
-            sessionInfo.put("maxSessions", 3); // ✅ Actualizado a 3 sesiones
+            sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions()); // ✅ Actualizado a 3 sesiones
             sessionInfo.put("sessionInfo", "Sesiones activas: " + activeSessions + "/3");
 
             Map<String, Object> responseData = new HashMap<>();
@@ -244,6 +203,8 @@ public class AuthController {
             responseData.put("sessionManagement", sessionInfo);
 
             return ResponseEntity.ok(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
+        } catch (com.security.exception.AuthFlowException ex) {
+            throw ex;
         } catch (Exception e) {
             // Traducir mensajes de error técnicos a español
             String errorMessage = traducirError(e.getMessage());
@@ -274,23 +235,11 @@ public class AuthController {
             return "Credenciales inválidas. Verifica tu correo y contraseña.";
         }
         if (mensaje.contains("locked") || mensaje.contains("bloqueada")) {
-            return mensaje; // Ya está en español
+            return "Cuenta temporalmente bloqueada";
         }
 
         // Si no es un error conocido, mostrar mensaje genérico
         return "Ocurrió un error inesperado. Por favor intenta de nuevo.";
-    }
-
-    @PostMapping("/refresh")
-    public ResponseEntity<?> refreshToken(@RequestHeader("Authorization") String authHeader) {
-        try {
-            String token = authHeader.substring(7); // Remove "Bearer " prefix
-            JwtAuthResponse jwtResponse = authService.refreshToken(token);
-            return ResponseEntity.ok(jwtResponse);
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new ApiResponse(false, e.getMessage()));
-        }
     }
 
     @PostMapping("/verify-email")
@@ -305,11 +254,11 @@ public class AuthController {
             return ResponseEntity
                     .ok(new ApiResponse(true, "¡Email verificado exitosamente! Ya puedes iniciar sesión."));
         } catch (IllegalArgumentException e) {
-            log.warn("Token de verificación de email inválido: {}", e.getMessage());
+            log.warn("Token de verificación de email inválido");
             return ResponseEntity.badRequest()
                     .body(new ApiResponse(false, "El enlace de verificación es inválido o ha expirado."));
         } catch (Exception e) {
-            log.error("Error verificando email", e);
+            log.error("Error verificando email");
             return ResponseEntity.badRequest()
                     .body(new ApiResponse(false, "Error al verificar el email. Por favor intenta nuevamente."));
         }
@@ -346,7 +295,7 @@ public class AuthController {
                     "Verification email sent successfully."));
         } catch (Exception e) {
             return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, e.getMessage()));
+                    .body(new ApiResponse(false, "No se pudo completar la solicitud"));
         }
     }
 
@@ -370,7 +319,6 @@ public class AuthController {
     // - GET /api/2fa/google/qrcode (obtener QR)
     // - POST /api/2fa/google/confirm (confirmar setup)
     // - POST /api/2fa/verify (login con 2FA)
-    // - GET /api/2fa/debug/validate-totp (debugging)
     //
     // ¡Esto garantiza que el secret sea CONSISTENTE entre BD y QR!
 
@@ -450,134 +398,43 @@ public class AuthController {
      */
     @PostMapping("/logout")
     public ResponseEntity<?> logout(HttpServletRequest request) {
-        try {
-            String token = jwtTokenProvider.getTokenFromRequest(request);
-
-            if (token != null && jwtTokenProvider.validateToken(token)) {
-                String jti = jwtTokenProvider.getJtiFromJWT(token);
-                String email = jwtTokenProvider.getEmailFromJWT(token);
-
-                if (jti != null) {
-                    // Invalidar sesión específica
-                    sessionManagementService.invalidateSession(jti);
-
-                    return ResponseEntity.ok(Map.of(
-                            "message", "Sesión cerrada exitosamente",
-                            "sessionClosed", jti,
-                            "user", email));
-                }
-            }
-
-            return ResponseEntity.ok(Map.of("message", "Logout exitoso"));
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse(false, "Error durante logout: " + e.getMessage()));
-        }
+        sessionManagementService.invalidateSession((String) request.getAttribute("authenticatedJti"));
+        return ResponseEntity.ok(Map.of("message", "Sesión cerrada exitosamente"));
     }
 
-    /**
-     * REQUISITO 2: Logout desde todos los dispositivos
-     * Cierra todas las sesiones activas del usuario
-     */
     @PostMapping("/logout-all")
-    public ResponseEntity<?> logoutFromAllDevices(HttpServletRequest request) {
-        try {
-            String token = jwtTokenProvider.getTokenFromRequest(request);
-
-            if (token != null && jwtTokenProvider.validateToken(token)) {
-                String email = jwtTokenProvider.getEmailFromJWT(token);
-
-                // Cerrar todas las sesiones del usuario
-                sessionManagementService.invalidateAllUserSessions(email);
-
-                return ResponseEntity.ok(Map.of(
-                        "message", "Todas las sesiones han sido cerradas",
-                        "user", email,
-                        "action", "logout-all-devices"));
-            }
-
-            return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, "Token inválido"));
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse(false, "Error cerrando sesiones: " + e.getMessage()));
-        }
+    public ResponseEntity<?> logoutFromAllDevices(org.springframework.security.core.Authentication authentication) {
+        sessionManagementService.invalidateAllUserSessions(authentication.getName());
+        return ResponseEntity.ok(Map.of("message", "Todas las sesiones han sido cerradas"));
     }
 
-    /**
-     * Ver sesiones activas del usuario actual
-     */
     @GetMapping("/sessions")
-    public ResponseEntity<?> getActiveSessions(HttpServletRequest request) {
-        try {
-            String token = jwtTokenProvider.getTokenFromRequest(request);
-
-            if (token != null && jwtTokenProvider.validateToken(token)) {
-                String email = jwtTokenProvider.getEmailFromJWT(token);
-                String currentJti = jwtTokenProvider.getJtiFromJWT(token);
-
-                var sessions = sessionManagementService.getUserActiveSessions(email);
-                long activeCount = sessionManagementService.getActiveSessionCount(email);
-
-                // Crear respuesta con información de sesiones
-                Map<String, Object> response = new HashMap<>();
-                response.put("activeSessions", activeCount);
-                response.put("maxAllowedSessions", 2);
-                // currentSessionId eliminado: el cliente identifica su sesión
-                // activa con el campo isCurrent:true en cada objeto de sesión.
-                response.put("sessions", sessions.stream().map(session -> {
-                    Map<String, Object> sessionInfo = new HashMap<>();
-                    sessionInfo.put("id", session.getJwtTokenId());
-                    sessionInfo.put("deviceInfo", extractDeviceInfo(session.getUserAgent()));
-                    sessionInfo.put("ipAddress", session.getIpAddress());
-                    sessionInfo.put("createdAt", session.getCreatedAt());
-                    sessionInfo.put("lastActivity", session.getLastActivity());
-                    sessionInfo.put("isCurrent", session.getJwtTokenId().equals(currentJti));
-                    return sessionInfo;
-                }).collect(java.util.stream.Collectors.toList()));
-
-                return ResponseEntity.ok(new ApiResponse(true, "Sesiones obtenidas exitosamente", response));
-            }
-
-            return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, "Token inválido"));
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse(false, "Error obteniendo sesiones: " + e.getMessage()));
-        }
+    public ResponseEntity<?> getActiveSessions(HttpServletRequest request, org.springframework.security.core.Authentication authentication) {
+        String email = authentication.getName();
+        String currentJti = (String) request.getAttribute("authenticatedJti");
+        var sessions = sessionManagementService.getUserActiveSessions(email);
+        Map<String, Object> response = new HashMap<>();
+        response.put("activeSessions", sessions.size());
+        response.put("maxAllowedSessions", sessionManagementService.getMaxConcurrentSessions());
+        response.put("sessions", sessions.stream().map(session -> {
+            Map<String, Object> info = new HashMap<>();
+            info.put("id", session.getJwtTokenId());
+            info.put("deviceInfo", extractDeviceInfo(session.getUserAgent()));
+            info.put("ipAddress", session.getIpAddress());
+            info.put("createdAt", session.getCreatedAt());
+            info.put("lastActivity", session.getLastActivity());
+            info.put("isCurrent", session.getJwtTokenId().equals(currentJti));
+            return info;
+        }).toList());
+        return ResponseEntity.ok(new ApiResponse(true, "Sesiones obtenidas exitosamente", response));
     }
 
-    /**
-     * Cerrar una sesión específica por ID
-     */
     @DeleteMapping("/sessions/{sessionId}")
-    public ResponseEntity<?> closeSpecificSession(@PathVariable String sessionId, HttpServletRequest request) {
-        try {
-            String token = jwtTokenProvider.getTokenFromRequest(request);
-
-            if (token != null && jwtTokenProvider.validateToken(token)) {
-                String email = jwtTokenProvider.getEmailFromJWT(token);
-
-                // Verificar que la sesión pertenece al usuario actual
-                var sessionInfo = sessionManagementService.getSessionInfo(sessionId);
-                if (sessionInfo.isPresent() && sessionInfo.get().getUser().getEmail().equals(email)) {
-                    sessionManagementService.invalidateSession(sessionId);
-
-                    return ResponseEntity.ok(Map.of(
-                            "message", "Sesión cerrada exitosamente",
-                            "sessionId", sessionId));
-                } else {
-                    return ResponseEntity.badRequest()
-                            .body(new ApiResponse(false, "Sesión no encontrada o no autorizada"));
-                }
-            }
-
-            return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, "Token inválido"));
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse(false, "Error cerrando sesión: " + e.getMessage()));
+    public ResponseEntity<?> closeSpecificSession(@PathVariable String sessionId, org.springframework.security.core.Authentication authentication) {
+        if (!sessionManagementService.revokeOwnedSession(sessionId, authentication.getName())) {
+            return ResponseEntity.status(404).body(new ApiResponse(false, "Sesión no disponible"));
         }
+        return ResponseEntity.ok(Map.of("message", "Sesión cerrada exitosamente"));
     }
 
     // Método utilitario para extraer información del dispositivo

@@ -80,8 +80,8 @@ public class BackupCodeService {
             return plainCodes;
 
         } catch (Exception e) {
-            log.error("Error generando backup codes para usuario ID {}: {}", userId, e.getMessage(), e);
-            throw new RuntimeException("Error generating backup codes: " + e.getMessage(), e);
+            log.error("Error generando backup codes para usuario ID {}: {}", userId, e.getClass().getSimpleName());
+            throw new RuntimeException("Error generating backup codes: " + e.getClass().getSimpleName(), e);
         }
     }
 
@@ -127,7 +127,7 @@ public class BackupCodeService {
             return false;
 
         } catch (Exception e) {
-            log.error("Error verificando backup code para usuario ID {}: {}", userId, e.getMessage());
+            log.error("Error verificando backup code para usuario ID {}: {}", userId, e.getClass().getSimpleName());
             return false;
         }
     }

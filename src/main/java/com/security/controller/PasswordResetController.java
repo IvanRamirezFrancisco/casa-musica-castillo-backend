@@ -120,7 +120,7 @@ public class PasswordResetController {
             }
 
         } catch (Exception e) {
-            logger.error("Error en reset-password: {}", e.getMessage());
+            logger.error("Error en reset-password: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(Map.of(
                     "success", false,
                     "message", "Error al actualizar la contraseña. Intenta nuevamente."));

@@ -2,6 +2,7 @@ package com.security.security;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
+import io.jsonwebtoken.security.SecurityException;
 import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -36,7 +37,10 @@ public class JwtTokenProvider {
 
     @PostConstruct
     public void init() {
-        this.key = Keys.hmacShaKeyFor(jwtSecret.getBytes());
+        if (jwtSecret == null || jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 64) {
+            throw new IllegalStateException("JWT_SECRET requiere al menos 64 bytes generados criptográficamente");
+        }
+        this.key = Keys.hmacShaKeyFor(jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     public String generateToken(Authentication authentication, HttpServletRequest request) {
@@ -52,43 +56,12 @@ public class JwtTokenProvider {
                 userPrincipal.getEmail(),
                 expiryDate.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDateTime(),
                 request);
+        if (jti == null || jti.isBlank()) throw new IllegalStateException("No se pudo crear la sesión JWT");
 
         return Jwts.builder()
                 .setSubject(Long.toString(userPrincipal.getId()))
                 .setId(jti) // ✅ Incluir JTI único para sesión
                 .claim("email", userPrincipal.getEmail())
-                .claim("roles", roles)
-                .setIssuedAt(new Date())
-                .setExpiration(expiryDate)
-                .signWith(key, SignatureAlgorithm.HS512)
-                .compact();
-    }
-
-    // Mantener método existente para compatibilidad (sin sesiones)
-    public String generateToken(Authentication authentication) {
-        UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
-        Date expiryDate = new Date(System.currentTimeMillis() + jwtExpirationInMs);
-
-        Set<String> roles = userPrincipal.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .collect(Collectors.toSet());
-
-        return Jwts.builder()
-                .setSubject(Long.toString(userPrincipal.getId()))
-                .claim("email", userPrincipal.getEmail())
-                .claim("roles", roles)
-                .setIssuedAt(new Date())
-                .setExpiration(expiryDate)
-                .signWith(key, SignatureAlgorithm.HS512)
-                .compact();
-    }
-
-    public String generateTokenFromUserId(Long userId, String email, Set<String> roles) {
-        Date expiryDate = new Date(System.currentTimeMillis() + jwtExpirationInMs);
-
-        return Jwts.builder()
-                .setSubject(Long.toString(userId))
-                .claim("email", email)
                 .claim("roles", roles)
                 .setIssuedAt(new Date())
                 .setExpiration(expiryDate)
@@ -129,20 +102,19 @@ public class JwtTokenProvider {
 
     public boolean validateToken(String authToken) {
         try {
-            Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(key)
-                    .build()
-                    .parseClaimsJws(authToken)
-                    .getBody();
+            Jws<Claims> parsed = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(authToken);
+            Claims claims = parsed.getBody();
+            if (!"HS512".equals(parsed.getHeader().getAlgorithm()) || claims.getExpiration() == null
+                    || claims.getIssuedAt() == null || claims.getSubject() == null
+                    || !claims.getSubject().matches("[0-9]+")) return false;
 
             String jti = claims.getId();
 
             // Si tiene JTI, verificar que la sesión esté activa en BD.
             // La actualización de actividad la gestiona JwtAuthenticationFilter
             // para evitar doble escritura por request.
-            if (jti != null && !sessionManagementService.isSessionValid(jti)) {
-                logger.warn("Sesion invalidada o expirada para JTI: {}...",
-                        jti.length() > 8 ? jti.substring(0, 8) : jti);
+            if (jti == null || jti.isBlank() || !sessionManagementService.isSessionValid(jti)) {
+                logger.warn("Sesión ausente, invalidada o expirada");
                 return false;
             }
 

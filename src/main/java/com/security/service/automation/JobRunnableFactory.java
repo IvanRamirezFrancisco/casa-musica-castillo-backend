@@ -13,7 +13,7 @@ import com.security.repository.VerificationTokenRepository;
 import com.security.service.DatabaseBackupService;
 import com.security.service.DatabaseMaintenanceService;
 import com.security.service.EmailService;
-import com.security.service.SecureJwtService;
+import com.security.service.SessionManagementService;
 import com.security.service.TwoFactorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,7 +53,7 @@ public class JobRunnableFactory {
 
     private final DatabaseBackupService backupService;
     private final DatabaseMaintenanceService maintenanceService;
-    private final SecureJwtService jwtService;
+    private final SessionManagementService sessionService;
     private final TwoFactorService twoFactorService;
     private final ProductRepository productRepository;
     private final EmailService emailService;
@@ -66,7 +66,7 @@ public class JobRunnableFactory {
     public JobRunnableFactory(
             DatabaseBackupService backupService,
             DatabaseMaintenanceService maintenanceService,
-            SecureJwtService jwtService,
+            SessionManagementService sessionService,
             TwoFactorService twoFactorService,
             ProductRepository productRepository,
             EmailService emailService,
@@ -77,7 +77,7 @@ public class JobRunnableFactory {
             PlatformTransactionManager txManager) {
         this.backupService = backupService;
         this.maintenanceService = maintenanceService;
-        this.jwtService = jwtService;
+        this.sessionService = sessionService;
         this.twoFactorService = twoFactorService;
         this.productRepository = productRepository;
         this.emailService = emailService;
@@ -154,12 +154,12 @@ public class JobRunnableFactory {
             StringBuilder detail = new StringBuilder();
 
             try {
-                jwtService.cleanupExpiredData();
+                sessionService.cleanupExpiredSessions();
                 steps++;
-                detail.append("JWT expirados limpiados");
-                log.info("  ↳ Limpieza de JWT expirados completada.");
+                detail.append("Sesiones persistentes expiradas limpiadas");
+                log.info("  ↳ Limpieza de sesiones persistentes expiradas completada.");
             } catch (Exception e) {
-                log.warn("  ↳ Error limpiando JWT: {}", e.getMessage());
+                log.warn("  ↳ Error limpiando sesiones: {}", e.getMessage());
             }
             try {
                 twoFactorService.cleanupExpiredTokens();

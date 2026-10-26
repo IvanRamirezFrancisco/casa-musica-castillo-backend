@@ -109,7 +109,7 @@ public class PasswordResetService {
 
             } catch (Exception emailError) {
                 logger.error("Token generado pero error enviando email para {}: {}",
-                        LogSanitizer.maskEmail(email), emailError.getMessage());
+                        LogSanitizer.maskEmail(email), emailError.getClass().getSimpleName());
                 // El intento ya está registrado, no agregamos otro
             }
 
@@ -119,7 +119,7 @@ public class PasswordResetService {
                     LogSanitizer.maskEmail(email), LogSanitizer.sanitize(ipAddress));
             throw e;
         } catch (Exception e) {
-            logger.error("Error al procesar solicitud de reset: {}", e.getMessage());
+            logger.error("Error al procesar solicitud de reset: {}", e.getClass().getSimpleName());
             // NO registrar intento adicional si hay error después de verificaciones
         }
     }
@@ -151,7 +151,7 @@ public class PasswordResetService {
             return true;
 
         } catch (Exception e) {
-            logger.error("Error validando token: {}", e.getMessage());
+            logger.error("Error validando token: {}", e.getClass().getSimpleName());
             return false;
         }
     }
@@ -209,13 +209,13 @@ public class PasswordResetService {
                         LogSanitizer.maskEmail(user.getEmail()));
             } catch (Exception emailError) {
                 logger.error("Contraseña actualizada pero error enviando notificacion para {}: {}",
-                        LogSanitizer.maskEmail(user.getEmail()), emailError.getMessage());
+                        LogSanitizer.maskEmail(user.getEmail()), emailError.getClass().getSimpleName());
             }
 
             return true;
 
         } catch (Exception e) {
-            logger.error("Error al resetear contraseña: {}", e.getMessage());
+            logger.error("Error al resetear contraseña: {}", e.getClass().getSimpleName());
             return false;
         }
     }
@@ -242,7 +242,7 @@ public class PasswordResetService {
 
             return Optional.empty();
         } catch (Exception e) {
-            logger.error("Error obteniendo usuario por token: " + e.getMessage());
+            logger.error("Error obteniendo usuario por token: " + e.getClass().getSimpleName());
             return Optional.empty();
         }
     }
@@ -255,7 +255,7 @@ public class PasswordResetService {
             passwordResetTokenRepository.deleteExpiredTokens(LocalDateTime.now());
             logger.info("Tokens expirados limpiados correctamente");
         } catch (Exception e) {
-            logger.error("Error limpiando tokens expirados: " + e.getMessage());
+            logger.error("Error limpiando tokens expirados: " + e.getClass().getSimpleName());
         }
     }
 
@@ -272,7 +272,7 @@ public class PasswordResetService {
             }
             return 0;
         } catch (Exception e) {
-            logger.error("Error contando tokens activos: " + e.getMessage());
+            logger.error("Error contando tokens activos: " + e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -411,7 +411,7 @@ public class PasswordResetService {
             }
 
         } catch (Exception e) {
-            logger.error("Error registrando intento de recuperación: " + e.getMessage());
+            logger.error("Error registrando intento de recuperación: " + e.getClass().getSimpleName());
         }
     }
 
@@ -544,7 +544,7 @@ public class PasswordResetService {
                 passwordRecoveryAttemptRepository.save(attempt);
             }
         } catch (Exception e) {
-            logger.error("Error limpiando intentos de recuperación: " + e.getMessage());
+            logger.error("Error limpiando intentos de recuperación: " + e.getClass().getSimpleName());
         }
     }
 
@@ -578,7 +578,7 @@ public class PasswordResetService {
                         oldAttempts.size());
             }
         } catch (Exception e) {
-            logger.error("Error en limpieza automática de intentos de recuperación: " + e.getMessage());
+            logger.error("Error en limpieza automática de intentos de recuperación: " + e.getClass().getSimpleName());
         }
     }
 }

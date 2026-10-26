@@ -34,6 +34,11 @@ import org.springframework.dao.DataAccessException;
 @Slf4j
 public class GlobalExceptionHandler {
 
+        @ExceptionHandler(AuthFlowException.class)
+        public ResponseEntity<com.security.dto.response.ApiResponse> handleAuthFlow(AuthFlowException ex) {
+                return ResponseEntity.status(ex.getStatus()).body(new com.security.dto.response.ApiResponse(false, ex.getMessage()));
+        }
+
         /**
          * Maneja BadRequestException (solicitudes inválidas).
          * HTTP 400 - BAD REQUEST
@@ -253,12 +258,12 @@ public class GlobalExceptionHandler {
         public ResponseEntity<ErrorResponse> handleValidationException(
                         MethodArgumentNotValidException ex, WebRequest request) {
 
-                log.error("Error de validación: {}", ex.getMessage());
+                log.warn("Validación rechazada: {} campos", ex.getBindingResult().getErrorCount());
 
                 Map<String, String> validationErrors = new HashMap<>();
                 ex.getBindingResult().getAllErrors().forEach(error -> {
-                        String fieldName = ((FieldError) error).getField();
-                        String errorMessage = error.getDefaultMessage();
+                        String fieldName = error instanceof FieldError field ? field.getField() : "request";
+                        String errorMessage = "Valor inválido";
                         validationErrors.put(fieldName, errorMessage);
                 });
 

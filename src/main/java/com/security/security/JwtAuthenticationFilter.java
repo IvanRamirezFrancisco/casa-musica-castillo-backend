@@ -33,35 +33,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Autowired
     private SessionManagementService sessionManagementService;
 
-    // Rutas públicas que NO requieren validación de JWT
-    private static final List<String> PUBLIC_PATHS = Arrays.asList(
-            "/api/public/",
-            "/api/auth/",
-            "/api/2fa/verify",
-            "/api/2fa/send-login-code",
-            "/api/test/public",
-            "/api/test/health",
-            "/actuator/",
-            "/error");
-
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI();
-        String method = request.getMethod();
-
-        // No filtrar OPTIONS (CORS preflight)
-        if ("OPTIONS".equalsIgnoreCase(method)) {
-            return true;
-        }
-
-        // No filtrar rutas públicas
-        for (String publicPath : PUBLIC_PATHS) {
-            if (path.startsWith(publicPath) || path.equals(publicPath)) {
-                return true;
-            }
-        }
-
-        return false;
+        String path = request.getServletPath();
+        if (path.isEmpty()) path = request.getRequestURI();
+        return "OPTIONS".equalsIgnoreCase(request.getMethod()) || PublicAuthRoutes.matches(path);
     }
 
     @Override
@@ -80,13 +56,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                     // ✅ VALIDAR que la sesión esté activa en BD
                     if (jti != null && sessionManagementService.isSessionValid(jti)) {
-                        // ✅ ACTUALIZAR actividad de la sesión
-                        sessionManagementService.updateSessionActivity(jti);
+
 
                         // Proceder con autenticación normal
                         Long userId = tokenProvider.getUserIdFromJWT(jwt);
                         UserDetails userDetails = customUserDetailsService.loadUserById(userId);
 
+                        if (!userDetails.isEnabled() || !userDetails.isAccountNonLocked()
+                                || !userDetails.isAccountNonExpired() || !userDetails.isCredentialsNonExpired()
+                                || !sessionManagementService.belongsToUser(jti, userId)) {
+                            SecurityContextHolder.clearContext();
+                            filterChain.doFilter(request, response);
+                            return;
+                        }
+                        sessionManagementService.updateSessionActivity(jti);
+                        request.setAttribute("authenticatedJti", jti);
                         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                                 userDetails, null, userDetails.getAuthorities());
                         authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
@@ -112,7 +96,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         } catch (Exception ex) {
             // Limpiar contexto en caso de error
             SecurityContextHolder.clearContext();
-            logger.error("❌ Error procesando JWT: {}", ex.getMessage());
+            logger.warn("Error procesando autenticación JWT: {}", ex.getClass().getSimpleName());
         }
 
         filterChain.doFilter(request, response);

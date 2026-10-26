@@ -180,6 +180,7 @@ public class SecurityConfig {
                                 // Autorización de endpoints
                                 .authorizeHttpRequests(authz -> authz
                                                 // CORS preflight - SIEMPRE permitir OPTIONS primero
+                                                .requestMatchers("/api/2fa/debug/**").denyAll()
                                                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
                                                 // ========== ENDPOINTS PÚBLICOS ==========
@@ -194,13 +195,9 @@ public class SecurityConfig {
                                                 .requestMatchers(HttpMethod.GET, "/api/alexa/**").permitAll()
 
                                                 // Autenticación
-                                                .requestMatchers("/api/auth/**").permitAll() // 2FA endpoints para login
-                                                                                             // (sin autenticación) -
-                                                                                             // MUY IMPORTANTE
-                                                // Invitaciones de empleados (endpoint público)
-                                                .requestMatchers("/api/auth/accept-invitation/**").permitAll()
-                                                .requestMatchers("/api/2fa/verify").permitAll()
-                                                .requestMatchers("/api/2fa/send-login-code").permitAll()
+                                                .requestMatchers(com.security.security.PublicAuthRoutes.EXACT).permitAll()
+                                                .requestMatchers(com.security.security.PublicAuthRoutes.PATTERNS).permitAll()
+                                                .requestMatchers("/api/auth/**").authenticated()
 
                                                 // FASE 0 - Seguridad - 2026-05-15
                                                 // /api/test/** restringido a SYSTEM_SETTINGS como segunda capa de defensa.
