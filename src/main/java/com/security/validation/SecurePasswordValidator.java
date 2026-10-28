@@ -16,28 +16,29 @@ import java.util.regex.Pattern;
 @Component
 public class SecurePasswordValidator implements ConstraintValidator<SecurePassword, String> {
 
-    @Autowired
+    @Autowired(required = false)
     private PasswordValidator passwordValidator;
 
-    // Patrones simples que deben ser rechazados
+    // Patrones simples que deben ser rechazados si aparecen como subcadena
     private static final Set<String> FORBIDDEN_PATTERNS = Set.of(
             "123456", "1234567", "12345678", "123456789", "1234567890",
             "password", "password123", "admin123", "qwerty", "qwerty123",
-            "abc123", "admin", "root", "user", "guest", "demo",
-            "asdf", "zxcv", "qwertyuiop", "asdfghjkl", "zxcvbnm",
+            "abc123", "qwertyuiop", "asdfghjkl", "zxcvbnm",
             "111111", "000000", "123123", "321321", "654321",
             "aaaaaa", "bbbbbb", "cccccc", "abcdef", "fedcba");
 
-    // Patrones de secuencias a rechazar
+    private static final Set<String> FORBIDDEN_EXACT_PASSWORDS = Set.of(
+            "admin", "root", "user", "guest", "demo", "asdf", "zxcv");
+
+    // Patrones de secuencias a rechazar (4+ caracteres para evitar falsos positivos en palabras como "Fuerte" o "Estudio")
     private static final Pattern[] SEQUENCE_PATTERNS = {
-            Pattern.compile("(\\w)\\1{2,}"), // 3+ caracteres repetidos
-            Pattern.compile("(012|123|234|345|456|567|678|789|890)"), // Secuencias numéricas
+            Pattern.compile("(.)\\1{2,}"), // 3+ caracteres repetidos idénticos
+            Pattern.compile("(0123|1234|2345|3456|4567|5678|6789|7890|9876|8765|7654|6543|5432|4321|3210)"), // Secuencias numéricas
             Pattern.compile(
-                    "(abc|bcd|cde|def|efg|fgh|ghi|hij|ijk|jkl|klm|lmn|mno|nop|opq|pqr|qrs|rst|stu|tuv|uvw|vwx|wxy|xyz)"), // Secuencias
-                                                                                                                          // alfabéticas
-            Pattern.compile("(qwe|wer|ert|rty|tyu|yui|uio|iop)"), // Secuencias de teclado
-            Pattern.compile("(asd|sdf|dfg|fgh|ghj|hjk|jkl)"), // Secuencias de teclado
-            Pattern.compile("(zxc|xcv|cvb|vbn|bnm)") // Secuencias de teclado
+                    "(abcd|bcde|cdef|defg|efgh|fghi|ghij|hijk|ijkl|jklm|klmn|lmno|mnop|nopq|opqr|pqrs|qrst|rstu|stuv|tuvw|uvwx|vwxy|wxyz)"), // Secuencias alfabéticas
+            Pattern.compile("(qwer|wert|erty|rtyu|tyui|yuio|uiop)"), // Secuencias de teclado fila superior
+            Pattern.compile("(asdf|sdfg|dfgh|fghj|ghjk|hjkl)"), // Secuencias de teclado fila media
+            Pattern.compile("(zxcv|xcvb|cvbn|vbnm)") // Secuencias de teclado fila inferior
     };
 
     @Override
@@ -51,12 +52,27 @@ public class SecurePasswordValidator implements ConstraintValidator<SecurePasswo
             return false;
         }
 
+        if (!BcryptPasswordValidator.isWithinLimit(password)) {
+            updateErrorMessage(context, "La contraseña no debe superar 72 bytes UTF-8");
+            return false;
+        }
+
+        if (password.chars().anyMatch(Character::isWhitespace)) {
+            updateErrorMessage(context, "La contraseña no debe contener espacios en blanco");
+            return false;
+        }
+
         String passwordLower = password.toLowerCase();
+
+        if (FORBIDDEN_EXACT_PASSWORDS.contains(passwordLower)) {
+            updateErrorMessage(context, "La contraseña seleccionada es demasiado común");
+            return false;
+        }
 
         // Verificar patrones prohibidos
         for (String forbidden : FORBIDDEN_PATTERNS) {
             if (passwordLower.contains(forbidden)) {
-                updateErrorMessage(context, "La contraseña contiene un patrón simple prohibido: '" + forbidden + "'");
+                updateErrorMessage(context, "La contraseña contiene un patrón simple prohibido");
                 return false;
             }
         }
@@ -65,7 +81,7 @@ public class SecurePasswordValidator implements ConstraintValidator<SecurePasswo
         for (Pattern pattern : SEQUENCE_PATTERNS) {
             if (pattern.matcher(passwordLower).find()) {
                 updateErrorMessage(context,
-                        "La contraseña contiene secuencias simples. Evite patrones como 123, abc o qwerty");
+                        "La contraseña contiene secuencias simples o caracteres repetidos consecutivos");
                 return false;
             }
         }
@@ -76,11 +92,11 @@ public class SecurePasswordValidator implements ConstraintValidator<SecurePasswo
             return false;
         }
 
-        // Verificar que tenga variedad de caracteres
+        // Verificar que tenga variedad de caracteres (mayúscula, minúscula, número y símbolo)
         boolean hasLower = password.matches(".*[a-z].*");
         boolean hasUpper = password.matches(".*[A-Z].*");
         boolean hasDigit = password.matches(".*\\d.*");
-        boolean hasSpecial = password.matches(".*[!@#$%^&*()_+\\-=\\[\\]{};':\"\\|,.<>\\/?].*");
+        boolean hasSpecial = password.matches(".*[!@#$%^&*()_+\\-=\\[\\]{};':\"\\\\|,.<>/?].*");
 
         int complexity = 0;
         if (hasLower)
@@ -92,30 +108,34 @@ public class SecurePasswordValidator implements ConstraintValidator<SecurePasswo
         if (hasSpecial)
             complexity++;
 
-        if (complexity < 3) {
+        if (complexity < 4) {
             updateErrorMessage(context,
-                    "La contraseña debe contener al menos 3 tipos de caracteres: minúsculas, mayúsculas, números y símbolos");
+                    "La contraseña debe incluir al menos una mayúscula, una minúscula, un número y un carácter especial");
             return false;
         }
 
-        // Usar el validador original para verificaciones adicionales
-        try {
-            PasswordValidator.ValidationResult result = passwordValidator.validatePassword(password);
+        // Usar el validador original para verificaciones adicionales si está disponible
+        if (passwordValidator != null) {
+            try {
+                PasswordValidator.ValidationResult result = passwordValidator.validatePassword(password);
 
-            if (!result.isValid()) {
-                updateErrorMessage(context, "Contraseña inválida: " + result.getMessagesAsString());
+                if (!result.isValid()) {
+                    updateErrorMessage(context, "Contraseña inválida: " + result.getMessagesAsString());
+                    return false;
+                }
+            } catch (Exception e) {
+                updateErrorMessage(context, "La contraseña no cumple los requisitos de seguridad");
                 return false;
             }
-
-            return true;
-        } catch (Exception e) {
-            updateErrorMessage(context, "Error validando contraseña: " + e.getMessage());
-            return false;
         }
+
+        return true;
     }
 
     private void updateErrorMessage(ConstraintValidatorContext context, String message) {
-        context.disableDefaultConstraintViolation();
-        context.buildConstraintViolationWithTemplate(message).addConstraintViolation();
+        if (context != null) {
+            context.disableDefaultConstraintViolation();
+            context.buildConstraintViolationWithTemplate(message).addConstraintViolation();
+        }
     }
 }

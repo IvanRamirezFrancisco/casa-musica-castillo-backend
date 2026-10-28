@@ -34,6 +34,7 @@ public class RegisterRequest {
     @NotBlank(message = "Password is required")
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
     @SecurePassword(message = "Password must be secure: avoid simple patterns like 123456, qwerty, or abc123")
+    @com.security.validation.BcryptPassword
     private String password;
 
     @Size(max = 20, message = "Phone must be less than 20 characters")
