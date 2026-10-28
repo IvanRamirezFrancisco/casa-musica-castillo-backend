@@ -48,18 +48,18 @@ spring:
 
   # Configuración de email para producción (Brevo/Sendinblue)
   mail:
-    host: ${SPRING_MAIL_HOST}
-    port: ${SPRING_MAIL_PORT}
-    username: ${SPRING_MAIL_USERNAME}
-    password: ${SPRING_MAIL_PASSWORD}
+    host: ${SPRING_MAIL_HOST:${MAIL_HOST:smtp-relay.brevo.com}}
+    port: ${SPRING_MAIL_PORT:${MAIL_PORT:587}}
+    username: ${SPRING_MAIL_USERNAME:${MAIL_USERNAME:}}
+    password: ${SPRING_MAIL_PASSWORD:${MAIL_PASSWORD:}}
     properties:
       mail:
         smtp:
-          auth: true
+          auth: ${SPRING_MAIL_SMTP_AUTH:${MAIL_SMTP_AUTH:true}}
           ssl:
             enable: false
           starttls:
-            enable: true
+            enable: ${SPRING_MAIL_STARTTLS_ENABLE:${MAIL_STARTTLS_ENABLE:true}}
           connectiontimeout: 10000
           timeout: 10000
           writetimeout: 10000
@@ -72,7 +72,7 @@ app:
       force: true
       
     jwt:
-      secret: ${APP_SECURITY_JWT_SECRET}
+      secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
       expiration: 86400000  # 24 horas
       refresh-expiration: 604800000  # 7 días
 
@@ -106,14 +106,16 @@ app:
       max-delay-minutes: 240
 
   # URL base del frontend en producción
-  base-url: ${APP_BASE_URL}
+  base-url: ${APP_BASE_URL:${FRONTEND_URL}}
   
   # Configuraciones de proveedores de email
   email:
+    sender-name: ${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}
+    sender-address: ${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}
     brevo:
-      api-key: ${APP_EMAIL_BREVO_API_KEY}
+      api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:
-      api-key: ${RESEND_API_KEY:}
+      api-key: ${APP_EMAIL_RESEND_API_KEY:${RESEND_API_KEY:}}
     sendgrid:
       api-key: ${SENDGRID_API_KEY:}
     mailgun:

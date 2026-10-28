@@ -8,14 +8,16 @@ import com.security.dto.response.ApiResponse;
 import com.security.dto.response.JwtAuthResponse;
 import com.security.dto.response.UserResponse;
 import com.security.entity.User;
+import com.security.exception.AuthFlowException;
+import com.security.exception.BadRequestException;
 import com.security.security.JwtTokenProvider;
 import com.security.service.AuthService;
+import com.security.service.EmailService;
 import com.security.service.LoginSecurityService;
 import com.security.service.PasswordResetService;
 import com.security.service.SessionManagementService;
 import com.security.service.UserService;
 import com.security.service.VerificationService;
-import com.security.util.LogSanitizer;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -29,21 +31,24 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
-    private static final Logger logger = log;
 
     @Autowired
     private AuthService authService;
 
     @Autowired
     private VerificationService verificationService;
+
     @Autowired
     private UserService userService;
+
+    @Autowired
+    private EmailService emailService;
+
     @Autowired
     private PasswordEncoder passwordEncoder;
 
@@ -61,6 +66,7 @@ public class AuthController {
 
     @Autowired
     private org.springframework.security.authentication.AuthenticationManager authenticationManager;
+
     @Autowired
     private com.security.service.LoginChallengeService loginChallenges;
 
@@ -74,8 +80,12 @@ public class AuthController {
         try {
             UserResponse user = authService.registerUser(registerRequest);
             return ResponseEntity.ok(new ApiResponse(true,
-                    "User registered successfully. Please check your email to verify your account.", user));
+                    "Registro completado. Hemos enviado un correo de verificación para activar tu cuenta.", user));
+        } catch (AuthFlowException ex) {
+            return ResponseEntity.status(ex.getStatus())
+                    .body(new ApiResponse(false, ex.getMessage()));
         } catch (Exception e) {
+            log.warn("Fallo en registro de usuario: {}", e.getClass().getSimpleName());
             return ResponseEntity.badRequest()
                     .body(new ApiResponse(false, "No se pudo completar la solicitud"));
         }
@@ -85,11 +95,10 @@ public class AuthController {
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest,
             HttpServletRequest request) {
         try {
-            String email = loginRequest.getEmail();
+            String email = loginRequest.getEmail() != null ? loginRequest.getEmail().trim() : "";
             String clientIp = getClientIP(request);
 
             // ===== VERIFICACIÓN DE BLOQUEO POR FUERZA BRUTA =====
-            // Verificar si la cuenta está bloqueada por intentos fallidos
             if (loginSecurityService.isAccountLocked(email)) {
                 long remainingMinutes = loginSecurityService.getLockoutRemainingMinutes(email);
                 long remainingSeconds = loginSecurityService.getLockoutRemainingSeconds(email);
@@ -99,7 +108,6 @@ public class AuthController {
                                 "Intenta de nuevo en %d minutos.",
                         remainingMinutes > 0 ? remainingMinutes : 1);
 
-                // Crear respuesta con información detallada para el frontend
                 Map<String, Object> errorData = new HashMap<>();
                 errorData.put("message", message);
                 errorData.put("remainingTimeSeconds", remainingSeconds);
@@ -109,7 +117,6 @@ public class AuthController {
                         .body(errorData);
             }
 
-            // También verificar bloqueo por IP
             if (loginSecurityService.isAccountLocked(clientIp)) {
                 long remainingMinutes = loginSecurityService.getLockoutRemainingMinutes(clientIp);
                 long remainingSeconds = loginSecurityService.getLockoutRemainingSeconds(clientIp);
@@ -118,7 +125,6 @@ public class AuthController {
                         "Demasiados intentos desde esta IP. Intenta de nuevo en %d minutos.",
                         remainingMinutes > 0 ? remainingMinutes : 1);
 
-                // Crear respuesta con información detallada para el frontend
                 Map<String, Object> errorData = new HashMap<>();
                 errorData.put("message", message);
                 errorData.put("remainingTimeSeconds", remainingSeconds);
@@ -133,48 +139,38 @@ public class AuthController {
             try {
                 authenticated = authenticationManager.authenticate(
                         new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(email, loginRequest.getPassword()));
+            } catch (org.springframework.security.authentication.DisabledException disabledEx) {
+                log.warn("Login denegado: cuenta no verificada o deshabilitada");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new ApiResponse(false,
+                                "Cuenta no verificada. Por favor verifica tu correo electrónico antes de iniciar sesión."));
             } catch (org.springframework.security.core.AuthenticationException ex) {
                 loginSecurityService.recordFailedAttempt(email);
                 loginSecurityService.recordFailedAttempt(clientIp);
                 return ResponseEntity.status((loginSecurityService.isAccountLocked(email) || loginSecurityService.isAccountLocked(clientIp)) ? 429 : 401)
                         .body(new ApiResponse(false, "Credenciales inválidas"));
             }
+
             User user = userService.getUserByEmail(email);
 
             // ===== VERIFICAR SI LA CUENTA ESTÁ HABILITADA =====
-            if (!user.getEnabled()) {
+            if (!Boolean.TRUE.equals(user.getEnabled())) {
                 log.warn("Login denegado: cuenta no verificada para usuario ID {}", user.getId());
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(new ApiResponse(false,
-                                "Cuenta no verificada. Por favor verifica tu email antes de iniciar sesión."));
+                                "Cuenta no verificada. Por favor verifica tu correo electrónico antes de iniciar sesión."));
             }
-
-            // ===== LOGIN EXITOSO - Limpiar intentos fallidos =====
 
             UserResponse userResponse = userService.convertToUserResponse(user);
 
-            // ===== LÓGICA DE 2FA CORREGIDA =====
-            // Solo Google Auth y Email son métodos ACTIVOS de 2FA
-            // Backup Codes son un método de RESPALDO (no activan 2FA por sí solos)
             boolean hasGoogleAuth = Boolean.TRUE.equals(user.getGoogleAuthEnabled());
             boolean hasEmail2FA = Boolean.TRUE.equals(user.getEmailEnabled());
-            boolean hasBackupCodes = Boolean.TRUE.equals(user.getBackupCodesEnabled());
-
-            // 2FA se requiere SOLO si hay al menos un método principal activo (Google o
-            // Email)
             boolean requiresTwoFactor = hasGoogleAuth || hasEmail2FA;
 
             if (requiresTwoFactor) {
                 return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", loginChallenges.create(user.getId())));
             }
 
-            // Si NO tiene métodos 2FA principales activos (Google/Email), login normal
-            // Los backup codes quedan almacenados pero inactivos hasta que se active otro
-            // método
-
-            // Si NO tiene 2FA, genera el token con manejo de sesiones y responde
-            // normalmente
-            // ✅ CAMBIO CRÍTICO: Usar método que maneja sesiones con límite de 3
             com.security.security.UserPrincipal userPrincipal = com.security.security.UserPrincipal.create(user);
 
             org.springframework.security.authentication.UsernamePasswordAuthenticationToken authToken = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
@@ -184,7 +180,6 @@ public class AuthController {
             loginSecurityService.clearFailedAttempts(email);
             loginSecurityService.clearFailedAttempts(clientIp);
 
-            // Obtener información de sesiones activas para incluir en la respuesta
             long activeSessions = sessionManagementService.getActiveSessionCount(user.getEmail());
 
             JwtAuthResponse jwtResponse = new JwtAuthResponse();
@@ -192,10 +187,9 @@ public class AuthController {
             jwtResponse.setTokenType("Bearer");
             jwtResponse.setUser(userResponse);
 
-            // Agregar información adicional sobre sesiones
             Map<String, Object> sessionInfo = new HashMap<>();
             sessionInfo.put("activeSessions", activeSessions);
-            sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions()); // ✅ Actualizado a 3 sesiones
+            sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions());
             sessionInfo.put("sessionInfo", "Sesiones activas: " + activeSessions + "/3");
 
             Map<String, Object> responseData = new HashMap<>();
@@ -203,25 +197,19 @@ public class AuthController {
             responseData.put("sessionManagement", sessionInfo);
 
             return ResponseEntity.ok(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
-        } catch (com.security.exception.AuthFlowException ex) {
+        } catch (AuthFlowException ex) {
             throw ex;
         } catch (Exception e) {
-            // Traducir mensajes de error técnicos a español
             String errorMessage = traducirError(e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new ApiResponse(false, errorMessage));
         }
     }
 
-    /**
-     * Traduce mensajes de error técnicos a español amigable
-     */
     private String traducirError(String mensaje) {
         if (mensaje == null) {
             return "Error interno del servidor. Por favor intenta de nuevo.";
         }
-
-        // Mapeo de errores comunes
         if (mensaje.contains("Transaction silently rolled back")) {
             return "Error temporal en el servidor. Por favor intenta de nuevo.";
         }
@@ -237,8 +225,6 @@ public class AuthController {
         if (mensaje.contains("locked") || mensaje.contains("bloqueada")) {
             return "Cuenta temporalmente bloqueada";
         }
-
-        // Si no es un error conocido, mostrar mensaje genérico
         return "Ocurrió un error inesperado. Por favor intenta de nuevo.";
     }
 
@@ -246,43 +232,34 @@ public class AuthController {
     public ResponseEntity<?> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
         try {
             log.debug("Procesando verificación de email");
-
-            // Usar el método del UserService que creamos
             userService.verifyEmailToken(request.getToken());
-
             log.info("Email verificado exitosamente");
             return ResponseEntity
                     .ok(new ApiResponse(true, "¡Email verificado exitosamente! Ya puedes iniciar sesión."));
-        } catch (IllegalArgumentException e) {
-            log.warn("Token de verificación de email inválido");
+        } catch (BadRequestException | IllegalArgumentException e) {
+            log.warn("Token de verificación de email inválido o expirado");
             return ResponseEntity.badRequest()
                     .body(new ApiResponse(false, "El enlace de verificación es inválido o ha expirado."));
         } catch (Exception e) {
-            log.error("Error verificando email");
+            log.error("Error verificando email: {}", e.getClass().getSimpleName());
             return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, "Error al verificar el email. Por favor intenta nuevamente."));
+                    .body(new ApiResponse(false, "El enlace de verificación es inválido o ha expirado."));
         }
     }
 
-    // ENDPOINTS DE PASSWORD RESET MOVIDOS A PasswordResetController
-    // Para evitar conflictos de mapping duplicado
-
-    /////////
-    /// REENVÍO DE EMAIL DE VERIFICACIÓN
     @GetMapping("/verify")
     public ResponseEntity<?> verifyAccount(@RequestParam("token") String token) {
+        String frontendBaseUrl = emailService != null
+                ? emailService.getFrontendBaseUrl()
+                : "http://localhost:4200";
         try {
-            // Usar el método del UserService que creamos
             userService.verifyEmailToken(token);
-
-            // Redirigir al frontend con mensaje de éxito
             return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create("http://localhost:4200/login?verified=true"))
+                    .location(URI.create(frontendBaseUrl + "/login?verified=true"))
                     .build();
         } catch (Exception e) {
-            // Redirigir al frontend con mensaje de error
             return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create("http://localhost:4200/login?error=verification_failed"))
+                    .location(URI.create(frontendBaseUrl + "/login?error=verification_failed"))
                     .build();
         }
     }
@@ -292,45 +269,19 @@ public class AuthController {
         try {
             verificationService.resendVerificationEmail(request.getEmail());
             return ResponseEntity.ok(new ApiResponse(true,
-                    "Verification email sent successfully."));
+                    "Si el correo está registrado y pendiente de verificación, recibirás un nuevo enlace de activación."));
+        } catch (AuthFlowException ex) {
+            return ResponseEntity.status(ex.getStatus())
+                    .body(new ApiResponse(false, ex.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.badRequest()
                     .body(new ApiResponse(false, "No se pudo completar la solicitud"));
         }
     }
 
-    // ===== MÉTODOS DE GOOGLE AUTHENTICATOR REMOVIDOS =====
-    //
-    // ESTOS ENDPOINTS SE MOVIERON A TwoFactorController PARA MANTENER
-    // LA SEPARACIÓN DE RESPONSABILIDADES Y EVITAR CONFLICTOS:
-    //
-    // AuthController se enfoca ÚNICAMENTE en:
-    // - Register/Login básico
-    // - Verificación de email
-    // - Gestión de tokens JWT
-    //
-    // TODA LA LÓGICA 2FA/TOTP AHORA ESTÁ EN:
-    // - TwoFactorController: Endpoints 2FA (/api/2fa/*)
-    // - TwoFactorService: Orquestación 2FA
-    // - TotpService: Lógica TOTP pura
-    //
-    // NUEVOS ENDPOINTS CORRECTOS PARA GOOGLE AUTHENTICATOR:
-    // - POST /api/2fa/google/enable (habilitar)
-    // - GET /api/2fa/google/qrcode (obtener QR)
-    // - POST /api/2fa/google/confirm (confirmar setup)
-    // - POST /api/2fa/verify (login con 2FA)
-    //
-    // ¡Esto garantiza que el secret sea CONSISTENTE entre BD y QR!
-
-    /**
-     * Verifica disponibilidad de username.
-     * SEGURIDAD: Siempre responde con un delay mínimo para prevenir
-     * enumeración por timing. No lanza excepciones distintas.
-     */
     @GetMapping("/check-username/{username}")
     public ResponseEntity<?> checkUsernameAvailability(@PathVariable("username") String username) {
         try {
-            // Validar formato básico para no golpear BD con basura
             if (username == null || username.length() < 3 || username.length() > 50
                     || !username.matches("^[a-zA-Z0-9._-]+$")) {
                 return ResponseEntity.ok(Map.of(
@@ -341,24 +292,17 @@ public class AuthController {
             boolean exists = userService.existsByUsername(username);
             Map<String, Object> response = new HashMap<>();
             response.put("available", !exists);
-
-            // NO incluir el username de vuelta ni mensajes que distingan los casos
             response.put("message", !exists ? "Username is available" : "Username is already taken");
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
-            // Respuesta genérica — no filtrar la excepción al cliente
             return ResponseEntity.ok(Map.of(
                     "available", false,
                     "message", "No se pudo verificar la disponibilidad"));
         }
     }
 
-    /**
-     * Obtiene la IP real del cliente considerando proxies y balanceadores de carga
-     */
     private String getClientIP(HttpServletRequest request) {
-        // Lista de headers que pueden contener la IP real del cliente
         String[] headersToCheck = {
                 "X-Forwarded-For",
                 "X-Real-IP",
@@ -377,8 +321,6 @@ public class AuthController {
         for (String header : headersToCheck) {
             String ip = request.getHeader(header);
             if (ip != null && !ip.isEmpty() && !"unknown".equalsIgnoreCase(ip)) {
-                // X-Forwarded-For puede contener múltiples IPs separadas por coma
-                // La primera es la IP del cliente original
                 if (ip.contains(",")) {
                     ip = ip.split(",")[0].trim();
                 }
@@ -386,16 +328,9 @@ public class AuthController {
             }
         }
 
-        // Si no hay headers de proxy, usar la IP directa
         return request.getRemoteAddr();
     }
 
-    // ===== GESTIÓN DE SESIONES - REQUISITOS DE RÚBRICA =====
-
-    /**
-     * REQUISITO 2: Logout - Cierra sesión específica en un dispositivo
-     * Invalida la sesión actual pero mantiene otras sesiones activas
-     */
     @PostMapping("/logout")
     public ResponseEntity<?> logout(HttpServletRequest request) {
         sessionManagementService.invalidateSession((String) request.getAttribute("authenticatedJti"));
@@ -437,7 +372,6 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "Sesión cerrada exitosamente"));
     }
 
-    // Método utilitario para extraer información del dispositivo
     private String extractDeviceInfo(String userAgent) {
         if (userAgent == null)
             return "Desconocido";
@@ -450,5 +384,4 @@ public class AuthController {
             return "Escritorio";
         }
     }
-
 }

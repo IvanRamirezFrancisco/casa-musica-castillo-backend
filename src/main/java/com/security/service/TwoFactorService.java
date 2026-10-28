@@ -3,11 +3,9 @@ package com.security.service;
 import com.security.entity.User;
 import com.security.enums.TwoFactorType;
 import com.security.repository.UserRepository;
-import com.warrenstrange.googleauth.GoogleAuthenticator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.annotation.Propagation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,6 +14,7 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TwoFactorService {
@@ -36,18 +35,17 @@ public class TwoFactorService {
     @Autowired
     private BackupCodeService backupCodeService;
 
-    // Cache temporal para códigos de email (en producción usar Redis)
-    private final Map<Long, String> emailCodes = new HashMap<>();
-    private final Map<Long, LocalDateTime> emailCodeExpiry = new HashMap<>();
+    private static final int MAX_EMAIL_CODE_ATTEMPTS = 5;
+
+    // Cache concurrente seguro para códigos de email con control de expiración e intentos
+    private final Map<Long, String> emailCodes = new ConcurrentHashMap<>();
+    private final Map<Long, LocalDateTime> emailCodeExpiry = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> emailCodeAttempts = new ConcurrentHashMap<>();
 
     private static final SecureRandom secureRandom = new SecureRandom();
 
     // ===== GOOGLE AUTHENTICATOR (TOTP) =====
 
-    /**
-     * Setup completo de Google Authenticator.
-     * Usa repositorio directo para evitar conflictos JPA/transaccional.
-     */
     @Transactional
     public Map<String, Object> setupGoogleAuthenticatorComplete(Long userId) {
         log.debug("Iniciando setup Google Authenticator para usuario ID {}", userId);
@@ -66,7 +64,7 @@ public class TwoFactorService {
             try {
                 user.setGoogleAuthSecret(secret);
                 user.setTwoFactorType(TwoFactorType.GOOGLE_AUTHENTICATOR);
-                user.setGoogleAuthEnabled(false); // Se activa después de confirmación
+                user.setGoogleAuthEnabled(false);
                 userRepository.save(user);
                 log.debug("Secret de Google Authenticator guardado en BD para usuario ID {}", userId);
             } catch (Exception saveException) {
@@ -126,14 +124,11 @@ public class TwoFactorService {
     private Map<String, String> pendingManualEntry(User user) {
         Map<String, String> data = new HashMap<>();
         data.put("manualEntryKey", user.getGoogleAuthSecret());
-        data.put("issuer", "AuthSystem"); data.put("accountName", user.getEmail());
+        data.put("issuer", "AuthSystem");
+        data.put("accountName", user.getEmail());
         return data;
     }
 
-    /**
-     * Verifica código y activa Google Authenticator.
-     * Usa repositorio directo para evitar conflictos JPA.
-     */
     @Transactional
     public boolean confirmGoogleAuthenticator(Long userId, String code) {
         try {
@@ -170,7 +165,6 @@ public class TwoFactorService {
         }
     }
 
-    /** Match only: the challenge transaction enforces and persists anti-replay before issuing JWT. */
     public java.util.OptionalLong findGoogleAuthenticatorLoginSlot(Long userId, String code) {
         User user = userService.getUserById(userId);
         if (!Boolean.TRUE.equals(user.getGoogleAuthEnabled()) || user.getGoogleAuthSecret() == null) {
@@ -184,17 +178,19 @@ public class TwoFactorService {
     public void sendEmailCode(Long userId) {
         User user = userService.getUserById(userId);
 
-        // Genera código de 6 dígitos
         String code = String.format("%06d", secureRandom.nextInt(1000000));
 
-        // Almacena con expiración de 5 minutos
         emailCodes.put(userId, code);
         emailCodeExpiry.put(userId, LocalDateTime.now().plusMinutes(5));
+        emailCodeAttempts.put(userId, 0);
 
         emailService.send2FACodeEmail(user, code);
     }
 
     public boolean verifyEmailCode(Long userId, String code) {
+        if (code == null || !code.trim().matches("[0-9]{6}")) {
+            return false;
+        }
         String storedCode = emailCodes.get(userId);
         LocalDateTime expiry = emailCodeExpiry.get(userId);
 
@@ -203,25 +199,35 @@ public class TwoFactorService {
         }
 
         if (LocalDateTime.now().isAfter(expiry)) {
-            emailCodes.remove(userId);
-            emailCodeExpiry.remove(userId);
+            clearEmailCode(userId);
             return false;
         }
 
-        boolean isValid = storedCode.equals(code);
+        int attempts = emailCodeAttempts.merge(userId, 1, Integer::sum);
+        if (attempts > MAX_EMAIL_CODE_ATTEMPTS) {
+            clearEmailCode(userId);
+            return false;
+        }
 
-        if (isValid) {
-            emailCodes.remove(userId);
-            emailCodeExpiry.remove(userId);
+        boolean isValid = storedCode.equals(code.trim());
+
+        if (isValid || attempts >= MAX_EMAIL_CODE_ATTEMPTS) {
+            clearEmailCode(userId);
         }
 
         return isValid;
     }
 
+    private void clearEmailCode(Long userId) {
+        emailCodes.remove(userId);
+        emailCodeExpiry.remove(userId);
+        emailCodeAttempts.remove(userId);
+    }
+
     public boolean verifyToken(Long userId, String token) {
         User user = userService.getUserById(userId);
 
-        if (!user.getTwoFactorEnabled()) {
+        if (!Boolean.TRUE.equals(user.getTwoFactorEnabled())) {
             return false;
         }
 
@@ -248,8 +254,7 @@ public class TwoFactorService {
         user.setTwoFactorType(null);
         userService.save(user);
 
-        emailCodes.remove(userId);
-        emailCodeExpiry.remove(userId);
+        clearEmailCode(userId);
     }
 
     // ===== MÉTODOS LEGACY (para compatibilidad) =====
@@ -262,6 +267,7 @@ public class TwoFactorService {
         String token = String.format("%06d", secureRandom.nextInt(1000000));
         emailCodes.put(userId, token);
         emailCodeExpiry.put(userId, LocalDateTime.now().plusMinutes(5));
+        emailCodeAttempts.put(userId, 0);
         return token;
     }
 
@@ -291,7 +297,11 @@ public class TwoFactorService {
         emailCodes.entrySet().removeIf(entry -> {
             Long userId = entry.getKey();
             LocalDateTime expiry = emailCodeExpiry.get(userId);
-            return expiry == null || now.isAfter(expiry);
+            if (expiry == null || now.isAfter(expiry)) {
+                emailCodeAttempts.remove(userId);
+                return true;
+            }
+            return false;
         });
         emailCodeExpiry.entrySet().removeIf(entry -> now.isAfter(entry.getValue()));
     }
@@ -300,11 +310,6 @@ public class TwoFactorService {
         cleanupExpiredTokens();
     }
 
-    // ===== MÉTODOS ESPECÍFICOS PARA MÚLTIPLES 2FA =====
-
-    /**
-     * Desactivar método específico de 2FA
-     */
     public void disableSpecificTwoFactor(Long userId, String method) {
         User user = userService.getUserById(userId);
         boolean wasDisabled = false;
@@ -322,8 +327,7 @@ public class TwoFactorService {
                 if (user.getEmailEnabled() != null && user.getEmailEnabled()) {
                     user.setEmailEnabled(false);
                     wasDisabled = true;
-                    emailCodes.remove(userId);
-                    emailCodeExpiry.remove(userId);
+                    clearEmailCode(userId);
                 }
                 break;
             default:
@@ -342,17 +346,11 @@ public class TwoFactorService {
         userService.save(user);
     }
 
-    /**
-     * Verificar si el usuario tiene algún método 2FA activo
-     */
     private boolean hasAnyTwoFactorEnabled(User user) {
         return (user.getGoogleAuthEnabled() != null && user.getGoogleAuthEnabled()) ||
                 (user.getEmailEnabled() != null && user.getEmailEnabled());
     }
 
-    /**
-     * Obtener métodos 2FA disponibles para el usuario
-     */
     public Map<String, Boolean> getAvailableTwoFactorMethods(Long userId) {
         User user = userService.getUserById(userId);
         Map<String, Boolean> methods = new HashMap<>();
@@ -377,5 +375,4 @@ public class TwoFactorService {
     public Map<String, Object> getBackupCodeStats(Long userId) {
         return backupCodeService.getBackupCodeStats(userId);
     }
-
 }
