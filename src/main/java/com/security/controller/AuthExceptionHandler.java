@@ -8,6 +8,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -18,25 +19,42 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
         PasswordResetController.class, SecurePasswordResetController.class, AcceptInvitationController.class})
 public class AuthExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(AuthExceptionHandler.class);
+
     @ExceptionHandler(AuthFlowException.class)
     public ResponseEntity<ApiResponse> flow(AuthFlowException ex) {
         return ResponseEntity.status(ex.getStatus()).body(new ApiResponse(false, ex.getMessage()));
     }
-    @ExceptionHandler({MethodArgumentNotValidException.class,
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResponse> invalidValidation(MethodArgumentNotValidException ex) {
+        log.warn("Solicitud auth rechazada por validación: campo={}",
+                ex.getBindingResult().getFieldError() != null ? ex.getBindingResult().getFieldError().getField() : "desconocido");
+        String safeMessage = ex.getBindingResult().getFieldErrors().stream()
+                .map(FieldError::getDefaultMessage)
+                .filter(msg -> msg != null && !msg.isBlank())
+                .findFirst()
+                .orElse("Datos de autenticación inválidos");
+        return ResponseEntity.badRequest().body(new ApiResponse(false, safeMessage));
+    }
+
+    @ExceptionHandler({
             org.springframework.http.converter.HttpMessageNotReadableException.class,
             org.springframework.web.bind.MissingServletRequestParameterException.class})
     public ResponseEntity<ApiResponse> invalid(Exception ex) {
         log.warn("Solicitud auth rechazada: {}", ex.getClass().getSimpleName());
         return ResponseEntity.badRequest().body(new ApiResponse(false, "Datos de autenticación inválidos"));
     }
+
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<ApiResponse> unauthenticated(AuthenticationException ex) {
         return ResponseEntity.status(401).body(new ApiResponse(false, "Credenciales inválidas"));
     }
+
     @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
     public ResponseEntity<ApiResponse> denied(Exception ex) {
         return ResponseEntity.status(403).body(new ApiResponse(false, "Acceso denegado"));
     }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse> internal(Exception ex) {
         String id = java.util.UUID.randomUUID().toString();

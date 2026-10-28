@@ -41,18 +41,18 @@ spring:
     schemas: public,auth,security,catalog,sales,customer,ops,analytics
 
   mail:
-    host: ${MAIL_HOST:smtp-relay.brevo.com}
-    port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME:}
-    password: ${MAIL_PASSWORD:}
+    host: ${SPRING_MAIL_HOST:${MAIL_HOST:smtp-relay.brevo.com}}
+    port: ${SPRING_MAIL_PORT:${MAIL_PORT:587}}
+    username: ${SPRING_MAIL_USERNAME:${MAIL_USERNAME:}}
+    password: ${SPRING_MAIL_PASSWORD:${MAIL_PASSWORD:}}
     properties:
       mail:
         smtp:
-          auth: true
+          auth: ${SPRING_MAIL_SMTP_AUTH:${MAIL_SMTP_AUTH:true}}
           ssl:
             enable: false
           starttls:
-            enable: true
+            enable: ${SPRING_MAIL_STARTTLS_ENABLE:${MAIL_STARTTLS_ENABLE:true}}
           connectiontimeout: 10000
           timeout: 10000
           writetimeout: 10000
@@ -151,7 +151,7 @@ app:
     pg-dump-path: ${PG_DUMP_PATH:pg_dump}
     temp-dir: ${BACKUP_TEMP_DIR:/tmp/casamusica-backups}
 
-  base-url: ${FRONTEND_URL:http://localhost:4200}
+  base-url: ${APP_BASE_URL:${FRONTEND_URL:http://localhost:4200}}
   
   # ============================================================
   # MERCADO PAGO CHECKOUT PRO
@@ -179,12 +179,12 @@ app:
   
   # Configuraciones de proveedores de email alternativos
   email:
-    sender-name: ${EMAIL_SENDER_NAME:AuthSystem}
-    sender-address: ${EMAIL_SENDER_ADDRESS:${MAIL_USERNAME:noreply@authsystem.com}}
+    sender-name: ${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}
+    sender-address: ${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}
     brevo:
-      api-key: ${BREVO_API_KEY:#{null}}
+      api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:
-      api-key: ${RESEND_API_KEY:#{null}}
+      api-key: ${APP_EMAIL_RESEND_API_KEY:${RESEND_API_KEY:}}
     mailgun:
       api-key: ${MAILGUN_API_KEY:#{null}}
       domain: ${MAILGUN_DOMAIN:#{null}}

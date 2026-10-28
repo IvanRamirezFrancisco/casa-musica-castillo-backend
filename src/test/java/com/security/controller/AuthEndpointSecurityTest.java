@@ -37,6 +37,7 @@ class AuthEndpointSecurityTest {
     @MockBean BackupCodeService backups;
     @MockBean com.security.util.SecurityUtils securityUtils;
     @MockBean com.security.util.PasswordValidator passwordValidator;
+    @MockBean EmailService emailService;
 
     @BeforeEach void setup() {
         User user=new User();user.setId(1L);user.setEmail("synthetic@example.invalid");user.setEnabled(true);

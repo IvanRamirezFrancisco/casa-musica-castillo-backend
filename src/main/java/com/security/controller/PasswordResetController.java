@@ -2,6 +2,7 @@ package com.security.controller;
 
 import com.security.service.PasswordResetService;
 import com.security.dto.request.ResetPasswordRequest;
+import com.security.exception.AuthFlowException;
 import com.security.exception.RateLimitExceededException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -13,10 +14,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.Map;
 
-
 @RestController
 @RequestMapping("/api/auth")
-// CORS se maneja globalmente en SecurityConfig
 public class PasswordResetController {
     private static final Logger logger = LoggerFactory.getLogger(PasswordResetController.class);
 
@@ -29,17 +28,20 @@ public class PasswordResetController {
     @PostMapping("/forgot-password")
     public ResponseEntity<?> forgotPassword(@RequestParam String email, HttpServletRequest request) {
         try {
-            // Siempre ejecuta la lógica pero no revela si existe
+            if (email == null || email.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "message", "El correo electrónico es obligatorio."));
+            }
+
             passwordResetService.requestPasswordReset(email, request);
 
-            // Mensaje genérico independiente del resultado
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "message",
                     "Si el email está registrado, recibirás un enlace de recuperación en tu bandeja de entrada."));
 
         } catch (RateLimitExceededException e) {
-            // Manejo específico para rate limiting con información de tiempo
             return ResponseEntity.status(429).body(Map.of(
                     "success", false,
                     "message", e.getMessage(),
@@ -49,8 +51,12 @@ public class PasswordResetController {
                     "attemptCount", e.getAttemptCount(),
                     "maxAttempts", e.getMaxAttempts()));
 
+        } catch (AuthFlowException e) {
+            return ResponseEntity.status(e.getStatus()).body(Map.of(
+                    "success", false,
+                    "message", e.getMessage()));
+
         } catch (IllegalStateException e) {
-            // Manejo para otros errores de estado
             return ResponseEntity.status(429).body(Map.of(
                     "success", false,
                     "message", e.getMessage()));
@@ -93,14 +99,13 @@ public class PasswordResetController {
     @PostMapping("/reset-password")
     public ResponseEntity<?> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         try {
-            // Validar que los datos no estén vacíos
             if (request.getToken() == null || request.getToken().trim().isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "success", false,
                         "message", "Token requerido"));
             }
 
-            if (request.getNewPassword() == null || request.getNewPassword().trim().length() < 8) {
+            if (request.getNewPassword() == null || request.getNewPassword().length() < 8) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "success", false,
                         "message", "La contraseña debe tener al menos 8 caracteres"));
@@ -126,5 +131,4 @@ public class PasswordResetController {
                     "message", "Error al actualizar la contraseña. Intenta nuevamente."));
         }
     }
-
 }
