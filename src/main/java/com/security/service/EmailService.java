@@ -88,9 +88,10 @@ public class EmailService {
         String frontendUrl = getFrontendBaseUrl();
         String verificationUrl = frontendUrl + "/verify-account?token=" + verificationToken;
         String subject = "Verificación de cuenta - Casa de Música Castillo";
-        String html = buildVerificationTemplate(user.getFirstName(), verificationUrl);
-
-        dispatchEmail(user, subject, html, "VERIFICATION");
+        AuthMailContent content = AuthMailContent.link("Verifica tu correo electrónico", user.getFirstName(),
+                "Activa tu cuenta de Casa de Música Castillo.", "Verificar mi cuenta", verificationUrl,
+                "El enlace caduca en 24 horas y es de un solo uso. Si no creaste esta cuenta, ignora este correo.");
+        dispatchEmail(user, subject, content.html(), content.text(), "VERIFICATION");
     }
 
     /**
@@ -103,9 +104,10 @@ public class EmailService {
         String frontendUrl = getFrontendBaseUrl();
         String resetUrl = frontendUrl + "/reset-password?token=" + token;
         String subject = "Recuperación de contraseña - Casa de Música Castillo";
-        String html = buildPasswordResetTemplate(user.getFirstName(), resetUrl);
-
-        dispatchEmail(user, subject, html, "PASSWORD_RESET");
+        AuthMailContent content = AuthMailContent.link("Recuperación de contraseña", user.getFirstName(),
+                "Recibimos una solicitud para restablecer tu contraseña.", "Restablecer contraseña", resetUrl,
+                "El enlace caduca en una hora y es de un solo uso. Si no lo solicitaste, ignora este correo.");
+        dispatchEmail(user, subject, content.html(), content.text(), "PASSWORD_RESET");
     }
 
     /**
@@ -116,9 +118,14 @@ public class EmailService {
         logger.info("Preparando envío de código 2FA para: {}", LogSanitizer.maskEmail(user.getEmail()));
 
         String subject = "Código de verificación 2FA - Casa de Música Castillo";
-        String html = build2FATemplate(user.getFirstName(), code);
+        AuthMailContent content = AuthMailContent.code(user.getFirstName(), code);
+        dispatchEmail(user, subject, content.html(), content.text(), "TWO_FACTOR_CODE");
+    }
 
-        dispatchEmail(user, subject, html, "TWO_FACTOR_CODE");
+    public void sendPasswordChangedEmail(User user) {
+        AuthMailContent content = AuthMailContent.passwordChanged(user.getFirstName());
+        dispatchEmail(user, "Contraseña actualizada - Casa de Música Castillo",
+                content.html(), content.text(), "PASSWORD_CHANGED");
     }
 
     /**
@@ -128,7 +135,7 @@ public class EmailService {
         User stub = new User();
         stub.setEmail(to);
         stub.setFirstName("");
-        dispatchEmail(stub, subject, htmlContent, "GENERIC_HTML");
+        dispatchEmail(stub, subject, htmlContent, null, "GENERIC_HTML");
     }
 
     /**
@@ -151,24 +158,24 @@ public class EmailService {
     // DESPACHO Y PROVEEDORES DE ENVÍO (privados)
     // ============================================================================
 
-    private void dispatchEmail(User user, String subject, String htmlContent, String category) {
+    private void dispatchEmail(User user, String subject, String htmlContent, String textContent, String category) {
         if (user == null || !hasValue(user.getEmail())) {
             throw new IllegalArgumentException("Destinatario de correo inválido");
         }
-        if (sendViaBrevoApi(user, subject, htmlContent, category)) {
+        if (sendViaBrevoApi(user, subject, htmlContent, textContent, category)) {
             return;
         }
-        if (sendViaResendApi(user, subject, htmlContent, category)) {
+        if (sendViaResendApi(user, subject, htmlContent, textContent, category)) {
             return;
         }
-        sendViaSmtp(user, subject, htmlContent, category);
+        sendViaSmtp(user, subject, htmlContent, textContent, category);
     }
 
     /**
      * Envía un email usando la API HTTP de Brevo (v3) por HTTPS (puerto 443).
      * Compatible con Render Free (que bloquea los puertos SMTP 25, 465 y 587).
      */
-    private boolean sendViaBrevoApi(User user, String subject, String htmlContent, String category) {
+    private boolean sendViaBrevoApi(User user, String subject, String htmlContent, String textContent, String category) {
         if (!hasValue(brevoApiKey)) {
             logger.debug("Brevo API Key no configurada, omitiendo proveedor Brevo para tipo={}.", category);
             return false;
@@ -187,6 +194,7 @@ public class EmailService {
         body.put("to", new Map[] { Map.of("email", user.getEmail().trim(), "name", recipientName) });
         body.put("subject", subject);
         body.put("htmlContent", htmlContent);
+        if (textContent != null) body.put("textContent", textContent);
 
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
@@ -223,7 +231,7 @@ public class EmailService {
     /**
      * Envía un email usando la API HTTP de Resend por HTTPS (puerto 443).
      */
-    private boolean sendViaResendApi(User user, String subject, String htmlContent, String category) {
+    private boolean sendViaResendApi(User user, String subject, String htmlContent, String textContent, String category) {
         if (!hasValue(resendApiKey)) {
             logger.debug("Resend API Key no configurada, omitiendo proveedor Resend para tipo={}.", category);
             return false;
@@ -241,6 +249,7 @@ public class EmailService {
         body.put("to", new String[] { user.getEmail().trim() });
         body.put("subject", subject);
         body.put("html", htmlContent);
+        if (textContent != null) body.put("text", textContent);
 
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
@@ -280,7 +289,7 @@ public class EmailService {
      * por lo que en producción debe configurarse Brevo API o Resend API sobre HTTPS (443).
      * En desarrollo/pruebas locales permite entregar a un servidor o capturador SMTP local.
      */
-    private void sendViaSmtp(User user, String subject, String htmlContent, String category) {
+    private void sendViaSmtp(User user, String subject, String htmlContent, String textContent, String category) {
         String resolvedFromEmail = resolveSenderAddress();
         String resolvedFromName = resolveSenderName();
 
@@ -292,7 +301,8 @@ public class EmailService {
             helper.setFrom(resolvedFromEmail, resolvedFromName);
             helper.setTo(user.getEmail().trim());
             helper.setSubject(subject);
-            helper.setText(htmlContent, true);
+            if (textContent == null) helper.setText(htmlContent, true);
+            else helper.setText(textContent, htmlContent);
             mailSender.send(message);
             logger.info("Correo aceptado por servidor SMTP (tipo={}, destinatario={})",
                     category, LogSanitizer.maskEmail(user.getEmail()));
@@ -360,124 +370,6 @@ public class EmailService {
     // ============================================================================
     // TEMPLATES HTML
     // ============================================================================
-
-    private String buildVerificationTemplate(String userName, String verificationUrl) {
-        String safeName = escapeHtml(userName);
-        return """
-                <!DOCTYPE html>
-                <html lang="es">
-                <head><meta charset="UTF-8">
-                    <style>
-                        body { margin:0; padding:0; background:#f4f4f4; font-family:Arial,sans-serif; }
-                        .container { max-width:600px; margin:40px auto; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.1); }
-                        .header { background:#4CAF50; color:#fff; padding:28px 20px; text-align:center; }
-                        .header h1 { margin:0; font-size:24px; }
-                        .content { padding:32px 28px; color:#333; }
-                        .btn { display:inline-block; background:#4CAF50; color:#fff; padding:14px 32px; border-radius:6px; text-decoration:none; font-weight:bold; margin:24px 0; }
-                        .notice { background:#f9f9f9; border-left:4px solid #4CAF50; padding:12px 16px; font-size:13px; color:#555; border-radius:4px; }
-                        .link-fallback { font-size:12px; color:#666; word-break:break-all; margin-top:16px; }
-                        .footer { padding:16px 28px; font-size:12px; color:#888; border-top:1px solid #eee; text-align:center; }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="header"><h1>¡Bienvenido/a, %s!</h1></div>
-                        <div class="content">
-                            <h2>Verifica tu correo electrónico</h2>
-                            <p>Gracias por registrarte en Casa de Música Castillo. Para activar tu cuenta, haz clic en el botón de abajo:</p>
-                            <a href="%s" class="btn">Verificar mi cuenta</a>
-                            <div class="notice">
-                                <strong>⏰ Este enlace expira en 24 horas y es de un solo uso.</strong><br>
-                                Si no creaste esta cuenta, puedes ignorar este correo con seguridad.
-                            </div>
-                            <p class="link-fallback">Si el botón no funciona, copia y pega este enlace en tu navegador:<br>%s</p>
-                        </div>
-                        <div class="footer">© 2026 Casa de Música Castillo · Este mensaje fue generado automáticamente.</div>
-                    </div>
-                </body>
-                </html>
-                """
-                .formatted(safeName, verificationUrl, verificationUrl);
-    }
-
-    private String buildPasswordResetTemplate(String userName, String resetUrl) {
-        String safeName = escapeHtml(userName);
-        return """
-                <!DOCTYPE html>
-                <html lang="es">
-                <head><meta charset="UTF-8">
-                    <style>
-                        body { margin:0; padding:0; background:#f4f4f4; font-family:Arial,sans-serif; }
-                        .container { max-width:600px; margin:40px auto; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.1); }
-                        .header { background:#e74c3c; color:#fff; padding:28px 20px; text-align:center; }
-                        .header h1 { margin:0; font-size:24px; }
-                        .content { padding:32px 28px; color:#333; text-align:center; }
-                        .btn { display:inline-block; background:#e74c3c; color:#fff; padding:14px 32px; border-radius:6px; text-decoration:none; font-weight:bold; margin:24px 0; }
-                        .warning { background:#fff5f5; border-left:4px solid #e74c3c; padding:12px 16px; font-size:13px; color:#555; border-radius:4px; text-align:left; }
-                        .link-fallback { font-size:12px; color:#666; word-break:break-all; margin-top:16px; text-align:left; }
-                        .footer { padding:16px 28px; font-size:12px; color:#888; border-top:1px solid #eee; text-align:center; }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="header"><h1>🔒 Recuperación de contraseña</h1></div>
-                        <div class="content">
-                            <h2>Hola, %s</h2>
-                            <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en Casa de Música Castillo.</p>
-                            <a href="%s" class="btn">Restablecer contraseña</a>
-                            <p><strong>Este enlace expira en 1 hora y es de un solo uso.</strong></p>
-                            <div class="warning">
-                                ⚠️ Si no solicitaste este restablecimiento, ignora este correo.<br>
-                                Tu contraseña actual permanece sin cambios.<br>
-                                Nunca compartas este enlace con nadie.
-                            </div>
-                            <p class="link-fallback">Si el botón no funciona, copia y pega este enlace en tu navegador:<br>%s</p>
-                        </div>
-                        <div class="footer">© 2026 Casa de Música Castillo · Este mensaje fue generado automáticamente.</div>
-                    </div>
-                </body>
-                </html>
-                """
-                .formatted(safeName, resetUrl, resetUrl);
-    }
-
-    private String build2FATemplate(String userName, String code) {
-        String safeName = escapeHtml(userName);
-        return """
-                <!DOCTYPE html>
-                <html lang="es">
-                <head><meta charset="UTF-8">
-                    <style>
-                        body { margin:0; padding:0; background:#f4f4f4; font-family:Arial,sans-serif; }
-                        .container { max-width:600px; margin:40px auto; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,.1); }
-                        .header { background:#667eea; color:#fff; padding:28px 20px; text-align:center; }
-                        .header h1 { margin:0; font-size:24px; }
-                        .content { padding:32px 28px; color:#333; text-align:center; }
-                        .code { background:#f1f1f1; border:2px solid #667eea; border-radius:8px; padding:18px; font-family:monospace; font-size:32px; font-weight:bold; letter-spacing:8px; color:#333; margin:24px 0; }
-                        .warning { background:#f9f9f9; border-left:4px solid #667eea; padding:12px 16px; font-size:13px; color:#555; border-radius:4px; text-align:left; }
-                        .footer { padding:16px 28px; font-size:12px; color:#888; border-top:1px solid #eee; text-align:center; }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="header"><h1>🔐 Código de verificación</h1></div>
-                        <div class="content">
-                            <h2>Hola, %s</h2>
-                            <p>Tu código de verificación de dos factores para Casa de Música Castillo es:</p>
-                            <div class="code">%s</div>
-                            <p>Este código expira en <strong>5 minutos</strong> y es de un solo uso.</p>
-                            <div class="warning">
-                                ⚠️ Si no solicitaste este código, ignora este correo.<br>
-                                Nunca compartas este código con nadie.
-                            </div>
-                        </div>
-                        <div class="footer">© 2026 Casa de Música Castillo · Este mensaje fue generado automáticamente.</div>
-                    </div>
-                </body>
-                </html>
-                """
-                .formatted(safeName, code);
-    }
 
     private String buildStaffInvitationTemplate(String firstName, String invitedByName,
             String activationUrl, int hoursValid) {
