@@ -9,7 +9,25 @@ jobs:
   build:
     name: Build and analyze
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: auth_test
+          POSTGRES_PASSWORD: synthetic-test-only
+          POSTGRES_DB: backend_hardening_test
+        ports:
+          - '127.0.0.1:55439:5432'
+        options: >-
+          --health-cmd "pg_isready -U auth_test -d backend_hardening_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
+      - name: Prepare second disposable integration database
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec "$POSTGRES_CONTAINER" createdb -U auth_test auth_challenges_test
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
@@ -33,4 +51,6 @@ jobs:
       - name: Build and analyze
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          STORAGE_PROVIDER: LOCAL
+          MERCADO_PAGO_ENABLED: false
         run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Ddependency-check.skip=true
