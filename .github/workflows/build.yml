@@ -51,4 +51,6 @@ jobs:
       - name: Build and analyze
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          STORAGE_PROVIDER: LOCAL
+          MERCADO_PAGO_ENABLED: false
         run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Ddependency-check.skip=true
