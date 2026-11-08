@@ -6,8 +6,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.support.PageableExecutionUtils;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -111,14 +113,7 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
             @Param("brandId") Long brandId,
             Pageable pageable);
 
-    /**
-     * Catálogo CON keyword y soporte multi-palabra (tokens) + modelo + ranking de 10 niveles.
-     * El Pageable debe pasarse con Sort.unsorted() para evitar colisiones de ORDER BY.
-     */
-    @Query(value = """
-            SELECT p FROM Product p
-            LEFT JOIN FETCH p.category cat
-            LEFT JOIN FETCH p.brand br
+    String CATALOG_KEYWORD_FILTER = """
             WHERE p.active = true
               AND (
                    CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
@@ -167,6 +162,29 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
               )
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
+            """;
+
+    /**
+     * Conserva el ranking y la paginación del catálogo con búsqueda.
+     * El Pageable debe llegar sin orden para mantener el ORDER BY de relevancia.
+     */
+    default Page<Product> findCatalogWithKeyword(
+            String exactOriginal, String escapedOriginal, String exactCanonical, String escapedCanonical,
+            String token1, String token2, String token3, Long categoryIntentId, Long brandIntentId,
+            Long categoryId, Long brandId, Pageable pageable) {
+        List<Product> products = findCatalogKeywordRows(exactOriginal, escapedOriginal, exactCanonical,
+                escapedCanonical, token1, token2, token3, categoryIntentId, brandIntentId,
+                categoryId, brandId, pageable);
+        // El conteo solo recibe filtros. Los parámetros de ranking pertenecen a la consulta de contenido.
+        return PageableExecutionUtils.getPage(products, pageable, () -> countCatalogKeywordMatches(
+                escapedOriginal, escapedCanonical, token1, token2, token3, categoryId, brandId));
+    }
+
+    @Query("""
+            SELECT p FROM Product p
+            LEFT JOIN FETCH p.category cat
+            LEFT JOIN FETCH p.brand br
+            """ + CATALOG_KEYWORD_FILTER + """
             ORDER BY 
               CASE 
                    WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
@@ -198,61 +216,8 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
               p.featured DESC,
               p.createdAt DESC,
               p.id ASC
-            """,
-           countQuery = """
-            SELECT COUNT(p) FROM Product p
-            LEFT JOIN p.category cat
-            LEFT JOIN p.brand br
-            WHERE p.active = true
-              AND (
-                   CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR (p.model IS NOT NULL AND (
-                     CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                  OR CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                ))
-                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR (
-                  :token1 IS NOT NULL
-                  AND (
-                       CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                  )
-                  AND (
-                    :token2 IS NULL
-                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                  )
-                  AND (
-                    :token3 IS NULL
-                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                  )
-                )
-              )
-              AND (:categoryId IS NULL OR cat.id = :categoryId)
-              AND (:brandId    IS NULL OR br.id  = :brandId)
             """)
-    Page<Product> findCatalogWithKeyword(
+    List<Product> findCatalogKeywordRows(
             @Param("exactOriginal") String exactOriginal,
             @Param("escapedOriginal") String escapedOriginal,
             @Param("exactCanonical") String exactCanonical,
@@ -265,6 +230,20 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
             @Param("categoryId") Long categoryId,
             @Param("brandId") Long brandId,
             Pageable pageable);
+
+    @Query("""
+            SELECT COUNT(p) FROM Product p
+            LEFT JOIN p.category cat
+            LEFT JOIN p.brand br
+            """ + CATALOG_KEYWORD_FILTER)
+    long countCatalogKeywordMatches(
+            @Param("escapedOriginal") String escapedOriginal,
+            @Param("escapedCanonical") String escapedCanonical,
+            @Param("token1") String token1,
+            @Param("token2") String token2,
+            @Param("token3") String token3,
+            @Param("categoryId") Long categoryId,
+            @Param("brandId") Long brandId);
 
     // ── 4. Detalle de producto activo ─────────────────────────────────────────
 
