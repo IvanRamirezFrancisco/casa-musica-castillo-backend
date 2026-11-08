@@ -1,5 +1,7 @@
 package com.security.dto.admin;
 
+import com.security.validation.BcryptPassword;
+
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -35,6 +37,7 @@ public class AdminUserCreateDTO {
     @NotBlank(message = "Password is required")
     @Size(min = 8, max = 100, message = "Password must be between 8 and 100 characters")
     @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&#^()_+\\-=\\[\\]{};':\"\\\\|,.<>/?]).{8,}$", message = "Password must contain at least one uppercase, one lowercase, one digit and one special character")
+    @BcryptPassword
     private String password;
 
     @Size(max = 20, message = "Phone cannot exceed 20 characters")

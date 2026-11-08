@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.0</version>
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
     
@@ -18,10 +18,29 @@
     <description>Sistema de autenticación completo con 2FA</description>
     
     <properties>
-        <java.version>17</java.version>
+        <java.version>21</java.version>
+        <!-- Compatible security fixes published after the Spring Boot 3.5.16 BOM. -->
+        <jackson-bom.version>2.21.8</jackson-bom.version>
+        <postgresql.version>42.7.14</postgresql.version>
+        <httpclient5.version>5.6.4</httpclient5.version>
+        <httpcore5.version>5.4.3</httpcore5.version>
+        <tomcat.version>10.1.61</tomcat.version>
+        <netty.version>4.1.139.Final</netty.version>
+        <log4j2.version>2.25.5</log4j2.version>
         <sonar.organization>ivanramirezfrancisco-2</sonar.organization>
     </properties>
     
+    <dependencyManagement>
+        <dependencies>
+            <!-- Mercado Pago's Velocity Tools still resolves BeanUtils 1.9.4. -->
+            <dependency>
+                <groupId>commons-beanutils</groupId>
+                <artifactId>commons-beanutils</artifactId>
+                <version>1.11.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- Spring Boot Starters -->
         <dependency>
@@ -59,12 +78,15 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
         
         <!-- Database -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.3</version>
         </dependency>
         
         <!-- JWT -->
@@ -167,7 +189,6 @@
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.2.1</version>
         </dependency>
         
         <!-- WebFlux — WebClient para llamadas HTTP reactivas (Supabase Storage API) -->
@@ -186,22 +207,9 @@
         <dependency>
             <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
             <artifactId>owasp-java-html-sanitizer</artifactId>
-            <version>20220608.1</version>
+            <version>20261011.1</version>
         </dependency>
-        
-        <!-- OWASP ESAPI para sanitización adicional -->
-        <dependency>
-            <groupId>org.owasp.esapi</groupId>
-            <artifactId>esapi</artifactId>
-            <version>2.5.1.0</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>commons-configuration</groupId>
-                    <artifactId>commons-configuration</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        
+
         <!-- Passay para validación de contraseñas -->
         <dependency>
             <groupId>org.passay</groupId>
@@ -237,8 +245,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
                 <configuration>
-                    <source>21</source>
-                    <target>21</target>
+                    <release>${java.version}</release>
                     <compilerArgs>
                         <arg>-parameters</arg>
                     </compilerArgs>
@@ -246,7 +253,7 @@
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>1.18.30</version>
+                            <version>${lombok.version}</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
@@ -268,8 +275,14 @@
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
-                <version>9.0.7</version>
+                <version>13.0.0</version>
                 <configuration>
+                    <!-- Use public NVD feeds for a credential-free CI scan. -->
+                    <nvdDatafeedUrl>https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz</nvdDatafeedUrl>
+                    <connectionTimeout>20000</connectionTimeout>
+                    <readTimeout>60000</readTimeout>
+                    <nvdMaxRetryCount>2</nvdMaxRetryCount>
+                    <failOnError>true</failOnError>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <suppressionFile>owasp-suppressions.xml</suppressionFile>
                     <formats>

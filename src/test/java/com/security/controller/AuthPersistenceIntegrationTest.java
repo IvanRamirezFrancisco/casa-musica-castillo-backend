@@ -68,6 +68,21 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
         assertTrue(sessions.findByJwtTokenId(jti).orElseThrow().getRevoked());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
     }
+    @Test void rejectsPasswordBeyondBcryptLimitWithoutIssuingSession() throws Exception {
+        String password = "á".repeat(36);
+        user.setPassword(passwords.encode(password));
+        users.save(user);
+
+        mvc.perform(post("/api/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("email", user.getEmail(), "password", password + "a"))))
+                .andExpect(status().isUnauthorized());
+        assertTrue(sessions.findByUserId(user.getId()).isEmpty());
+
+        mvc.perform(post("/api/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("email", user.getEmail(), "password", password))))
+                .andExpect(status().isOk());
+    }
+
     @Test void logoutAllRevokesBothRealSessions() throws Exception {
         String first=access();String second=access();
         mvc.perform(post("/api/auth/logout-all").header("Authorization","Bearer "+second)

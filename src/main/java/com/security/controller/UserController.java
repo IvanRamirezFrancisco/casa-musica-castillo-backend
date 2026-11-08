@@ -1,5 +1,7 @@
 package com.security.controller;
 
+import com.security.validation.BcryptPasswordValidator;
+
 import com.security.dto.request.ChangePasswordRequest;
 import com.security.dto.response.ApiResponse;
 import com.security.dto.response.UserResponse;
@@ -159,6 +161,10 @@ public class UserController {
         @PostMapping("/create-admin")
         @PreAuthorize("hasRole('ROLE_ADMIN')")
         public ResponseEntity<?> createAdminUser(@RequestBody Map<String, String> request) {
+                String password = request.get("password");
+                if (password == null || password.isBlank() || !BcryptPasswordValidator.isWithinLimit(password)) {
+                        return ResponseEntity.badRequest().body(new ApiResponse(false, "Contraseña inválida"));
+                }
                 try {
                         // Verificar si ya existe un admin con ese email
                         if (userService.existsByEmail(request.get("email"))) {
@@ -176,7 +182,7 @@ public class UserController {
                         admin.setFirstName(request.get("firstName"));
                         admin.setLastName(request.get("lastName"));
                         admin.setEmail(request.get("email"));
-                        admin.setPassword(passwordEncoder.encode(request.get("password")));
+                        admin.setPassword(passwordEncoder.encode(password));
                         admin.setPhone(request.get("phone"));
                         admin.setEnabled(true);
                         admin.setTwoFactorEnabled(false);
