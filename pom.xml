@@ -268,8 +268,14 @@
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
-                <version>9.0.7</version>
+                <version>13.0.0</version>
                 <configuration>
+                    <!-- Use public NVD feeds for a credential-free CI scan. -->
+                    <nvdDatafeedUrl>https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz</nvdDatafeedUrl>
+                    <connectionTimeout>20000</connectionTimeout>
+                    <readTimeout>60000</readTimeout>
+                    <nvdMaxRetryCount>2</nvdMaxRetryCount>
+                    <failOnError>true</failOnError>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <suppressionFile>owasp-suppressions.xml</suppressionFile>
                     <formats>

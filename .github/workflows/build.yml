@@ -1,56 +1,75 @@
 name: SonarQube
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and analyze
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CMC_CATALOG_TEST_PASSWORD: test-${{ github.run_id }}
+      STORAGE_PROVIDER: LOCAL
+      MERCADO_PAGO_ENABLED: 'false'
+      SPRING_MAIL_HOST: 127.0.0.1
+      SPRING_MAIL_PORT: '1'
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: auth_test
           POSTGRES_PASSWORD: synthetic-test-only
           POSTGRES_DB: backend_hardening_test
         ports:
           - '127.0.0.1:55439:5432'
+          - '127.0.0.1:55448:5432'
         options: >-
           --health-cmd "pg_isready -U auth_test -d backend_hardening_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
     steps:
-      - name: Prepare second disposable integration database
+      - name: Prepare disposable test databases
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: docker exec "$POSTGRES_CONTAINER" createdb -U auth_test auth_challenges_test
+        run: |
+          docker exec -i "$POSTGRES_CONTAINER" psql -X -U auth_test -d postgres -v ON_ERROR_STOP=1 \
+            -v catalog_password="$CMC_CATALOG_TEST_PASSWORD" <<'SQL'
+          CREATE DATABASE auth_challenges_test;
+          CREATE DATABASE schema50_upgrade_test;
+          CREATE ROLE catalog_search_test LOGIN PASSWORD :'catalog_password';
+          CREATE DATABASE catalog_search_test OWNER catalog_search_test;
+          SQL
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@v4
         with:
-          java-version: 17
-          distribution: 'zulu' # Alternative distribution options are available.
-      - name: Cache SonarQube packages
-        uses: actions/cache@v4
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+      - uses: actions/cache@v4
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
-          restore-keys: ${{ runner.os }}-sonar
-      - name: Cache Maven packages
-        uses: actions/cache@v4
+      - name: Run full suite and package
+        run: mvn -B --no-transfer-progress package
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
-      - name: Build and analyze
+          name: backend-surefire
+          path: target/surefire-reports/TEST-*.xml
+          if-no-files-found: warn
+      - name: Analyze with SonarCloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          STORAGE_PROVIDER: LOCAL
-          MERCADO_PAGO_ENABLED: false
-        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Ddependency-check.skip=true
+        run: mvn -B --no-transfer-progress org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Dsonar.qualitygate.wait=true

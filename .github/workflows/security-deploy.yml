@@ -1,38 +1,51 @@
-name: Casa de Musica Castillo - Security Pipeline
-
+name: Backend security audit
 on:
   push:
-    branches: [ "main", "master" ] # Se activa cuando subes cambios
+    branches: [main, master]
   pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-security-check:
+  dependency-audit:
+    name: OWASP Dependency-Check
     runs-on: ubuntu-latest
-
+    timeout-minutes: 35
     steps:
-    - name: Checkout del codigo
-      uses: actions/checkout@v4
-
-    - name: Configurar JDK 21
-      uses: actions/setup-java@v4
-      with:
-        java-version: '21'
-        distribution: 'temurin'
-        cache: maven
-
-    - name: Compilar Proyecto (Maven)
-      run: mvn clean package -DskipTests
-
-    - name: Verificacion de Agente RASP
-      run: |
-        echo "Verificando presencia de OpenRASP para el despliegue..."
-        if [ -d "./rasp" ]; then
-          echo "Carpeta RASP detectada. Preparando instrumentacion..."
-        else
-          echo "Error: Configuracion RASP no encontrada."
-          exit 1
-        fi
-
-    - name: Escaneo de Vulnerabilidades (Simulado)
-      run: echo "Escaneando dependencias contra OWASP Top 10..."
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+      - name: Audit dependency vulnerabilities
+        run: mvn -B --no-transfer-progress org.owasp:dependency-check-maven:check
+      - name: Preserve vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dependency-audit
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+          if-no-files-found: warn
+      - name: Summarize audit evidence
+        if: always()
+        run: |
+          if [[ ! -s target/dependency-check-report.json ]]; then
+            echo 'Dependency-Check: INCONCLUSIVE. No complete report was produced.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Dependency-Check produced a report. See its findings and the scanner exit status.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+  rasp-inventory:
+    name: Check RASP files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: test -d ./rasp
