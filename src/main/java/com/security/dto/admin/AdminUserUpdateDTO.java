@@ -1,5 +1,7 @@
 package com.security.dto.admin;
 
+import com.security.validation.BcryptPassword;
+
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -42,6 +44,7 @@ public class AdminUserUpdateDTO {
      * Nueva contraseña (opcional). Si es null o vacío, no se cambia.
      */
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
+    @BcryptPassword
     private String password;
 
     /**

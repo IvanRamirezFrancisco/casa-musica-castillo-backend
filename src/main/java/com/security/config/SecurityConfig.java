@@ -3,6 +3,7 @@ package com.security.config;
 import com.security.security.CustomUserDetailsService;
 import com.security.security.JwtAuthenticationEntryPoint;
 import com.security.security.JwtAuthenticationFilter;
+import com.security.validation.BcryptPasswordValidator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -52,7 +53,13 @@ public class SecurityConfig {
 
         @Bean
         public PasswordEncoder passwordEncoder() {
-                return new BCryptPasswordEncoder(12);
+                return new BCryptPasswordEncoder(12) {
+                        @Override
+                        public boolean matches(CharSequence rawPassword, String encodedPassword) {
+                                return BcryptPasswordValidator.isWithinLimit(rawPassword)
+                                                && super.matches(rawPassword, encodedPassword);
+                        }
+                };
         }
 
         // Fuente única de CORS. En producción proviene de CORS_ORIGINS (obligatoria).
