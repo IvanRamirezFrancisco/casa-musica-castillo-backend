@@ -1,0 +1,24 @@
+{
+	admin off
+	skip_install_trust
+	auto_https disable_redirects
+}
+
+{$CMC_SITE} {
+	bind {$CMC_BIND:0.0.0.0}
+	@unauthorized not remote_ip {$CMC_ALLOW}
+	@android path /actuator/health /api/auth/login /api/auth/register /api/auth/me /api/auth/verify-email /api/auth/resend-verification /api/auth/password-reset/request /api/auth/password-reset/confirm /api/auth/password-reset/verify/* /api/auth/check-username/* /api/auth/logout /api/auth/logout-all /api/auth/sessions /api/auth/sessions/* /api/2fa/* /api/public/products /api/public/products/* /api/public/categories/active /api/cart /api/cart/summary /api/cart/validate /api/cart/items /api/cart/items/* /api/wishlist /api/wishlist/* /api/users/profile /api/users/security-settings /api/users/change-password /api/orders/my /uploads/products/* /uploads/brands/*
+	@ownOrder {
+		method GET OPTIONS
+		path_regexp ownOrder ^/api/orders/my/[0-9]+(/timeline)?$
+	}
+	@blocked path /api/2fa/debug /api/2fa/debug/*
+
+	route {
+		respond @unauthorized 403
+		respond @blocked 404
+		reverse_proxy @android {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @ownOrder {$CMC_UPSTREAM:backend:8080}
+		respond 404
+	}
+}

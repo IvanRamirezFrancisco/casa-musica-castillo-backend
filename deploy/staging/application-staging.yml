@@ -1,0 +1,64 @@
+server:
+  port: ${STAGING_BACKEND_PORT:8080}
+  forward-headers-strategy: framework
+  error:
+    include-message: never
+    include-stacktrace: never
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${STAGING_DB_HOST:postgres}:${STAGING_DB_PORT:5432}/castillo_staging
+    username: castillo_staging
+    password: ${STAGING_DB_PASSWORD}
+  flyway:
+    baseline-on-migrate: false
+    locations: filesystem:${STAGING_BASELINE:/staging/baseline},classpath:db/migration
+  mail:
+    host: ${STAGING_SMTP_HOST:mailpit}
+    port: ${STAGING_SMTP_PORT:1025}
+    username: ""
+    password: ""
+    properties:
+      mail.smtp.auth: false
+      mail.smtp.starttls.enable: false
+      mail.smtp.ssl.enable: false
+      mail.debug: false
+
+app:
+  base-url: ${STAGING_PUBLIC_ORIGIN}
+  email:
+    sender-address: staging@example.invalid
+    brevo.api-key: ""
+    resend.api-key: ""
+    mailgun.api-key: ""
+  mercadopago:
+    enabled: false
+    access-token: ""
+    public-key: ""
+    webhook-secret: ""
+  notification:
+    sms:
+      project-id: ""
+      access-key-id: ""
+      secret-key: ""
+      dev-mode: false
+
+cors:
+  allowed-origins: https://localhost
+storage:
+  provider: LOCAL
+supabase:
+  url: https://example.invalid
+  service-key: ""
+management:
+  endpoints.web.exposure.include: health
+  endpoint.health.show-details: never
+logging:
+  level:
+    root: WARN
+    com.security: WARN
+    com.security.controller.TwoFactorController: WARN
+    com.security.service.TwoFactorService: WARN
+    com.security.service.TotpService: WARN
+    org.springframework.security: WARN
+    org.springframework.web.cors: WARN

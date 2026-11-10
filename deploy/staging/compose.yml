@@ -1,0 +1,64 @@
+name: castillo-staging
+services:
+  gateway:
+    image: caddy:2.11.9-alpine
+    environment:
+      CMC_SITE: ${STAGING_HOST:?Set an authorized staging hostname}
+      CMC_ALLOW: ${STAGING_ALLOWED_CIDRS:?Set explicit tester CIDRs}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - tls:/data
+    networks: [edge, private]
+    depends_on: [backend]
+  backend:
+    image: eclipse-temurin:21-jre
+    user: "10001:10001"
+    security_opt: ["no-new-privileges:true"]
+    command: ["java", "-XX:MaxRAMPercentage=65", "-jar", "/staging/backend.jar"]
+    working_dir: /tmp
+    environment:
+      SPRING_PROFILES_ACTIVE: staging
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/staging/config/
+      STAGING_PUBLIC_ORIGIN: https://${STAGING_HOST:?Set an authorized staging hostname}
+      STAGING_DB_PASSWORD: ${STAGING_DB_PASSWORD:?Set a dedicated database password}
+      APP_SECURITY_JWT_SECRET: ${STAGING_JWT_SECRET:?Set a dedicated JWT secret}
+      PICKUP_CODE_ENCRYPTION_KEY: ${STAGING_PICKUP_KEY:?Set a dedicated AES key}
+    volumes:
+      - ${STAGING_JAR:?Set the verified candidate JAR path}:/staging/backend.jar:ro
+      - ./application-staging.yml:/staging/config/application-staging.yml:ro
+      - ../../src/test/resources/db/test-baseline:/staging/baseline:ro
+    networks: [private]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: castillo_staging
+      POSTGRES_USER: castillo_staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:?Set a dedicated database password}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "castillo_staging", "-d", "castillo_staging"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres:/var/lib/postgresql
+    networks: [private]
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    environment:
+      MP_MAX_MESSAGES: 100
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [private]
+
+networks:
+  edge:
+  private:
+    internal: true
+volumes:
+  postgres:
+  tls:
