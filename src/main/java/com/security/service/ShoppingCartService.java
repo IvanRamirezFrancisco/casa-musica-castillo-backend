@@ -604,10 +604,12 @@ public class ShoppingCartService {
      */
     @Transactional(readOnly = true)
     public CartDTO.CartResponse buildCartResponse(Long cartId) {
-        ShoppingCart cart = cartRepository.findByIdWithItems(cartId)
+        ShoppingCart cart = cartRepository.findById(cartId)
                 .orElseThrow(() -> new CartNotFoundException(cartId));
 
-        List<CartDTO.CartItemResponse> itemResponses = cart.getItems().stream()
+        // Read the rows directly because an initialized cart collection can be stale after a mutation.
+        List<CartItem> items = cartItemRepository.findByCartId(cartId);
+        List<CartDTO.CartItemResponse> itemResponses = items.stream()
                 .map(this::buildCartItemResponse)
                 .collect(Collectors.toList());
 
@@ -617,7 +619,7 @@ public class ShoppingCartService {
             warningMessage = "El carrito contiene productos no disponibles. Por favor, elimínalos o muévelos a tu lista de deseos para poder comprar.";
         }
 
-        BigDecimal unavailableItemsTotal = cart.getItems().stream()
+        BigDecimal unavailableItemsTotal = items.stream()
                 .filter(item -> !isItemAvailable(item))
                 .map(CartItem::getSubtotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
