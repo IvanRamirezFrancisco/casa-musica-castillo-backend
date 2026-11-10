@@ -327,14 +327,21 @@ public class ShoppingCartService {
 
     @Transactional(readOnly = true)
     public CartDTO.CartSummaryResponse getCartSummaryForUser(Long userId) {
-        ShoppingCart cart = getOrCreateCartForUser(userId);
-        return getCartSummary(cart.getId());
+        return cartRepository.findAllActiveCartsByUserIdIgnoringExpiry(userId).stream().findFirst()
+                .filter(ShoppingCart::isActive)
+                .map(cart -> getCartSummary(cart.getId()))
+                .orElseGet(() -> CartDTO.CartSummaryResponse.builder()
+                        .totalItems(0).subtotal(BigDecimal.ZERO).total(BigDecimal.ZERO)
+                        .canCheckout(false).unavailableItemsCount(0).build());
     }
 
     @Transactional(readOnly = true)
     public CartDTO.CartValidationResponse validateCartForUser(Long userId) {
-        ShoppingCart cart = getOrCreateCartForUser(userId);
-        return validateCartForCheckout(cart.getId());
+        return cartRepository.findAllActiveCartsByUserIdIgnoringExpiry(userId).stream().findFirst()
+                .filter(ShoppingCart::isActive)
+                .map(cart -> validateCartForCheckout(cart.getId()))
+                .orElseGet(() -> CartDTO.CartValidationResponse.builder()
+                        .globalErrors(List.of("El carrito está vacío")).itemWarnings(List.of()).build());
     }
 
     /**

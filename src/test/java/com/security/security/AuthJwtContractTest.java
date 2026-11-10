@@ -88,6 +88,12 @@ class AuthJwtContractTest {
         filter(token("synthetic-jti",10000,syntheticKey,SignatureAlgorithm.HS512));
         assertNull(SecurityContextHolder.getContext().getAuthentication());
     }
+    @Test void tokenValidationDoesNotTurnDatabaseFailureIntoInvalidCredentials() {
+        when(sessions.isSessionValid("synthetic-jti"))
+                .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic storage outage"));
+        String token = token("synthetic-jti", 10_000, syntheticKey, SignatureAlgorithm.HS512);
+        assertThrows(org.springframework.dao.DataAccessResourceFailureException.class, () -> jwt.validateToken(token));
+    }
     @Test void publicRoutesAreExactAndProtectedAuthIsFiltered() {
         for(String path:PublicAuthRoutes.EXACT)assertTrue(filter.shouldNotFilter(new MockHttpServletRequest("POST",path)),path);
         for(String path:new String[]{"/api/auth/me","/api/auth/logout","/api/auth/logout-all","/api/auth/sessions","/api/auth/sessions/other","/api/2fa/verify-extra"})

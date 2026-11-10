@@ -66,6 +66,16 @@ class AuthEndpointSecurityTest {
         mvc.perform(get("/api/auth/sessions")).andExpect(status().isUnauthorized());
         mvc.perform(delete("/api/auth/sessions/foreign")).andExpect(status().isUnauthorized());
     }
+    @Test void unavailableSessionDatabaseDoesNotBecomeUnauthorizedOrExposeDiagnostics() throws Exception {
+        when(sessions.isSessionValid("synthetic-session"))
+                .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("private connection diagnostics"));
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer synthetic-valid-token"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("private connection diagnostics"))));
+        verify(users, never()).getUserResponseById(anyLong());
+    }
     @Test void authenticatedSessionOwnershipIsEnforced() throws Exception {
         mvc.perform(delete("/api/auth/sessions/foreign").header("Authorization","Bearer synthetic-valid-token"))
                 .andExpect(status().isNotFound());

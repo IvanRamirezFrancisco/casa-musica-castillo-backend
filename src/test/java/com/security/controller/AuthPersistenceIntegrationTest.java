@@ -35,6 +35,8 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired ActiveSessionRepository sessions;
     @Autowired PasswordEncoder passwords;
     @Autowired JwtTokenProvider jwt;
+    @org.springframework.beans.factory.annotation.Value("${app.security.jwt.secret}")
+    String testJwtKey;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @MockBean EmailService email;
     @MockBean com.security.config.MercadoPagoConfiguration mercadoPagoConfiguration;
@@ -81,6 +83,25 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
         mvc.perform(post("/api/auth/login").contentType("application/json")
                 .content(json.writeValueAsString(Map.of("email", user.getEmail(), "password", password))))
                 .andExpect(status().isOk());
+    }
+    @Test void meRejectsAnonymousExpiredAndTamperedTokensAgainstPersistentSession() throws Exception {
+        mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        String valid = access();
+        var now = java.time.Instant.now();
+        String expired = io.jsonwebtoken.Jwts.builder().setSubject(user.getId().toString())
+                .setId(jwt.getJtiFromJWT(valid)).setIssuedAt(java.util.Date.from(now.minusSeconds(120)))
+                .setExpiration(java.util.Date.from(now.minusSeconds(60)))
+                .signWith(io.jsonwebtoken.security.Keys.hmacShaKeyFor(
+                        testJwtKey.getBytes(java.nio.charset.StandardCharsets.UTF_8)), io.jsonwebtoken.SignatureAlgorithm.HS512)
+                .compact();
+        int signatureStart = valid.lastIndexOf('.') + 1;
+        char changed = valid.charAt(signatureStart) == 'A' ? 'B' : 'A';
+        String tampered = valid.substring(0, signatureStart) + changed + valid.substring(signatureStart + 1);
+        for (String token : new String[] {expired, tampered}) {
+            mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + token))
+                    .andExpect(status().isUnauthorized());
+        }
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + valid)).andExpect(status().isOk());
     }
 
     @Test void logoutAllRevokesBothRealSessions() throws Exception {

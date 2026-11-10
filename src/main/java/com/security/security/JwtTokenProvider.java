@@ -2,7 +2,6 @@ package com.security.security;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
-import io.jsonwebtoken.security.SecurityException;
 import jakarta.annotation.PostConstruct;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -101,38 +100,20 @@ public class JwtTokenProvider {
     }
 
     public boolean validateToken(String authToken) {
+        String jti;
         try {
             Jws<Claims> parsed = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(authToken);
             Claims claims = parsed.getBody();
+            String subject = claims.getSubject();
             if (!"HS512".equals(parsed.getHeader().getAlgorithm()) || claims.getExpiration() == null
-                    || claims.getIssuedAt() == null || claims.getSubject() == null
-                    || !claims.getSubject().matches("[0-9]+")) return false;
-
-            String jti = claims.getId();
-
-            // Si tiene JTI, verificar que la sesión esté activa en BD.
-            // La actualización de actividad la gestiona JwtAuthenticationFilter
-            // para evitar doble escritura por request.
-            if (jti == null || jti.isBlank() || !sessionManagementService.isSessionValid(jti)) {
-                logger.warn("Sesión ausente, invalidada o expirada");
-                return false;
-            }
-
-            return true;
-        } catch (SecurityException ex) {
-            logger.warn("JWT: firma invalida");
-        } catch (MalformedJwtException ex) {
-            logger.warn("JWT: token malformado");
-        } catch (ExpiredJwtException ex) {
-            logger.warn("JWT: token expirado");
-        } catch (UnsupportedJwtException ex) {
-            logger.warn("JWT: tipo de token no soportado");
-        } catch (IllegalArgumentException ex) {
-            logger.warn("JWT: claims vacios o nulos");
-        } catch (Exception ex) {
-            logger.error("JWT: error inesperado al validar sesion");
+                    || claims.getIssuedAt() == null || subject == null || !subject.matches("[0-9]+")
+                    || Long.parseLong(subject) <= 0) return false;
+            jti = claims.getId();
+        } catch (JwtException | IllegalArgumentException ex) {
+            logger.warn("JWT rechazado: {}", ex.getClass().getSimpleName());
+            return false;
         }
-        return false;
+        return jti != null && !jti.isBlank() && sessionManagementService.isSessionValid(jti);
     }
 
     public Date getExpirationDateFromJWT(String token) {

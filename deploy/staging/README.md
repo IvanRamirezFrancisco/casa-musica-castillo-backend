@@ -15,7 +15,7 @@ docker compose --env-file /ruta/privada/staging.env -f deploy/staging/compose.ym
 docker compose --env-file /ruta/privada/staging.env -f deploy/staging/compose.yml up -d
 ```
 
-Validar `GET /actuator/health` desde la IP permitida y desde otra IP. Esperar 200 y 403 respectivamente. Comprobar que la API rechaza rutas administrativas, checkout, mutaciones de pedidos y webhooks. Revisar que el certificado sea válido para el DNS y que Flyway registre V52 en la base nueva. Para preparar catálogo y, después del registro, un pedido propio sintético, ejecutar el fixture desde el checkout en el host de staging.
+Validar `GET /actuator/health` desde la IP permitida y desde otra IP. Esperar 200 y 403 respectivamente. Comprobar que la API rechaza rutas administrativas, `POST /api/checkout`, mutaciones de pedidos y webhooks. La pasarela permite `POST /api/checkout/price-preview` para cuentas sintéticas. Este endpoint puede crear o renovar el carrito. Las reseñas públicas admiten GET y OPTIONS por ID numérico. Revisar el certificado DNS y que Flyway registre V52 en la base nueva. Para preparar catálogo y, después del registro, un pedido propio sintético, ejecutar el fixture desde el checkout en el host de staging.
 
 ```sh
 docker compose --env-file /ruta/privada/staging.env -f deploy/staging/compose.yml exec -T postgres \

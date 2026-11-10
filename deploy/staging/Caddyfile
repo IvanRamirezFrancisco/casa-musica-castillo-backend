@@ -12,6 +12,14 @@
 		method GET OPTIONS
 		path_regexp ownOrder ^/api/orders/my/[0-9]+(/timeline)?$
 	}
+	@publicReviews {
+		method GET OPTIONS
+		path_regexp publicReviews ^/api/reviews/product/[0-9]+$
+	}
+	@pricePreview {
+		method POST OPTIONS
+		path /api/checkout/price-preview
+	}
 	@blocked path /api/2fa/debug /api/2fa/debug/*
 
 	route {
@@ -19,6 +27,8 @@
 		respond @blocked 404
 		reverse_proxy @android {$CMC_UPSTREAM:backend:8080}
 		reverse_proxy @ownOrder {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @publicReviews {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @pricePreview {$CMC_UPSTREAM:backend:8080}
 		respond 404
 	}
 }
