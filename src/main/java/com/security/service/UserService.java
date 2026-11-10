@@ -72,160 +72,61 @@ public class UserService {
         }
     }
 
-    private record PreparedRegistration(User savedUser, User emailRecipient, String verificationToken) {}
+    private record PreparedRegistration(User emailRecipient, String verificationToken) {}
 
     /**
-     * Patrón UPSERT anti-enumeración para registro de usuarios.
-     *
-     * Tres ramas:
-     * 1. Email NO existe → creación normal (enabled=false, enviar verificación).
-     * 2. Email existe + enabled=false (ghost) → actualizar datos, regenerar token,
-     * reenviar email.
-     * 3. Email existe + enabled=true (activo) → retorno silencioso (sin email, sin
-     * error).
-     *
-     * La persistencia ocurre en una transacción corta antes de invocar el proveedor de correo externo,
-     * evitando mantener conexiones/transacciones abiertas durante llamadas de red y asegurando que
-     * la cuenta pendiente de verificación pueda recuperar su correo mediante reenvío si el proveedor falla.
+     * Creates a pending account in a short transaction before sending verification email.
+     * Repeated anonymous requests never replace an account's data or credentials.
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public User createUser(RegisterRequest registerRequest) {
-        PreparedRegistration prepared = requiresNewTx != null
-                ? requiresNewTx.execute(status -> prepareRegistrationInTx(registerRequest))
-                : prepareRegistrationInTx(registerRequest);
-
-        if (prepared == null) {
-            throw new IllegalStateException("No se pudo preparar el registro de usuario");
+    public void createUser(RegisterRequest registerRequest) {
+        String email = registerRequest.getEmail().trim().toLowerCase(Locale.ROOT);
+        String username = registerRequest.getUsername().trim();
+        PreparedRegistration prepared;
+        try {
+            prepared = requiresNewTx.execute(status -> prepareRegistrationInTx(registerRequest, email, username));
+        } catch (DataIntegrityViolationException ex) {
+            // Check after rollback so a simultaneous registration returns the same neutral response.
+            if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return;
+            throw ex;
         }
+        if (prepared == null) return;
 
-        if (prepared.verificationToken() != null && prepared.emailRecipient() != null) {
-            try {
-                emailService.sendVerificationEmail(prepared.emailRecipient(), prepared.verificationToken());
-                logger.info("Email de verificación enviado a: {}",
-                        LogSanitizer.maskEmail(prepared.emailRecipient().getEmail()));
-            } catch (Exception e) {
-                logger.error("Cuenta registrada pendiente de verificación pero falló el envío de correo para {}: {}",
-                        LogSanitizer.maskEmail(prepared.emailRecipient().getEmail()), e.getClass().getSimpleName());
-                throw new AuthFlowException(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "Tu cuenta fue registrada como pendiente de verificación, pero no se pudo enviar el correo de confirmación en este momento. Puedes solicitar el reenvío de verificación.");
-            }
+        try {
+            emailService.sendVerificationEmail(prepared.emailRecipient(), prepared.verificationToken());
+            logger.info("Correo de verificación aceptado para {}", LogSanitizer.maskEmail(email));
+        } catch (Exception e) {
+            logger.error("Fallo de envío de verificación para {}: {}", LogSanitizer.maskEmail(email),
+                    e.getClass().getSimpleName());
+            throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "No se pudo enviar el correo de verificación. Puedes solicitar el reenvío.");
         }
-
-        return prepared.savedUser();
     }
 
-    protected PreparedRegistration prepareRegistrationInTx(RegisterRequest registerRequest) {
-        String normalizedEmail = registerRequest.getEmail() != null
-                ? registerRequest.getEmail().trim().toLowerCase(Locale.ROOT)
-                : "";
-        String normalizedUsername = registerRequest.getUsername() != null
-                ? registerRequest.getUsername().trim()
-                : "";
-        String normalizedFirstName = registerRequest.getFirstName() != null
-                ? registerRequest.getFirstName().trim()
-                : "";
-        String normalizedLastName = registerRequest.getLastName() != null
-                ? registerRequest.getLastName().trim()
-                : "";
-        String normalizedPhone = (registerRequest.getPhone() != null && !registerRequest.getPhone().trim().isEmpty())
-                ? registerRequest.getPhone().trim()
-                : null;
-
-        Optional<User> existingOpt = userRepository.findByEmail(normalizedEmail);
-
-        if (existingOpt.isPresent()) {
-            User existing = existingOpt.get();
-
-            if (Boolean.TRUE.equals(existing.getEnabled())) {
-                // ── Rama 3: usuario activo → retorno silencioso ──
-                logger.info("Registro silencioso (usuario activo): {}", LogSanitizer.maskEmail(existing.getEmail()));
-                initializeRelations(existing);
-                return new PreparedRegistration(existing, null, null);
-            }
-
-            // ── Rama 2: ghost user (enabled=false) → actualizar datos + regenerar token ──
-            logger.info("Registro upsert (ghost user): {}", LogSanitizer.maskEmail(existing.getEmail()));
-
-            Optional<User> usernameOwner = userRepository.findByUsername(normalizedUsername);
-            if (usernameOwner.isPresent() && !usernameOwner.get().getId().equals(existing.getId())) {
-                logger.info("Conflicto de username en upsert ghost user: {}", LogSanitizer.maskEmail(normalizedEmail));
-                initializeRelations(existing);
-                return new PreparedRegistration(existing, null, null);
-            }
-
-            existing.setUsername(normalizedUsername);
-            existing.setFirstName(normalizedFirstName);
-            existing.setLastName(normalizedLastName);
-            existing.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
-            existing.setPhone(normalizedPhone);
-            existing.setUpdatedAt(LocalDateTime.now());
-
-            User savedUser;
-            try {
-                savedUser = userRepository.save(existing);
-            } catch (DataIntegrityViolationException ex) {
-                logger.warn("Race condition en upsert: {}", LogSanitizer.maskEmail(normalizedEmail));
-                initializeRelations(existing);
-                return new PreparedRegistration(existing, null, null);
-            }
-
-            verificationTokenRepository.deleteByUser(savedUser);
-            String tokenValue = persistVerificationToken(savedUser);
-            initializeRelations(savedUser);
-            return new PreparedRegistration(savedUser, buildEmailRecipientSnapshot(savedUser), tokenValue);
-        }
-
-        // ── Rama 1: usuario nuevo → creación normal ──
-        if (userRepository.existsByUsername(normalizedUsername)) {
-            logger.info("Registro silencioso (username existente): {}", LogSanitizer.maskEmail(normalizedEmail));
-            User dummy = buildDummyUser(normalizedEmail, normalizedFirstName, normalizedLastName);
-            return new PreparedRegistration(dummy, null, null);
-        }
+    private PreparedRegistration prepareRegistrationInTx(RegisterRequest request, String email, String username) {
+        if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return null;
 
         User user = new User();
-        user.setUsername(normalizedUsername);
-        user.setFirstName(normalizedFirstName);
-        user.setLastName(normalizedLastName);
-        user.setEmail(normalizedEmail);
-        user.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
-        user.setPhone(normalizedPhone);
-        user.setEnabled(false); // Se habilitará únicamente tras verificar el email
+        user.setUsername(username);
+        user.setFirstName(request.getFirstName().trim());
+        user.setLastName(request.getLastName().trim());
+        user.setEmail(email);
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setPhone(request.getPhone() == null || request.getPhone().isBlank() ? null : request.getPhone().trim());
+        user.setEnabled(false);
         user.setTwoFactorEnabled(false);
         user.setAccountNonExpired(true);
         user.setAccountNonLocked(true);
         user.setCredentialsNonExpired(true);
         user.setIsCustomer(true);
 
-        Role userRole = roleRepository.findByName("ROLE_USER")
-                .orElseThrow(() -> new RuntimeException("User Role not set."));
+        Role role = roleRepository.findByName("ROLE_USER")
+                .orElseThrow(() -> new IllegalStateException("User Role not set."));
+        user.setRoles(Collections.singleton(role));
 
-        user.setRoles(Collections.singleton(userRole));
-
-        User savedUser;
-        try {
-            savedUser = userRepository.save(user);
-        } catch (DataIntegrityViolationException ex) {
-            logger.warn("Race condition detectada en registro: {}", LogSanitizer.maskEmail(normalizedEmail));
-            User dummy = buildDummyUser(normalizedEmail, normalizedFirstName, normalizedLastName);
-            return new PreparedRegistration(dummy, null, null);
-        }
-
-        String tokenValue = persistVerificationToken(savedUser);
-        initializeRelations(savedUser);
-        return new PreparedRegistration(savedUser, buildEmailRecipientSnapshot(savedUser), tokenValue);
-    }
-
-    private User buildDummyUser(String email, String firstName, String lastName) {
-        User dummy = new User();
-        dummy.setId(0L);
-        dummy.setEmail(email);
-        dummy.setFirstName(firstName);
-        dummy.setLastName(lastName);
-        dummy.setEnabled(false);
-        dummy.setIsCustomer(true);
-        dummy.setRoles(Collections.emptySet());
-        return dummy;
+        User savedUser = userRepository.saveAndFlush(user);
+        String token = persistVerificationToken(savedUser);
+        return new PreparedRegistration(buildEmailRecipientSnapshot(savedUser), token);
     }
 
     private User buildEmailRecipientSnapshot(User user) {
@@ -235,16 +136,6 @@ public class UserService {
         snapshot.setFirstName(user.getFirstName());
         snapshot.setLastName(user.getLastName());
         return snapshot;
-    }
-
-    private void initializeRelations(User user) {
-        if (user.getRoles() != null) {
-            user.getRoles().forEach(role -> {
-                if (role.getPermissions() != null) {
-                    role.getPermissions().size();
-                }
-            });
-        }
     }
 
     private String persistVerificationToken(User user) {

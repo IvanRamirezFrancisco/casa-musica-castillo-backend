@@ -76,19 +76,10 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<?> registerUser(@Valid @RequestBody RegisterRequest registerRequest) {
-        try {
-            UserResponse user = authService.registerUser(registerRequest);
-            return ResponseEntity.ok(new ApiResponse(true,
-                    "Registro completado. Hemos enviado un correo de verificación para activar tu cuenta.", user));
-        } catch (AuthFlowException ex) {
-            return ResponseEntity.status(ex.getStatus())
-                    .body(new ApiResponse(false, ex.getMessage()));
-        } catch (Exception e) {
-            log.warn("Fallo en registro de usuario: {}", e.getClass().getSimpleName());
-            return ResponseEntity.badRequest()
-                    .body(new ApiResponse(false, "No se pudo completar la solicitud"));
-        }
+    public ResponseEntity<ApiResponse> registerUser(@Valid @RequestBody RegisterRequest registerRequest) {
+        authService.registerUser(registerRequest);
+        return ResponseEntity.ok(new ApiResponse(true,
+                "Si los datos permiten registrar la cuenta, recibirás un enlace de verificación."));
     }
 
     @PostMapping("/login")
@@ -139,11 +130,6 @@ public class AuthController {
             try {
                 authenticated = authenticationManager.authenticate(
                         new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(email, loginRequest.getPassword()));
-            } catch (org.springframework.security.authentication.DisabledException disabledEx) {
-                log.warn("Login denegado: cuenta no verificada o deshabilitada");
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(new ApiResponse(false,
-                                "Cuenta no verificada. Por favor verifica tu correo electrónico antes de iniciar sesión."));
             } catch (org.springframework.security.core.AuthenticationException ex) {
                 loginSecurityService.recordFailedAttempt(email);
                 loginSecurityService.recordFailedAttempt(clientIp);
@@ -157,8 +143,7 @@ public class AuthController {
             if (!Boolean.TRUE.equals(user.getEnabled())) {
                 log.warn("Login denegado: cuenta no verificada para usuario ID {}", user.getId());
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(new ApiResponse(false,
-                                "Cuenta no verificada. Por favor verifica tu correo electrónico antes de iniciar sesión."));
+                        .body(new ApiResponse(false, "Credenciales inválidas"));
             }
 
             UserResponse userResponse = userService.convertToUserResponse(user);

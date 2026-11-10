@@ -44,9 +44,8 @@ public class AuthService {
     private VerificationService verificationService;
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public UserResponse registerUser(RegisterRequest registerRequest) {
-        User user = userService.createUser(registerRequest);
-        return convertToUserResponse(user);
+    public void registerUser(RegisterRequest registerRequest) {
+        userService.createUser(registerRequest);
     }
 
     public void verifyEmail(String token) {

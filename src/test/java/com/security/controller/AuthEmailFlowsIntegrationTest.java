@@ -219,7 +219,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .contentType("application/json")
                         .content(json.writeValueAsString(Map.of("email", email, "password", password))))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("Cuenta no verificada")));
+                .andExpect(jsonPath("$.message").value("Credenciales inválidas"));
 
         // Escenarios D y E: Generación y contenido del correo de verificación
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size(), "Debe haberse enviado exactamente 1 correo de verificación");
@@ -327,16 +327,17 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 "lastName", "Castillo"
         );
 
-        mvc.perform(post("/api/auth/register")
+        var accepted = mvc.perform(post("/api/auth/register")
                         .contentType("application/json")
                         .content(json.writeValueAsString(firstAttempt)))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").doesNotExist()).andReturn().getResponse().getContentAsString();
 
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size());
         String firstToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
                 "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
 
-        // B1: Segundo registro sobre cuenta aún NO verificada (ghost account upsert)
+        // B1: Un segundo registro anónimo no reemplaza una cuenta pendiente
         SMTP_SERVER.clear();
         String updatedPassword = "NuevaClave2026!$";
         Map<String, Object> secondAttempt = Map.of(
@@ -351,15 +352,14 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .contentType("application/json")
                         .content(json.writeValueAsString(secondAttempt)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true));
+                .andExpect(content().json(accepted));
+        assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "Un duplicado pendiente no debe enviar otro correo");
+        User pending = userRepository.findByEmail(email).orElseThrow();
+        assertEquals("dup_user_1", pending.getUsername());
+        assertEquals("Carlos", pending.getFirstName());
 
-        assertEquals(1, SMTP_SERVER.getCapturedEmails().size(), "El re-registro de cuenta no verificada debe enviar nuevo correo");
-        String secondToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
-                "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
-        assertFalse(java.util.Objects.equals(firstToken, secondToken), "El nuevo registro debe rotar el token");
-
-        // Verificar mediante GET /api/auth/verify?token=... (debe redirigir a frontendBaseUrl, no hardcoded localhost si cambia)
-        mvc.perform(get("/api/auth/verify").param("token", secondToken))
+        // El enlace original conserva su validez y la redirección.
+        mvc.perform(get("/api/auth/verify").param("token", firstToken))
                 .andExpect(status().isFound())
                 .andExpect(header().string("Location", "http://localhost:4200/login?verified=true"));
 
@@ -377,15 +377,19 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .contentType("application/json")
                         .content(json.writeValueAsString(thirdAttempt)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true));
+                .andExpect(content().json(accepted));
 
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "No debe enviar correo de verificación a cuenta ya activa");
 
         // La contraseña legítima del usuario activo sigue funcionando
         mvc.perform(post("/api/auth/login")
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("email", email, "password", updatedPassword))))
+                        .content(json.writeValueAsString(Map.of("email", email, "password", password))))
                 .andExpect(status().isOk());
+        mvc.perform(post("/api/auth/login")
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(Map.of("email", email, "password", updatedPassword))))
+                .andExpect(status().isUnauthorized());
     }
 
     /**
