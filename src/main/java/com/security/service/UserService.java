@@ -331,17 +331,18 @@ public class UserService {
         return issueLogin.apply(user);
     }
 
-    public void verifyStepUpIfPresent(Long userId, Map<String, String> body) {
-        if (body == null || body.isEmpty()) {
-            return;
+    public void requireStepUp(Long userId, Map<String, String> body) {
+        String currentPassword = body == null ? null : body.get("currentPassword");
+        if (currentPassword == null || currentPassword.isBlank()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere confirmar la contrase\u00f1a actual");
         }
-        String currentPassword = body.get("currentPassword");
-        if (currentPassword != null && !currentPassword.isBlank()) {
-            User user = getUserById(userId);
-            if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
-                    || !passwordEncoder.matches(currentPassword, user.getPassword())) {
-                throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta");
-            }
+        User user = getUserById(userId);
+        if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
+            throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
+                || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contrase\u00f1a actual es incorrecta");
         }
     }
 

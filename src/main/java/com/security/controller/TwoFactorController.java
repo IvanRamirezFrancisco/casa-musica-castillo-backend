@@ -61,7 +61,7 @@ public class TwoFactorController {
     public ResponseEntity<?> disableGoogleAuthenticator(
             @CurrentUser UserPrincipal userPrincipal,
             @RequestBody(required = false) Map<String, String> request) {
-        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             twoFactorService.disableSpecificTwoFactor(userPrincipal.getId(), "GOOGLE_AUTHENTICATOR");
             return ResponseEntity.ok(new ApiResponse(true,
@@ -92,7 +92,7 @@ public class TwoFactorController {
     public ResponseEntity<?> disableEmail2FA(
             @CurrentUser UserPrincipal userPrincipal,
             @RequestBody(required = false) Map<String, String> request) {
-        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             twoFactorService.disableSpecificTwoFactor(userPrincipal.getId(), "EMAIL");
             return ResponseEntity.ok(new ApiResponse(true,
@@ -232,7 +232,10 @@ public class TwoFactorController {
 
     @PostMapping("/disable")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<?> disableTwoFactor(@CurrentUser UserPrincipal userPrincipal) {
+    public ResponseEntity<?> disableTwoFactor(
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             twoFactorService.disableTwoFactor(userPrincipal.getId());
             return ResponseEntity.ok(new ApiResponse(true,
@@ -268,7 +271,9 @@ public class TwoFactorController {
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<?> disableSpecificTwoFactor(
             @PathVariable String method,
-            @CurrentUser UserPrincipal userPrincipal) {
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             twoFactorService.disableSpecificTwoFactor(userPrincipal.getId(), method);
             return ResponseEntity.ok(new ApiResponse(true,
@@ -341,7 +346,7 @@ public class TwoFactorController {
     public ResponseEntity<?> generateBackupCodes(
             @CurrentUser UserPrincipal userPrincipal,
             @RequestBody(required = false) Map<String, String> request) {
-        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             List<String> backupCodes = backupCodeService.generateBackupCodes(userPrincipal.getId());
 
@@ -406,7 +411,7 @@ public class TwoFactorController {
     public ResponseEntity<?> disableBackupCodes(
             @CurrentUser UserPrincipal userPrincipal,
             @RequestBody(required = false) Map<String, String> request) {
-        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
+        userService.requireStepUp(userPrincipal.getId(), request);
         try {
             backupCodeService.disableBackupCodes(userPrincipal.getId());
             return ResponseEntity.ok(new ApiResponse(true,

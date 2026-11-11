@@ -179,8 +179,8 @@ app:
   
   # Configuraciones de proveedores de email alternativos
   email:
-    sender-name: ${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}
-    sender-address: ${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}
+    sender-name: ${EMAIL_FROM_NAME:${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}}
+    sender-address: ${EMAIL_FROM:${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}}
     brevo:
       api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:

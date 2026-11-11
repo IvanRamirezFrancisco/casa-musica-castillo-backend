@@ -77,27 +77,106 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
     }
 
     @Test void stepUpVerificationProtectsSensitiveTwoFactorDisableOperations() throws Exception {
-        user.setEmailEnabled(true);user.setTwoFactorEnabled(true);users.save(user);
-        user.setPassword(passwords.encode(PASSWORD));users.save(user);
-        String challenge=login().get("preAuthChallenge").asText();
+        var generator = new com.warrenstrange.googleauth.GoogleAuthenticator();
+        String secret = generator.createCredentials().getKey();
+        user.setEmailEnabled(true);
+        user.setGoogleAuthEnabled(true);
+        user.setGoogleAuthSecret(secret);
+        user.setTwoFactorEnabled(true);
+        user.setPassword(passwords.encode(PASSWORD));
+        users.save(user);
+
+        String challenge = login().get("preAuthChallenge").asText();
         mvc.perform(post("/api/2fa/send-login-code").contentType("application/json")
-                .content(json.writeValueAsString(Map.of("preAuthChallenge",challenge,"method","EMAIL"))))
+                .content(json.writeValueAsString(Map.of("preAuthChallenge", challenge, "method", "EMAIL"))))
                 .andExpect(status().isOk());
-        var code=org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(email, atLeastOnce()).send2FACodeEmail(any(User.class),code.capture());
-        var verifyRes=mvc.perform(post("/api/2fa/verify").contentType("application/json")
-                .content(json.writeValueAsString(Map.of("preAuthChallenge",challenge,"method","EMAIL","code",code.getValue()))))
+        var code = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(email, atLeastOnce()).send2FACodeEmail(any(User.class), code.capture());
+        var verifyRes = mvc.perform(post("/api/2fa/verify").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("preAuthChallenge", challenge, "method", "EMAIL", "code", code.getValue()))))
                 .andExpect(status().isOk()).andReturn();
-        String token=json.readTree(verifyRes.getResponse().getContentAsString()).get("data").get("accessToken").asText();
+        String token = json.readTree(verifyRes.getResponse().getContentAsString()).get("data").get("accessToken").asText();
 
-        mvc.perform(post("/api/2fa/email/disable").header("Authorization","Bearer "+token)
-                .contentType("application/json").content(json.writeValueAsString(Map.of("currentPassword","WrongPassword!1"))))
-                .andExpect(status().isBadRequest());
-        assertTrue(users.findById(user.getId()).orElseThrow().getEmailEnabled());
+        String[] protectedEndpoints = {
+            "/api/2fa/google/disable",
+            "/api/2fa/email/disable",
+            "/api/2fa/backup-codes/generate",
+            "/api/2fa/backup-codes/disable",
+            "/api/2fa/disable",
+            "/api/2fa/disable/GOOGLE_AUTHENTICATOR"
+        };
 
-        mvc.perform(post("/api/2fa/email/disable").header("Authorization","Bearer "+token)
-                .contentType("application/json").content(json.writeValueAsString(Map.of("currentPassword",PASSWORD))))
-                .andExpect(status().isOk());
+        for (String endpoint : protectedEndpoints) {
+            // 1. Ausente (sin cuerpo)
+            mvc.perform(post(endpoint).header("Authorization", "Bearer " + token)
+                    .contentType("application/json"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.success").value(false));
+
+            // 2. Ausente (JSON vac?o {})
+            mvc.perform(post(endpoint).header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content("{}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.success").value(false));
+
+            // 3. Vac?a ("") y solo espacios ("   ")
+            for (String blank : new String[]{"", "   "}) {
+                mvc.perform(post(endpoint).header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(Map.of("currentPassword", blank))))
+                        .andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.success").value(false));
+            }
+
+            // 4. Incorrecta
+            var wrongRes = mvc.perform(post(endpoint).header("Authorization", "Bearer " + token)
+                    .contentType("application/json")
+                    .content(json.writeValueAsString(Map.of("currentPassword", "WrongPassword!1"))))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.success").value(false))
+                    .andReturn();
+            assertFalse(wrongRes.getResponse().getContentAsString().contains("WrongPassword!1"));
+        }
+
+        // Verify state remained untouched after all negative attempts
+        User untouched = users.findById(user.getId()).orElseThrow();
+        assertTrue(untouched.getEmailEnabled());
+        assertTrue(untouched.getGoogleAuthEnabled());
+        assertFalse(Boolean.TRUE.equals(untouched.getBackupCodesEnabled()));
+
+        // 5. V?lida: generate backup codes
+        var genRes = mvc.perform(post("/api/2fa/backup-codes/generate").header("Authorization", "Bearer " + token)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of("currentPassword", PASSWORD))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.count").value(10))
+                .andReturn();
+        assertFalse(genRes.getResponse().getContentAsString().contains(PASSWORD));
+        assertTrue(users.findById(user.getId()).orElseThrow().getBackupCodesEnabled());
+
+        // 6. V?lida: disable backup codes
+        mvc.perform(post("/api/2fa/backup-codes/disable").header("Authorization", "Bearer " + token)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of("currentPassword", PASSWORD))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+        assertFalse(users.findById(user.getId()).orElseThrow().getBackupCodesEnabled());
+
+        // 7. V?lida: disable Google Authenticator
+        mvc.perform(post("/api/2fa/google/disable").header("Authorization", "Bearer " + token)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of("currentPassword", PASSWORD))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+        assertFalse(users.findById(user.getId()).orElseThrow().getGoogleAuthEnabled());
+
+        // 8. V?lida: disable Email 2FA
+        mvc.perform(post("/api/2fa/email/disable").header("Authorization", "Bearer " + token)
+                .contentType("application/json")
+                .content(json.writeValueAsString(Map.of("currentPassword", PASSWORD))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
         assertFalse(users.findById(user.getId()).orElseThrow().getEmailEnabled());
     }
 
