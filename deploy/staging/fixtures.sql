@@ -2,7 +2,7 @@
 BEGIN;
 DO $$
 BEGIN
-    IF current_database() <> 'castillo_staging' OR current_user <> 'castillo_staging' THEN
+    IF current_database() <> 'castillo_staging' OR current_user NOT IN ('castillo_staging', 'castillo_staging_migrator') THEN
         RAISE EXCEPTION 'Fixtures require the dedicated staging database and role';
     END IF;
 END $$;
@@ -27,6 +27,7 @@ INSERT INTO sales.orders
 SELECT 'STG-' || u.id, now(), 'PENDING', 'PENDING', 'PENDING', 500, 500, u.id
 FROM auth.users u
 WHERE u.username = :'fixture_username' AND u.username LIKE 'stg-%'
+  AND u.email = 'castillo.lab.' || substring(u.username from 5) || '@gmail.com'
 ON CONFLICT (order_number) DO NOTHING;
 
 INSERT INTO sales.order_items
@@ -36,6 +37,7 @@ FROM sales.orders o
 JOIN auth.users u ON u.id = o.user_id
 JOIN catalog.products p ON p.sku = 'STG-GUITAR-01'
 WHERE o.order_number = 'STG-' || u.id AND u.username = :'fixture_username' AND u.username LIKE 'stg-%'
+  AND u.email = 'castillo.lab.' || substring(u.username from 5) || '@gmail.com'
   AND NOT EXISTS (SELECT 1 FROM sales.order_items oi WHERE oi.order_id = o.id);
 \endif
 COMMIT;
