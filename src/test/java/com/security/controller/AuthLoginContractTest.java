@@ -36,7 +36,8 @@ class AuthLoginContractTest {
         ReflectionTestUtils.setField(controller,"authenticationManager",manager);
         ReflectionTestUtils.setField(controller,"loginChallenges",challenges);
         user=new User();user.setId(1L);user.setEmail("synthetic@example.invalid");user.setEnabled(true);
-        when(users.getUserByEmail(user.getEmail())).thenReturn(user);
+        when(users.completePasswordLogin(any(), any())).thenAnswer(call ->
+                call.<java.util.function.Function<User, ?>>getArgument(1).apply(user));
         var principal=UserPrincipal.create(user);
         when(manager.authenticate(any())).thenReturn(new UsernamePasswordAuthenticationToken(principal,null,principal.getAuthorities()));
         when(jwt.generateToken(any(),any())).thenReturn("synthetic-session-access");
@@ -51,6 +52,12 @@ class AuthLoginContractTest {
         when(manager.authenticate(any())).thenThrow(new BadCredentialsException("synthetic"));
         assertEquals(401,controller.authenticateUser(request(),new MockHttpServletRequest()).getStatusCode().value());
         verify(limits).recordFailedAttempt(user.getEmail());verifyNoInteractions(jwt,challenges);
+    }
+    @Test void authenticationStorageFailureIsNotAnIncorrectPassword() {
+        when(manager.authenticate(any())).thenThrow(new InternalAuthenticationServiceException("private detail"));
+        assertEquals(500,controller.authenticateUser(request(),new MockHttpServletRequest()).getStatusCode().value());
+        verify(limits,never()).recordFailedAttempt(anyString());
+        verifyNoInteractions(jwt,challenges);
     }
     @Test void disabledAccountCannotAuthenticate() {
         when(manager.authenticate(any())).thenThrow(new DisabledException("synthetic"));

@@ -70,6 +70,33 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
         assertTrue(sessions.findByJwtTokenId(jti).orElseThrow().getRevoked());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
     }
+
+    @Test void passwordChangeRequiresCurrentPasswordAndRevokesAllExistingSessions() throws Exception {
+        String first = access();
+        String second = access();
+        String next = "Vmx!84Kq92";
+        String valid = json.writeValueAsString(Map.of("currentPassword", PASSWORD, "newPassword", next));
+        mvc.perform(post("/api/users/change-password").contentType("application/json").content(valid))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/users/change-password").header("Authorization", "Bearer " + first)
+                .contentType("application/json").content(json.writeValueAsString(
+                        Map.of("currentPassword", "Incorrect@83Lz", "newPassword", next))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + second)).andExpect(status().isOk());
+        mvc.perform(post("/api/users/change-password").header("Authorization", "Bearer " + first)
+                .contentType("application/json").content(valid)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+        for (String token : new String[]{first, second}) {
+            mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + token))
+                    .andExpect(status().isUnauthorized());
+        }
+        mvc.perform(post("/api/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("email", user.getEmail(), "password", PASSWORD))))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("email", user.getEmail(), "password", next))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.jwtResponse.accessToken").isString());
+    }
     @Test void rejectsPasswordBeyondBcryptLimitWithoutIssuingSession() throws Exception {
         String password = "á".repeat(36);
         user.setPassword(passwords.encode(password));

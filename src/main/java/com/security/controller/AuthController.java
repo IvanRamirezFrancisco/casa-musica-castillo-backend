@@ -130,6 +130,10 @@ public class AuthController {
             try {
                 authenticated = authenticationManager.authenticate(
                         new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(email, loginRequest.getPassword()));
+            } catch (org.springframework.security.authentication.AuthenticationServiceException ex) {
+                log.error("No se pudo consultar el servicio de autenticación: {}", ex.getClass().getSimpleName());
+                return ResponseEntity.internalServerError()
+                        .body(new ApiResponse(false, "No se pudo procesar el inicio de sesión."));
             } catch (org.springframework.security.core.AuthenticationException ex) {
                 loginSecurityService.recordFailedAttempt(email);
                 loginSecurityService.recordFailedAttempt(clientIp);
@@ -137,51 +141,44 @@ public class AuthController {
                         .body(new ApiResponse(false, "Credenciales inválidas"));
             }
 
-            User user = userService.getUserByEmail(email);
+            return userService.completePasswordLogin((com.security.security.UserPrincipal) authenticated.getPrincipal(), user -> {
+                UserResponse userResponse = userService.convertToUserResponse(user);
 
-            // ===== VERIFICAR SI LA CUENTA ESTÁ HABILITADA =====
-            if (!Boolean.TRUE.equals(user.getEnabled())) {
-                log.warn("Login denegado: cuenta no verificada para usuario ID {}", user.getId());
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(new ApiResponse(false, "Credenciales inválidas"));
-            }
+                boolean hasGoogleAuth = Boolean.TRUE.equals(user.getGoogleAuthEnabled());
+                boolean hasEmail2FA = Boolean.TRUE.equals(user.getEmailEnabled());
+                boolean requiresTwoFactor = hasGoogleAuth || hasEmail2FA;
 
-            UserResponse userResponse = userService.convertToUserResponse(user);
+                if (requiresTwoFactor) {
+                    return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", loginChallenges.create(user.getId())));
+                }
 
-            boolean hasGoogleAuth = Boolean.TRUE.equals(user.getGoogleAuthEnabled());
-            boolean hasEmail2FA = Boolean.TRUE.equals(user.getEmailEnabled());
-            boolean requiresTwoFactor = hasGoogleAuth || hasEmail2FA;
+                com.security.security.UserPrincipal userPrincipal = com.security.security.UserPrincipal.create(user);
 
-            if (requiresTwoFactor) {
-                return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", loginChallenges.create(user.getId())));
-            }
+                org.springframework.security.authentication.UsernamePasswordAuthenticationToken authToken = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        userPrincipal, null, userPrincipal.getAuthorities());
 
-            com.security.security.UserPrincipal userPrincipal = com.security.security.UserPrincipal.create(user);
+                String token = jwtTokenProvider.generateToken(authToken, request);
+                loginSecurityService.clearFailedAttempts(email);
+                loginSecurityService.clearFailedAttempts(clientIp);
 
-            org.springframework.security.authentication.UsernamePasswordAuthenticationToken authToken = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    userPrincipal, null, userPrincipal.getAuthorities());
+                long activeSessions = sessionManagementService.getActiveSessionCount(user.getEmail());
 
-            String token = jwtTokenProvider.generateToken(authToken, request);
-            loginSecurityService.clearFailedAttempts(email);
-            loginSecurityService.clearFailedAttempts(clientIp);
+                JwtAuthResponse jwtResponse = new JwtAuthResponse();
+                jwtResponse.setAccessToken(token);
+                jwtResponse.setTokenType("Bearer");
+                jwtResponse.setUser(userResponse);
 
-            long activeSessions = sessionManagementService.getActiveSessionCount(user.getEmail());
+                Map<String, Object> sessionInfo = new HashMap<>();
+                sessionInfo.put("activeSessions", activeSessions);
+                sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions());
+                sessionInfo.put("sessionInfo", "Sesiones activas: " + activeSessions + "/3");
 
-            JwtAuthResponse jwtResponse = new JwtAuthResponse();
-            jwtResponse.setAccessToken(token);
-            jwtResponse.setTokenType("Bearer");
-            jwtResponse.setUser(userResponse);
+                Map<String, Object> responseData = new HashMap<>();
+                responseData.put("jwtResponse", jwtResponse);
+                responseData.put("sessionManagement", sessionInfo);
 
-            Map<String, Object> sessionInfo = new HashMap<>();
-            sessionInfo.put("activeSessions", activeSessions);
-            sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions());
-            sessionInfo.put("sessionInfo", "Sesiones activas: " + activeSessions + "/3");
-
-            Map<String, Object> responseData = new HashMap<>();
-            responseData.put("jwtResponse", jwtResponse);
-            responseData.put("sessionManagement", sessionInfo);
-
-            return ResponseEntity.ok(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
+                return ResponseEntity.ok(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
+            });
         } catch (AuthFlowException ex) {
             throw ex;
         } catch (Exception e) {

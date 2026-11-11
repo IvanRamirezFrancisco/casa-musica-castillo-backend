@@ -99,6 +99,7 @@ public class UserController {
                                         user.getBackupCodesEnabled() != null ? user.getBackupCodesEnabled() : false);
                         securityData.put("twoFactorType",
                                         user.getTwoFactorType() != null ? user.getTwoFactorType().toString() : null);
+                        securityData.put("passwordChangeRevokesSessions", true);
 
                         return ResponseEntity.ok(new ApiResponse(true,
                                         "Security settings retrieved successfully", securityData));
@@ -115,41 +116,11 @@ public class UserController {
          * Nota: Cualquier usuario autenticado puede cambiar su propia contraseña
          */
         @PostMapping("/change-password")
+        @PreAuthorize("isAuthenticated()")
         public ResponseEntity<?> changePassword(@Valid @RequestBody ChangePasswordRequest request,
                         @CurrentUser UserPrincipal userPrincipal) {
-                try {
-                        // Obtener el usuario actual
-                        User currentUser = userService.getUserById(userPrincipal.getId());
-
-                        // Verificar la contraseña actual
-                        if (!passwordEncoder.matches(request.getCurrentPassword(), currentUser.getPassword())) {
-                                return ResponseEntity.badRequest()
-                                                .body(new ApiResponse(false, "La contraseña actual es incorrecta"));
-                        }
-
-                        // Verificar que la nueva contraseña cumpla los requisitos
-                        if (request.getNewPassword() == null || request.getNewPassword().trim().length() < 8) {
-                                return ResponseEntity.badRequest().body(new ApiResponse(false,
-                                                "La nueva contraseña debe tener al menos 8 caracteres"));
-                        }
-
-                        // Verificar que la nueva contraseña no sea igual a la actual
-                        if (passwordEncoder.matches(request.getNewPassword(), currentUser.getPassword())) {
-                                return ResponseEntity.badRequest().body(new ApiResponse(false,
-                                                "La nueva contraseña debe ser diferente a la actual"));
-                        }
-
-                        // Actualizar la contraseña
-                        currentUser.setPassword(passwordEncoder.encode(request.getNewPassword()));
-                        userService.save(currentUser);
-
-                        return ResponseEntity.ok(new ApiResponse(true, "Contraseña actualizada correctamente"));
-
-                } catch (Exception e) {
-                        logger.error("Error en change-password para usuario {}: {}", userPrincipal.getId(), e.getMessage());
-                return ResponseEntity.status(500)
-                                .body(new ApiResponse(false, "Error interno del servidor"));
-                }
+                userService.changeOwnPassword(userPrincipal.getId(), request.getCurrentPassword(), request.getNewPassword());
+                return ResponseEntity.ok(new ApiResponse(true, "Contraseña actualizada correctamente"));
         }
 
         /**

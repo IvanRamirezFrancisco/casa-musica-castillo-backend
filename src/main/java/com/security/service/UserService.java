@@ -62,6 +62,15 @@ public class UserService {
     @Autowired
     private AdminHierarchyService adminHierarchyService;
 
+    @Autowired
+    private SessionManagementService sessionManagementService;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
     private TransactionTemplate requiresNewTx;
 
     @Autowired(required = false)
@@ -300,6 +309,46 @@ public class UserService {
             logger.warn("⚠️ No se pudo registrar audit log para deshabilitación de usuario {}: {}",
                     userId, auditEx.getMessage());
         }
+    }
+
+    private User lockAccount(Long userId) {
+        User user = userRepository.findByIdForAuthUpdate(userId)
+                .orElseThrow(() -> new AuthFlowException(HttpStatus.UNAUTHORIZED));
+        entityManager.refresh(user);
+        return user;
+    }
+
+    @Transactional(noRollbackFor = AuthFlowException.class)
+    public <T> T completePasswordLogin(com.security.security.UserPrincipal authenticated,
+            java.util.function.Function<User, T> issueLogin) {
+        User user = lockAccount(authenticated.getId());
+        if (!java.util.Objects.equals(user.getPassword(), authenticated.getPassword())
+                || !Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())
+                || !Boolean.TRUE.equals(user.getAccountNonExpired()) || !Boolean.TRUE.equals(user.getCredentialsNonExpired())) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Credenciales inválidas");
+        }
+        return issueLogin.apply(user);
+    }
+
+    public void changeOwnPassword(Long userId, String currentPassword, String newPassword) {
+        User user = lockAccount(userId);
+        if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
+            throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
+                || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta");
+        }
+        if (currentPassword.equals(newPassword)) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La nueva contraseña debe ser diferente a la actual");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setCredentialsNonExpired(true);
+        user.setUpdatedAt(now);
+        sessionManagementService.invalidateAllUserSessions(user.getEmail());
+        jdbcTemplate.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",
+                now, userId);
     }
 
     public void changePassword(Long userId, String newPassword) {
