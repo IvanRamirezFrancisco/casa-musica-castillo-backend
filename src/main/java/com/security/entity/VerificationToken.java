@@ -16,6 +16,9 @@ public class VerificationToken {
     @Column(nullable = false, unique = true)
     private String token;
 
+    @Column(name = "recipient_email", length = 100)
+    private String recipientEmail;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
@@ -60,6 +63,14 @@ public class VerificationToken {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public void bindRecipient(String email) {
+        recipientEmail = email;
+    }
+
+    public boolean matchesCurrentRecipient() {
+        return recipientEmail != null && recipientEmail.equalsIgnoreCase(user.getEmail());
     }
 
     public User getUser() {

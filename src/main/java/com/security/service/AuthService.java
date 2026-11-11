@@ -72,6 +72,7 @@ public class AuthService {
         userResponse.setEmail(user.getEmail());
         userResponse.setPhone(user.getPhone());
         userResponse.setEnabled(user.getEnabled());
+        userResponse.setEmailVerified(user.isEmailVerified());
         userResponse.setTwoFactorEnabled(user.getTwoFactorEnabled());
         userResponse.setCreatedAt(user.getCreatedAt());
         userResponse.setUpdatedAt(user.getUpdatedAt());

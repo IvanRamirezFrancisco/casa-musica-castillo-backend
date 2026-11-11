@@ -3,7 +3,9 @@ package com.security.repository;
 import com.security.entity.VerificationToken;
 import com.security.entity.User;
 import com.security.enums.TokenType;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -25,8 +27,9 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
     List<VerificationToken> findByUserId(Long userId);
 
     // Tokens válidos
-    @Query("SELECT vt FROM VerificationToken vt WHERE vt.token = :token AND vt.expiryDate > :currentTime AND vt.used = false")
-    Optional<VerificationToken> findValidToken(@Param("token") String token,
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT vt FROM VerificationToken vt WHERE vt.token = :token AND vt.tokenType = :type AND vt.expiryDate > :currentTime AND vt.used = false")
+    Optional<VerificationToken> findValidToken(@Param("token") String token, @Param("type") TokenType type,
             @Param("currentTime") LocalDateTime currentTime);
 
     // Verificar existencia

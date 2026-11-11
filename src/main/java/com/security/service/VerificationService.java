@@ -75,6 +75,7 @@ public class VerificationService {
         VerificationToken verificationToken = new VerificationToken();
         verificationToken.setToken(tokenValue);
         verificationToken.setUser(user);
+        verificationToken.bindRecipient(user.getEmail());
         verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION);
         verificationToken.setExpiryDate(LocalDateTime.now().plusSeconds(emailTokenExpirationMs / 1000));
         verificationToken.setUsed(false);
@@ -89,13 +90,15 @@ public class VerificationService {
             return false;
         }
         Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository.findValidToken(
-                token.trim(), LocalDateTime.now());
+                token.trim(), TokenType.EMAIL_VERIFICATION, LocalDateTime.now())
+                .filter(VerificationToken::matchesCurrentRecipient);
 
         if (verificationTokenOpt.isPresent()) {
             VerificationToken verificationToken = verificationTokenOpt.get();
             User user = verificationToken.getUser();
 
             user.setEnabled(true);
+            user.recordEmailVerification(LocalDateTime.now());
             user.setUpdatedAt(LocalDateTime.now());
             userService.save(user);
 

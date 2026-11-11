@@ -58,7 +58,7 @@ public class UserController {
                         profileData.put("lastName", user.getLastName());
                         profileData.put("phone", user.getPhone());
                         profileData.put("enabled", user.getEnabled());
-                        profileData.put("emailVerified", Boolean.TRUE.equals(user.getEnabled()));
+                        profileData.put("emailVerified", user.isEmailVerified());
 
                         // Estados 2FA
                         profileData.put("twoFactorEnabled", user.getTwoFactorEnabled());
@@ -100,7 +100,7 @@ public class UserController {
                                         user.getBackupCodesEnabled() != null ? user.getBackupCodesEnabled() : false);
                         securityData.put("twoFactorType",
                                         user.getTwoFactorType() != null ? user.getTwoFactorType().toString() : null);
-                        securityData.put("emailVerified", Boolean.TRUE.equals(user.getEnabled()));
+                        securityData.put("emailVerified", user.isEmailVerified());
                         securityData.put("passwordChangeRevokesSessions", true);
 
                         return ResponseEntity.ok(new ApiResponse(true,

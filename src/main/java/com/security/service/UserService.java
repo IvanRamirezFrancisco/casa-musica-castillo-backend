@@ -153,6 +153,7 @@ public class UserService {
         VerificationToken verificationToken = new VerificationToken();
         verificationToken.setToken(tokenValue);
         verificationToken.setUser(user);
+        verificationToken.bindRecipient(user.getEmail());
         verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION);
         verificationToken.setExpiryDate(LocalDateTime.now().plusHours(24));
         verificationToken.setUsed(false);
@@ -170,7 +171,8 @@ public class UserService {
         String cleanToken = token.trim();
 
         Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository
-                .findValidToken(cleanToken, LocalDateTime.now());
+                .findValidToken(cleanToken, TokenType.EMAIL_VERIFICATION, LocalDateTime.now())
+                .filter(VerificationToken::matchesCurrentRecipient);
 
         if (verificationTokenOpt.isEmpty()) {
             logger.warn("Token de verificacion invalido o expirado");
@@ -182,6 +184,7 @@ public class UserService {
 
         // Activar usuario
         user.setEnabled(true);
+        user.recordEmailVerification(LocalDateTime.now());
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
 
@@ -439,7 +442,7 @@ public class UserService {
         userResponse.setEmail(user.getEmail());
         userResponse.setPhone(user.getPhone());
         userResponse.setEnabled(Boolean.TRUE.equals(user.getEnabled()));
-        userResponse.setEmailVerified(Boolean.TRUE.equals(user.getEnabled()));
+        userResponse.setEmailVerified(user.isEmailVerified());
         userResponse.setGoogleAuthEnabled(user.getGoogleAuthEnabled());
         userResponse.setEmailEnabled(user.getEmailEnabled());
         userResponse.setBackupCodesEnabled(user.getBackupCodesEnabled());

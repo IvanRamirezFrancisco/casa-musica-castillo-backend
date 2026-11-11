@@ -7,6 +7,7 @@ import com.security.repository.ActiveSessionRepository;
 import com.security.repository.UserRepository;
 import com.security.security.JwtTokenProvider;
 import com.security.service.EmailService;
+import com.security.service.VerificationService;
 import com.security.support.LocalPostgresIntegrationTest;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +35,7 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired UserRepository users;
     @Autowired ActiveSessionRepository sessions;
     @Autowired PasswordEncoder passwords;
+    @Autowired VerificationService verification;
     @Autowired JwtTokenProvider jwt;
     @org.springframework.beans.factory.annotation.Value("${app.security.jwt.secret}")
     String testJwtKey;
@@ -65,15 +67,36 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
         assertTrue(jwt.validateToken(token));assertTrue(sessions.findByJwtTokenId(jti).isPresent());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.email").value(user.getEmail()))
-                .andExpect(jsonPath("$.emailVerified").value(true))
+                .andExpect(jsonPath("$.enabled").value(true))
+                .andExpect(jsonPath("$.emailVerified").value(false))
                 .andExpect(jsonPath("$.password").doesNotExist());
         mvc.perform(get("/api/users/profile").header("Authorization","Bearer "+token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(true));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(false));
         mvc.perform(get("/api/users/security-settings").header("Authorization","Bearer "+token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(true));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(false));
         mvc.perform(post("/api/auth/logout").header("Authorization","Bearer "+token)).andExpect(status().isOk());
         assertTrue(sessions.findByJwtTokenId(jti).orElseThrow().getRevoked());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
+    }
+
+    @Test void confirmedEmailIsRecordedIndependentlyOfAccountStatus() throws Exception {
+        user.setEnabled(false);
+        user = users.save(user);
+        String token = verification.generateVerificationToken(user);
+        mvc.perform(post("/api/auth/verify-email").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("token", token))))
+                .andExpect(status().isOk());
+        String bearer = "Bearer " + access();
+        mvc.perform(get("/api/auth/me").header("Authorization", bearer))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.emailVerified").value(true));
+        mvc.perform(get("/api/users/security-settings").header("Authorization", bearer))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(true));
+
+        user = users.findById(user.getId()).orElseThrow();
+        user.setEmail("replacement@example.invalid");
+        user = users.save(user);
+        mvc.perform(get("/api/users/profile").header("Authorization", "Bearer " + access()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(false));
     }
 
     @Test void stepUpVerificationProtectsSensitiveTwoFactorDisableOperations() throws Exception {

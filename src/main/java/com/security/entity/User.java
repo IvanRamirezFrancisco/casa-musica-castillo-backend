@@ -42,6 +42,9 @@ public class User {
     @Column(nullable = false, unique = true)
     private String email;
 
+    @Column(name = "email_verified_at")
+    private LocalDateTime emailVerifiedAt;
+
     @NotBlank
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
     @Column(nullable = false)
@@ -255,7 +258,18 @@ public class User {
     }
 
     public void setEmail(String email) {
+        if (this.email != null && !this.email.equalsIgnoreCase(email)) {
+            emailVerifiedAt = null;
+        }
         this.email = email;
+    }
+
+    public boolean isEmailVerified() {
+        return emailVerifiedAt != null;
+    }
+
+    public void recordEmailVerification(LocalDateTime verifiedAt) {
+        emailVerifiedAt = verifiedAt;
     }
 
     public String getPassword() {
