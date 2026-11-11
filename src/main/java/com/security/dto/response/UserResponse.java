@@ -11,6 +11,7 @@ public class UserResponse {
     private String email;
     private String phone;
     private boolean enabled;
+    private boolean emailVerified;
     private boolean twoFactorEnabled;
     private Set<String> roles;
     private Set<String> permissions;
@@ -106,6 +107,15 @@ public class UserResponse {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+        this.emailVerified = enabled;
+    }
+
+    public boolean isEmailVerified() {
+        return emailVerified;
+    }
+
+    public void setEmailVerified(boolean emailVerified) {
+        this.emailVerified = emailVerified;
     }
 
     public boolean isTwoFactorEnabled() {

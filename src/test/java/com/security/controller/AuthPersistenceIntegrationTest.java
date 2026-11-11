@@ -65,10 +65,40 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
         assertTrue(jwt.validateToken(token));assertTrue(sessions.findByJwtTokenId(jti).isPresent());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.email").value(user.getEmail()))
+                .andExpect(jsonPath("$.emailVerified").value(true))
                 .andExpect(jsonPath("$.password").doesNotExist());
+        mvc.perform(get("/api/users/profile").header("Authorization","Bearer "+token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(true));
+        mvc.perform(get("/api/users/security-settings").header("Authorization","Bearer "+token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.emailVerified").value(true));
         mvc.perform(post("/api/auth/logout").header("Authorization","Bearer "+token)).andExpect(status().isOk());
         assertTrue(sessions.findByJwtTokenId(jti).orElseThrow().getRevoked());
         mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
+    }
+
+    @Test void stepUpVerificationProtectsSensitiveTwoFactorDisableOperations() throws Exception {
+        user.setEmailEnabled(true);user.setTwoFactorEnabled(true);users.save(user);
+        user.setPassword(passwords.encode(PASSWORD));users.save(user);
+        String challenge=login().get("preAuthChallenge").asText();
+        mvc.perform(post("/api/2fa/send-login-code").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("preAuthChallenge",challenge,"method","EMAIL"))))
+                .andExpect(status().isOk());
+        var code=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(email, atLeastOnce()).send2FACodeEmail(any(User.class),code.capture());
+        var verifyRes=mvc.perform(post("/api/2fa/verify").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("preAuthChallenge",challenge,"method","EMAIL","code",code.getValue()))))
+                .andExpect(status().isOk()).andReturn();
+        String token=json.readTree(verifyRes.getResponse().getContentAsString()).get("data").get("accessToken").asText();
+
+        mvc.perform(post("/api/2fa/email/disable").header("Authorization","Bearer "+token)
+                .contentType("application/json").content(json.writeValueAsString(Map.of("currentPassword","WrongPassword!1"))))
+                .andExpect(status().isBadRequest());
+        assertTrue(users.findById(user.getId()).orElseThrow().getEmailEnabled());
+
+        mvc.perform(post("/api/2fa/email/disable").header("Authorization","Bearer "+token)
+                .contentType("application/json").content(json.writeValueAsString(Map.of("currentPassword",PASSWORD))))
+                .andExpect(status().isOk());
+        assertFalse(users.findById(user.getId()).orElseThrow().getEmailEnabled());
     }
 
     @Test void passwordChangeRequiresCurrentPasswordAndRevokesAllExistingSessions() throws Exception {

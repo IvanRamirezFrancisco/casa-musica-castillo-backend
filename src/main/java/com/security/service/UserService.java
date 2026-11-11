@@ -32,6 +32,7 @@ import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -330,6 +331,20 @@ public class UserService {
         return issueLogin.apply(user);
     }
 
+    public void verifyStepUpIfPresent(Long userId, Map<String, String> body) {
+        if (body == null || body.isEmpty()) {
+            return;
+        }
+        String currentPassword = body.get("currentPassword");
+        if (currentPassword != null && !currentPassword.isBlank()) {
+            User user = getUserById(userId);
+            if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
+                    || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+                throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta");
+            }
+        }
+    }
+
     public void changeOwnPassword(Long userId, String currentPassword, String newPassword) {
         User user = lockAccount(userId);
         if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
@@ -422,7 +437,8 @@ public class UserService {
         userResponse.setLastName(user.getLastName());
         userResponse.setEmail(user.getEmail());
         userResponse.setPhone(user.getPhone());
-        userResponse.setEnabled(user.getEnabled());
+        userResponse.setEnabled(Boolean.TRUE.equals(user.getEnabled()));
+        userResponse.setEmailVerified(Boolean.TRUE.equals(user.getEnabled()));
         userResponse.setGoogleAuthEnabled(user.getGoogleAuthEnabled());
         userResponse.setEmailEnabled(user.getEmailEnabled());
         userResponse.setBackupCodesEnabled(user.getBackupCodesEnabled());

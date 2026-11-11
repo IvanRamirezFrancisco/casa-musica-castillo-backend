@@ -58,7 +58,10 @@ public class TwoFactorController {
 
     @PostMapping("/google/disable")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<?> disableGoogleAuthenticator(@CurrentUser UserPrincipal userPrincipal) {
+    public ResponseEntity<?> disableGoogleAuthenticator(
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
         try {
             twoFactorService.disableSpecificTwoFactor(userPrincipal.getId(), "GOOGLE_AUTHENTICATOR");
             return ResponseEntity.ok(new ApiResponse(true,
@@ -86,7 +89,10 @@ public class TwoFactorController {
 
     @PostMapping("/email/disable")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<?> disableEmail2FA(@CurrentUser UserPrincipal userPrincipal) {
+    public ResponseEntity<?> disableEmail2FA(
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
         try {
             twoFactorService.disableSpecificTwoFactor(userPrincipal.getId(), "EMAIL");
             return ResponseEntity.ok(new ApiResponse(true,
@@ -332,7 +338,10 @@ public class TwoFactorController {
 
     @PostMapping("/backup-codes/generate")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<?> generateBackupCodes(@CurrentUser UserPrincipal userPrincipal) {
+    public ResponseEntity<?> generateBackupCodes(
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
         try {
             List<String> backupCodes = backupCodeService.generateBackupCodes(userPrincipal.getId());
 
@@ -394,7 +403,10 @@ public class TwoFactorController {
 
     @PostMapping("/backup-codes/disable")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<?> disableBackupCodes(@CurrentUser UserPrincipal userPrincipal) {
+    public ResponseEntity<?> disableBackupCodes(
+            @CurrentUser UserPrincipal userPrincipal,
+            @RequestBody(required = false) Map<String, String> request) {
+        userService.verifyStepUpIfPresent(userPrincipal.getId(), request);
         try {
             backupCodeService.disableBackupCodes(userPrincipal.getId());
             return ResponseEntity.ok(new ApiResponse(true,

@@ -20,7 +20,8 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo iniciar el clúster de tests; no se usará otra instancia.' }
 }
 # Explicit loopback/port/user. Never reuse production PGHOST/PGUSER or DATABASE_URL.
-foreach ($testDatabase in @('backend_hardening_test', 'auth_challenges_test')) {
+& (Join-Path $pgBin 'dropdb.exe') -h 127.0.0.1 -p 55439 -U auth_test --if-exists schema50_upgrade_test | Out-Null
+foreach ($testDatabase in @('backend_hardening_test', 'auth_challenges_test', 'catalog_count_test', 'order_ownership_test', 'schema50_upgrade_test')) {
     $exists = & (Join-Path $pgBin 'psql.exe') -h 127.0.0.1 -p 55439 -U auth_test -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$testDatabase'"
     if ($LASTEXITCODE -ne 0) { throw 'No se pudo inspeccionar el clúster temporal.' }
     if ($exists -ne '1') {
