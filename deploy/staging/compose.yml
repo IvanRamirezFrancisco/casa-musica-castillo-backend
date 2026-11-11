@@ -21,6 +21,7 @@ services:
       SPRING_PROFILES_ACTIVE: staging
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/staging/config/
       STAGING_PUBLIC_ORIGIN: https://${STAGING_HOST:?Set an authorized staging hostname}
+      STAGING_ALLOWED_ORIGINS: ${STAGING_ALLOWED_ORIGINS:-https://localhost}
       STAGING_DB_PASSWORD: ${STAGING_DB_PASSWORD:?Set a dedicated database password}
       APP_SECURITY_JWT_SECRET: ${STAGING_JWT_SECRET:?Set a dedicated JWT secret}
       PICKUP_CODE_ENCRYPTION_KEY: ${STAGING_PICKUP_KEY:?Set a dedicated AES key}

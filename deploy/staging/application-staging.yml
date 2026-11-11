@@ -44,7 +44,7 @@ app:
       dev-mode: false
 
 cors:
-  allowed-origins: https://localhost
+  allowed-origins: ${STAGING_ALLOWED_ORIGINS:https://localhost}
 storage:
   provider: LOCAL
 supabase:

@@ -27,13 +27,19 @@ class Schema50UpgradeTest {
         assertThat(schema50.info().current().getVersion().getVersion()).isEqualTo("50");
         assertThat(Arrays.stream(schema50.info().applied()).filter(migration -> migration.getVersion() != null).count())
                 .isEqualTo(48);
+        var originalHistory = jdbc.queryForList(
+                "SELECT installed_rank,version,checksum,success FROM public.flyway_schema_history ORDER BY installed_rank");
 
         jdbc.update("""
                 INSERT INTO auth.users(id,username,first_name,last_name,email,password,enabled,
                   account_non_expired,account_non_locked,credentials_non_expired,two_factor_enabled,
-                  google_auth_enabled,email_enabled,backup_codes_enabled,is_customer,created_at)
+                  google_auth_enabled,google_auth_secret,email_enabled,backup_codes_enabled,is_customer,created_at)
                 VALUES (1,'synthetic','Synthetic','Upgrade','upgrade@example.invalid','synthetic-hash',true,
-                  true,true,true,true,false,true,false,true,now())
+                  true,true,true,true,true,?,true,false,true,now())
+                """, new com.warrenstrange.googleauth.GoogleAuthenticator().createCredentials().getKey());
+        var originalAccount = jdbc.queryForMap("""
+                SELECT email,password,enabled,google_auth_enabled,google_auth_secret,email_enabled
+                FROM auth.users WHERE id = 1
                 """);
 
         var schema51 = flyway("51");
@@ -46,8 +52,14 @@ class Schema50UpgradeTest {
         assertThat(schema52.migrate().migrationsExecuted).isEqualTo(1);
         schema52.validate();
         assertThat(schema52.info().current().getVersion().getVersion()).isEqualTo("52");
-        assertThat(jdbc.queryForObject("SELECT email FROM auth.users WHERE id = 1", String.class))
-                .isEqualTo("upgrade@example.invalid");
+        var migratedAccount = jdbc.queryForMap("""
+                SELECT email,password,enabled,google_auth_enabled,google_auth_secret,email_enabled
+                FROM auth.users WHERE id = 1
+                """);
+        assertThat(migratedAccount.equals(originalAccount)).as("V50 account and TOTP enrollment preserved").isTrue();
+        assertThat(jdbc.queryForList(
+                "SELECT installed_rank,version,checksum,success FROM public.flyway_schema_history ORDER BY installed_rank LIMIT ?",
+                originalHistory.size())).isEqualTo(originalHistory);
         assertThat(jdbc.queryForObject("SELECT attempts FROM auth.login_factor_limits WHERE user_id = 1", Integer.class))
                 .isEqualTo(2);
         assertThat(jdbc.queryForObject(

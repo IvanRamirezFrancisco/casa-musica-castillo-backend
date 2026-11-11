@@ -27,6 +27,7 @@
         <tomcat.version>10.1.61</tomcat.version>
         <netty.version>4.1.139.Final</netty.version>
         <log4j2.version>2.25.5</log4j2.version>
+        <commons-lang3.version>3.21.0</commons-lang3.version>
         <sonar.organization>ivanramirezfrancisco-2</sonar.organization>
     </properties>
     

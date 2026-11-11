@@ -20,6 +20,14 @@
 		method POST OPTIONS
 		path /api/checkout/price-preview
 	}
+	@webRecoveryPost {
+		method POST OPTIONS
+		path /api/auth/forgot-password /api/auth/reset-password
+	}
+	@webRecoveryValidate {
+		method GET OPTIONS
+		path /api/auth/validate-reset-token
+	}
 	@blocked path /api/2fa/debug /api/2fa/debug/*
 
 	route {
@@ -29,6 +37,8 @@
 		reverse_proxy @ownOrder {$CMC_UPSTREAM:backend:8080}
 		reverse_proxy @publicReviews {$CMC_UPSTREAM:backend:8080}
 		reverse_proxy @pricePreview {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @webRecoveryPost {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @webRecoveryValidate {$CMC_UPSTREAM:backend:8080}
 		respond 404
 	}
 }
