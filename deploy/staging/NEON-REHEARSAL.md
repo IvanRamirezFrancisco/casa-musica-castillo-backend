@@ -1,6 +1,6 @@
 # Ensayo Neon V50→V52
 
-Ejecutar en Windows PowerShell interactivo sin transcripción, desde el worktree backend. En Neon Console cotejar los ID de rama y los ID de cómputo en **Branches → Connect**, con pooling desactivado en staging. Usar únicamente el administrador del endpoint directo de `staging-auth-mfa-v52`. Los hostnames e identificadores se leen localmente. No guardar contraseñas en variables de usuario, archivos ni argumentos.
+Ejecutar en Windows PowerShell interactivo sin transcripción, desde el worktree backend. En Neon Console cotejar los ID de rama y los ID de cómputo en **Branches → Connect**, con pooling desactivado en staging. Usar un rol administrador creado exclusivamente en `staging-auth-mfa-v52` y contraseñas nuevas e independientes generadas con un gestor para ese rol y el migrador. Si existe una credencial expuesta o compartida, usar un rol de staging distinto. No se necesita restablecer ninguna credencial productiva. No guardar contraseñas en variables de usuario, archivos ni argumentos.
 
 ```powershell
 $primary = Read-Host 'Hostname directo de production confirmado en Neon Console'
@@ -57,3 +57,13 @@ Cargar catálogo después de V52 con `-SeedCommerceFixtures`. Tras registrar una
 ```powershell
 powershell -NoProfile -File $launcher @common -SeedCommerceFixtures
 ```
+
+## Segundo ensayo V52→V53
+
+Conservar primero la evidencia V52 y ejecutar el recorrido funcional V52. Detener solo el proceso local V52 mediante Ctrl+C. El ensayo V53 usa la misma base sintética autorizada y el JAR verificado de `6cfb36c` en `target/neon-v53`. Flyway valida V1 sintética y el historial V52 antes de aplicar V53. No se aplica V53 con el comando predeterminado.
+
+```powershell
+powershell -NoProfile -File $launcher @common -WebOrigin $webOrigin -StartBackend -FlywayTarget 53
+```
+
+Ejecutar la inspección de solo lectura en otra PowerShell para comprobar V53 con checksum `-774895556`, dos columnas nuevas y la misma huella del fixture TOTP. Usar de nuevo Mailpit y dos cuentas sintéticas para validar que una cuenta habilitada sin verificación registrada sigue habilitada, que la confirmación actualiza el estado de correo, y que la autenticación TOTP sigue funcionando. Las sesiones de ensayo se autentican nuevamente después de reiniciar Spring. El proceso local usa una clave JWT efímera por arranque.

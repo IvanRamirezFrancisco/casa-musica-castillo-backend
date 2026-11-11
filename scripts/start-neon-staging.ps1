@@ -11,6 +11,7 @@ param(
     [switch]$SeedLegacyMfa,
     [switch]$SeedCommerceFixtures,
     [string]$FixtureUsername,
+    [ValidateSet('52','53')] [string]$FlywayTarget = '52',
     [switch]$StartBackend
 )
 $ErrorActionPreference = 'Stop'
@@ -27,6 +28,9 @@ if ($CreateMigrator -and !$ProvisionDatabaseAs) {
 }
 if ($FixtureUsername -and (!$SeedCommerceFixtures -or $FixtureUsername -notmatch '^stg-[a-z0-9-]{1,26}$')) {
     throw 'Indica exclusivamente un nombre sintético stg- válido para el fixture de pedidos.'
+}
+if ($FlywayTarget -eq '53' -and (!$StartBackend -or $RestoreBaseline -or $SeedLegacyMfa -or $SeedCommerceFixtures)) {
+    throw 'V53 requiere un arranque separado sobre la base ya ensayada con V52.'
 }
 $primary = $PrimaryHost.Trim().ToLowerInvariant()
 $stage = $StagingHost.Trim().ToLowerInvariant()
@@ -54,10 +58,20 @@ if ($RestoreBaseline) {
 
 $repo = Split-Path $PSScriptRoot -Parent
 $config = Join-Path $repo 'deploy/staging/application-staging.yml'
-$jar = Join-Path $repo 'target/neon-v52/auth-system-1.0.0.jar'
-if ($StartBackend -and (!(Test-Path -LiteralPath $jar -PathType Leaf) -or
-    (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash -ne '697ee4b9b48782a086be110efdf54bc756774ca02342c47405d910d0fee90488')) {
-    throw 'Falta el JAR V52 exacto de 4db6d67 en target/neon-v52. Verifica su SHA-256 antes de arrancar.'
+$candidateHashes = @{
+    '52' = '697ee4b9b48782a086be110efdf54bc756774ca02342c47405d910d0fee90488'
+    '53' = '090fad85a77677b6a98ebaa050e6f1e7e6ebc06f3f53e47611c868e0f6b4c485'
+}
+$jar = Join-Path $repo "target/neon-v$FlywayTarget/auth-system-1.0.0.jar"
+$baseline = Join-Path $repo 'src/test/resources/db/test-baseline'
+if ($StartBackend) {
+    if (!(Test-Path -LiteralPath $jar -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash -ne $candidateHashes[$FlywayTarget]) {
+        throw "Falta el JAR verificado V$FlywayTarget en target/neon-v$FlywayTarget o no coincide su SHA-256."
+    }
+    if (!(Test-Path -LiteralPath (Join-Path $baseline 'V1__legacy_test_schema.sql') -PathType Leaf)) {
+        throw 'Falta la migración sintética V1 necesaria para validar el historial restaurado.'
+    }
 }
 $origins = 'https://localhost'
 if ($WebOrigin) {
@@ -74,11 +88,13 @@ $role = 'castillo_staging_migrator'
 $loginRole = if ($ProvisionDatabaseAs) { $ProvisionDatabaseAs } else { $role }
 $secret = Read-Host "Contraseña del rol $loginRole en Neon staging" -AsSecureString
 try {
+    if (!$secret -or $secret.Length -eq 0) { throw 'Se requiere una contraseña local del rol exclusivo de staging.' }
     $env:PGHOST = $stage
     $env:PGPORT = '5432'
     $env:PGDATABASE = $Database
     $env:PGUSER = $loginRole
     $env:PGPASSWORD = [Net.NetworkCredential]::new('', $secret).Password
+    $env:PGPASSFILE = 'NUL'
     $env:PGSSLMODE = 'verify-full'
     $env:PGSSLROOTCERT = 'system'
     $env:PGCONNECT_TIMEOUT = '10'
@@ -176,6 +192,11 @@ SELECT json_build_object(
   'hasV51Tables', to_regclass('auth.login_challenges') IS NOT NULL AND to_regclass('auth.login_factor_limits') IS NOT NULL,
   'hasV52Column', EXISTS (SELECT 1 FROM information_schema.columns
                           WHERE table_schema = 'auth' AND table_name = 'login_factor_limits' AND column_name = 'last_verified_totp_slot'),
+  'v53Columns', (SELECT count(*) FROM information_schema.columns
+                 WHERE table_schema = 'auth' AND (
+                   (table_name = 'users' AND column_name = 'email_verified_at') OR
+                   (table_name = 'verification_tokens' AND column_name = 'recipient_email')
+                 )),
   'hasEitherV51Table', to_regclass('auth.login_challenges') IS NOT NULL OR to_regclass('auth.login_factor_limits') IS NOT NULL
 );
 '@
@@ -186,15 +207,16 @@ SELECT json_build_object(
         throw 'Identidad o historial Flyway inesperados. Spring permanece detenido.'
     }
     $state | ConvertTo-Json
-    if (!$StartBackend -and !$RestoreBaseline -and !$SeedLegacyMfa -and !$SeedCommerceFixtures) { return }
+    if ($Database -eq 'security_db') { return }
     $expectedHistory = @{
         '50' = @('48|50|-1803902864|True')
         '52' = @('48|50|-1803902864|True', '49|51|-1106382170|True', '50|52|1411222195|True')
+        '53' = @('48|50|-1803902864|True', '49|51|-1106382170|True', '50|52|1411222195|True', '51|53|-774895556|True')
     }
     $tail = $expectedHistory[[string]$state.version]
     if (!$tail -or $state.history.Count -ne [int]$state.version - 2 -or
         $state.baselineHistorySha256 -cne 'e5a83c830bd6e62541b2460962fc7145e25b79c9a81bb22e711ac245487a3ec3') {
-        throw 'El historial no coincide con la baseline V50 ni con el ensayo V52.'
+        throw 'El historial no coincide con las revisiones sintéticas V50, V52 o V53.'
     }
     for ($offset = 1; $offset -le $tail.Count; $offset++) {
         if (($state.history[-$offset] -join '|') -cne $tail[-$offset]) {
@@ -242,9 +264,15 @@ ON CONFLICT (username) DO NOTHING;
     if (!$state.canCreateInAuth -or !$state.canReferenceUsers -or !$state.canWriteHistory) {
         throw 'El rol no tiene los permisos mínimos esperados para el ensayo.'
     }
-    if (!(($state.version -eq '50' -and !$state.hasEitherV51Table) -or
-          ($state.version -eq '52' -and $state.hasV51Tables -and $state.hasV52Column))) {
-        throw 'Versión o estructura inesperada. Revisar Flyway antes de arrancar.'
+    $hasV52Schema = $state.hasV51Tables -and $state.hasV52Column
+    if ($FlywayTarget -eq '52') {
+        if ($state.v53Columns -ne 0 -or !(($state.version -eq '50' -and !$state.hasEitherV51Table) -or
+            ($state.version -eq '52' -and $hasV52Schema))) {
+            throw 'El candidato V52 requiere la baseline V50 o un V52 íntegro.'
+        }
+    } elseif (!$hasV52Schema -or !(($state.version -eq '52' -and $state.v53Columns -eq 0) -or
+        ($state.version -eq '53' -and $state.v53Columns -eq 2))) {
+        throw 'El candidato V53 requiere un V52 íntegro o un V53 ya verificado.'
     }
     $env:SPRING_PROFILES_ACTIVE = 'staging'
     $env:SPRING_CONFIG_ADDITIONAL_LOCATION = ([uri]$config).AbsoluteUri
@@ -252,8 +280,8 @@ ON CONFLICT (username) DO NOTHING;
     $env:SPRING_DATASOURCE_USERNAME = $role
     $env:SPRING_DATASOURCE_PASSWORD = $env:PGPASSWORD
     Remove-Item Env:PGPASSWORD
-    $env:SPRING_FLYWAY_LOCATIONS = 'classpath:db/migration'
-    $env:SPRING_FLYWAY_TARGET = '52'
+    $env:SPRING_FLYWAY_LOCATIONS = 'filesystem:' + $baseline.Replace('\','/') + ',classpath:db/migration'
+    $env:SPRING_FLYWAY_TARGET = $FlywayTarget
     $env:SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL = "SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics; SET lock_timeout TO '5s'"
     $env:STAGING_PUBLIC_ORIGIN = if ($WebOrigin) { $WebOrigin } else { 'https://castillo-neon-staging.invalid' }
     $env:STAGING_ALLOWED_ORIGINS = $origins
@@ -266,6 +294,6 @@ ON CONFLICT (username) DO NOTHING;
     & java '-Xmx384m' '-Xms256m' '-XX:+UseG1GC' -jar $jar
     if ($LASTEXITCODE -ne 0) { throw 'Spring staging terminó con error.' }
 } finally {
-    Remove-Item Env:PGPASSWORD,Env:SPRING_DATASOURCE_PASSWORD,Env:APP_SECURITY_JWT_SECRET,Env:PICKUP_CODE_ENCRYPTION_KEY -ErrorAction SilentlyContinue
-    $secret.Dispose()
+    Remove-Item Env:PGPASSWORD,Env:PGPASSFILE,Env:SPRING_DATASOURCE_PASSWORD,Env:APP_SECURITY_JWT_SECRET,Env:PICKUP_CODE_ENCRYPTION_KEY -ErrorAction SilentlyContinue
+    if ($secret) { $secret.Dispose() }
 }
