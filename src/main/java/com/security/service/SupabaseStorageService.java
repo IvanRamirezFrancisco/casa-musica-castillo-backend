@@ -7,12 +7,14 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.BodyInserters;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
+import java.net.http.HttpClient;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -24,7 +26,7 @@ import java.util.Map;
  *   <li>{@link #generateSignedUrl(String, int)} — crea una URL firmada de descarga.</li>
  * </ol>
  *
- * <p>El {@link WebClient} se construye una sola vez (configuración inmutable)
+ * <p>El {@link RestClient} se construye una sola vez (configuración inmutable)
  * con la base URL del proyecto Supabase y el header de autorización.
  */
 @Service
@@ -33,12 +35,19 @@ public class SupabaseStorageService {
     private static final Logger log = LoggerFactory.getLogger(SupabaseStorageService.class);
 
     private final SupabaseProperties props;
-    private final WebClient webClient;
+    private final RestClient storageClient;
 
-    public SupabaseStorageService(SupabaseProperties props, WebClient.Builder builder) {
+    public SupabaseStorageService(SupabaseProperties props, RestClient.Builder builder) {
         this.props = props;
-        this.webClient = builder
+        var transport = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        var requests = new JdkClientHttpRequestFactory(transport);
+        requests.setReadTimeout(Duration.ofMinutes(5));
+        this.storageClient = builder
                 .baseUrl(props.getUrl())
+                .requestFactory(requests)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + props.getServiceKey())
                 .build();
     }
@@ -66,21 +75,20 @@ public class SupabaseStorageService {
         log.info("[Supabase] Verificando existencia del bucket '{}'…", bucket);
 
         try {
-            webClient.post()
+            storageClient.post()
                     .uri("/storage/v1/bucket")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(Map.of(
+                    .body(Map.of(
                             "id",     bucket,
                             "name",   bucket,
                             "public", false
                     ))
                     .retrieve()
-                    .toBodilessEntity()
-                    .block();
+                    .toBodilessEntity();
 
             log.info("[Supabase] Bucket '{}' creado correctamente.", bucket);
 
-        } catch (WebClientResponseException ex) {
+        } catch (RestClientResponseException ex) {
             String body = ex.getResponseBodyAsString();
             // 400 con "Duplicate" o "already exists" → el bucket ya existía → OK
             if (ex.getStatusCode() == HttpStatus.BAD_REQUEST
@@ -118,18 +126,17 @@ public class SupabaseStorageService {
         log.info("[Supabase] Subiendo {} → {}", localFile.getFileName(), uploadPath);
 
         try {
-            webClient.post()
+            storageClient.post()
                     .uri(uploadPath)
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(BodyInserters.fromResource(new FileSystemResource(localFile)))
+                    .body(new FileSystemResource(localFile))
                     .retrieve()
-                    .toBodilessEntity()
-                    .block();
+                    .toBodilessEntity();
 
             log.info("[Supabase] Upload completado: {}", storageFileName);
             return storageFileName;
 
-        } catch (WebClientResponseException ex) {
+        } catch (RestClientResponseException ex) {
             log.error("[Supabase] Error al subir backup — HTTP {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
             throw new RuntimeException("Error al subir backup a Supabase Storage: " + ex.getMessage(), ex);
         }
@@ -157,13 +164,12 @@ public class SupabaseStorageService {
 
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = webClient.post()
+            Map<String, Object> response = storageClient.post()
                     .uri(signPath)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(Map.of("expiresIn", expiresInSeconds))
+                    .body(Map.of("expiresIn", expiresInSeconds))
                     .retrieve()
-                    .bodyToMono(Map.class)
-                    .block();
+                    .body(Map.class);
 
             if (response == null || !response.containsKey("signedURL")) {
                 throw new RuntimeException("Respuesta inesperada de Supabase Storage al generar URL firmada");
@@ -176,10 +182,10 @@ public class SupabaseStorageService {
                 signedPath = "/storage/v1" + signedPath;
             }
             String fullUrl = props.getUrl() + signedPath;
-            log.debug("[Supabase] URL firmada generada OK: {}", fullUrl);
+            log.debug("[Supabase] URL firmada generada");
             return fullUrl;
 
-        } catch (WebClientResponseException ex) {
+        } catch (RestClientResponseException ex) {
             log.error("[Supabase] Error al generar URL firmada — HTTP {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
             throw new RuntimeException("Error al generar URL firmada: " + ex.getMessage(), ex);
         }

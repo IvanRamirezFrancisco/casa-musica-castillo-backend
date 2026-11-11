@@ -192,11 +192,6 @@
             <artifactId>httpclient5</artifactId>
         </dependency>
         
-        <!-- WebFlux — WebClient para llamadas HTTP reactivas (Supabase Storage API) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
 
         <!-- JSON Processing -->
         <dependency>
