@@ -23,7 +23,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(TwoFactorController.class)
-@Import({SecurityConfig.class,JwtAuthenticationEntryPoint.class,AuthExceptionHandler.class,TwoFactorService.class,TotpService.class})
+@Import({SecurityConfig.class,JwtAuthenticationEntryPoint.class,AuthExceptionHandler.class,TwoFactorService.class,TotpService.class,
+        com.security.service.TotpSecretStorage.class})
 @ActiveProfiles("production")
 @TestPropertySource(properties="cors.allowed-origins=http://localhost:4200")
 class TotpExposureProductionTest {

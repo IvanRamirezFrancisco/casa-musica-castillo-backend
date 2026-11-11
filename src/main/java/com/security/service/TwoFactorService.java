@@ -27,6 +27,9 @@ public class TwoFactorService {
     private TotpService totpService;
 
     @Autowired
+    private TotpSecretStorage secretStorage;
+
+    @Autowired
     private UserRepository userRepository;
 
     @Autowired
@@ -62,7 +65,7 @@ public class TwoFactorService {
             String qrCodeBase64 = totpService.generateQRCodeBase64(secret, user.getEmail());
 
             try {
-                user.setGoogleAuthSecret(secret);
+                user.setGoogleAuthSecret(secretStorage.encode(userId, secret));
                 user.setTwoFactorType(TwoFactorType.GOOGLE_AUTHENTICATOR);
                 user.setGoogleAuthEnabled(false);
                 userRepository.save(user);
@@ -98,7 +101,7 @@ public class TwoFactorService {
         User user = pendingEnrollment(userId);
         Map<String, String> data = pendingManualEntry(user);
         try {
-            data.put("qrCode", "data:image/png;base64," + totpService.generateQRCodeBase64(user.getGoogleAuthSecret(), user.getEmail()));
+            data.put("qrCode", "data:image/png;base64," + totpService.generateQRCodeBase64(data.get("manualEntryKey"), user.getEmail()));
         } catch (Exception ex) {
             throw new IllegalStateException("No se pudo generar el QR de enrollment");
         }
@@ -123,7 +126,7 @@ public class TwoFactorService {
 
     private Map<String, String> pendingManualEntry(User user) {
         Map<String, String> data = new HashMap<>();
-        data.put("manualEntryKey", user.getGoogleAuthSecret());
+        data.put("manualEntryKey", secretStorage.decode(user.getId(), user.getGoogleAuthSecret()));
         data.put("issuer", "AuthSystem");
         data.put("accountName", user.getEmail());
         return data;
@@ -140,7 +143,7 @@ public class TwoFactorService {
             }
 
             log.debug("Confirmando Google Authenticator para usuario ID {}", userId);
-            boolean isValid = totpService.verifyCode(user.getGoogleAuthSecret(), code);
+            boolean isValid = totpService.verifyCode(secretStorage.decode(userId, user.getGoogleAuthSecret()), code);
 
             if (isValid) {
                 try {
@@ -170,7 +173,7 @@ public class TwoFactorService {
         if (!Boolean.TRUE.equals(user.getGoogleAuthEnabled()) || user.getGoogleAuthSecret() == null) {
             return java.util.OptionalLong.empty();
         }
-        return totpService.findMatchingSlot(user.getGoogleAuthSecret(), code);
+        return totpService.findMatchingSlot(secretStorage.decode(userId, user.getGoogleAuthSecret()), code);
     }
 
     // ===== EMAIL 2FA =====
@@ -237,7 +240,7 @@ public class TwoFactorService {
 
         switch (user.getTwoFactorType()) {
             case GOOGLE_AUTHENTICATOR:
-                return totpService.verifyCode(user.getGoogleAuthSecret(), token);
+                return totpService.verifyCode(secretStorage.decode(userId, user.getGoogleAuthSecret()), token);
             case EMAIL:
                 return verifyEmailCode(userId, token);
             default:
@@ -274,7 +277,7 @@ public class TwoFactorService {
     public void enableTwoFactor(Long userId) {
         String secret = generateSecret();
         User user = userService.getUserById(userId);
-        user.setGoogleAuthSecret(secret);
+        user.setGoogleAuthSecret(secretStorage.encode(userId, secret));
         user.setTwoFactorEnabled(true);
         user.setTwoFactorType(TwoFactorType.GOOGLE_AUTHENTICATOR);
         userService.save(user);
