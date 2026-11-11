@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)] [string]$PrimaryHost,
     [Parameter(Mandatory)] [string]$StagingHost,
     [Parameter(Mandatory)] [string]$ExpectedStagingEndpointId,
+    [string]$CaBundlePath,
     [ValidateSet('security_db','castillo_staging')] [string]$Database = 'castillo_staging',
     [string]$WebOrigin,
     [switch]$ValidateEndpointsOnly,
@@ -44,10 +45,20 @@ $stageEndpoint = $stage.Split('.')[0]
 if ($stageEndpoint.EndsWith('-pooler') -or $stageEndpoint -ne $expected -or $stageEndpoint -eq $primaryEndpoint) {
     throw 'Destino rechazado. Se requiere el endpoint directo de staging, distinto de Primary.'
 }
+$caBundle = $null
+if ($CaBundlePath) {
+    $caFile = Get-Item -LiteralPath $CaBundlePath -ErrorAction SilentlyContinue
+    if ($caFile -isnot [IO.FileInfo] -or
+        (Get-Content -LiteralPath $caFile.FullName -Raw) -notmatch '(?s)-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----') {
+        throw 'CaBundlePath debe apuntar a un archivo PEM de certificados CA existente.'
+    }
+    $caBundle = $caFile.FullName
+}
 if ($ValidateEndpointsOnly) {
     'Endpoint de staging distinto de Primary. Falta comprobar la identidad con Neon Console.'
     return
 }
+if (!$caBundle) { throw 'Indica -CaBundlePath con el PEM de CA autorizado para conectar a Neon.' }
 if ($RestoreBaseline) {
     $RestoreBaseline = (Resolve-Path -LiteralPath $RestoreBaseline).ProviderPath
     $expectedHash = '6c489dff31801f00f2aee8b39557f43263c8e8f331f3a9de06eb26944b4839e8'
@@ -96,7 +107,7 @@ try {
     $env:PGPASSWORD = [Net.NetworkCredential]::new('', $secret).Password
     $env:PGPASSFILE = 'NUL'
     $env:PGSSLMODE = 'verify-full'
-    $env:PGSSLROOTCERT = 'system'
+    $env:PGSSLROOTCERT = $caBundle
     $env:PGCONNECT_TIMEOUT = '10'
     $env:PGOPTIONS = '-c default_transaction_read_only=on'
     if ($ProvisionDatabaseAs) {
@@ -276,7 +287,9 @@ ON CONFLICT (username) DO NOTHING;
     }
     $env:SPRING_PROFILES_ACTIVE = 'staging'
     $env:SPRING_CONFIG_ADDITIONAL_LOCATION = ([uri]$config).AbsoluteUri
-    $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://${stage}:5432/${Database}?sslmode=verify-full&sslfactory=org.postgresql.ssl.DefaultJavaSSLFactory"
+    # pgJDBC loads sslrootcert with its own LibPQFactory, independently of libpq.
+    $jdbcCaBundle = [uri]::EscapeDataString($caBundle)
+    $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://${stage}:5432/${Database}?sslmode=verify-full&sslfactory=org.postgresql.ssl.LibPQFactory&sslrootcert=$jdbcCaBundle"
     $env:SPRING_DATASOURCE_USERNAME = $role
     $env:SPRING_DATASOURCE_PASSWORD = $env:PGPASSWORD
     Remove-Item Env:PGPASSWORD

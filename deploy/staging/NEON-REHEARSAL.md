@@ -6,7 +6,8 @@ Ejecutar en Windows PowerShell interactivo sin transcripción, desde el worktree
 $primary = Read-Host 'Hostname directo de production confirmado en Neon Console'
 $stage = Read-Host 'Hostname directo de staging-auth-mfa-v52 confirmado en Neon Console'
 $endpoint = Read-Host 'Endpoint ID de staging-auth-mfa-v52 confirmado en Neon Console'
-$common = @('-PrimaryHost', $primary, '-StagingHost', $stage, '-ExpectedStagingEndpointId', $endpoint, '-Database', 'castillo_staging')
+$caBundle = Join-Path $env:LOCALAPPDATA 'CasaMusicaCastillo/certs/cacert.pem'
+$common = @('-PrimaryHost', $primary, '-StagingHost', $stage, '-ExpectedStagingEndpointId', $endpoint, '-Database', 'castillo_staging', '-CaBundlePath', $caBundle)
 $launcher = (Resolve-Path 'scripts/start-neon-staging.ps1').Path
 powershell -NoProfile -File $launcher @common -ValidateEndpointsOnly
 ```
@@ -19,6 +20,8 @@ powershell -NoProfile -File $launcher @common -ProvisionDatabaseAs $admin -Creat
 ```
 
 El lanzador pide la contraseña del administrador de staging y, si crea el rol, `psql \password` pide la nueva contraseña del migrador dos veces sin mostrarla. El administrador necesita `CREATEDB` y, para crear el rol, `CREATEROLE`. PostgreSQL comprueba las facultades para asignar la propiedad al migrador. El lanzador nunca cambia `security_db`.
+
+El lanzador valida el archivo PEM antes de solicitar la contraseña. `psql`, `createdb` y `pg_restore` reciben la ruta absoluta mediante `PGSSLROOTCERT`. Spring y Flyway usan pgJDBC, que recibe la ruta codificada en `sslrootcert` y la lee mediante `LibPQFactory`. Ambos clientes verifican la CA y el hostname con `verify-full`.
 
 Restaurar desde la ruta `dumpPath` registrada en el informe `v50-backup.json`. Abrir una sesión privada nueva con el migrador y guardar solo la salida saneada.
 
