@@ -4,6 +4,7 @@ import com.security.entity.User;
 import com.security.entity.VerificationToken;
 import com.security.enums.TokenType;
 import com.security.exception.AuthFlowException;
+import com.security.repository.UserRepository;
 import com.security.repository.VerificationTokenRepository;
 import com.security.util.LogSanitizer;
 import org.slf4j.Logger;
@@ -36,6 +37,9 @@ public class VerificationService {
 
     @Autowired
     private UserService userService;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @Autowired
     private EmailService emailService;
@@ -90,12 +94,16 @@ public class VerificationService {
             return false;
         }
         Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository.findValidToken(
-                token.trim(), TokenType.EMAIL_VERIFICATION, LocalDateTime.now())
-                .filter(VerificationToken::matchesCurrentRecipient);
+                token.trim(), TokenType.EMAIL_VERIFICATION, LocalDateTime.now());
 
         if (verificationTokenOpt.isPresent()) {
             VerificationToken verificationToken = verificationTokenOpt.get();
-            User user = verificationToken.getUser();
+            Optional<User> recipient = userRepository.findByIdForAuthUpdate(verificationToken.getUser().getId())
+                    .filter(user -> verificationToken.matchesRecipient(user.getEmail()));
+            if (recipient.isEmpty()) {
+                return false;
+            }
+            User user = recipient.get();
 
             user.setEnabled(true);
             user.recordEmailVerification(LocalDateTime.now());

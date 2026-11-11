@@ -171,8 +171,7 @@ public class UserService {
         String cleanToken = token.trim();
 
         Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository
-                .findValidToken(cleanToken, TokenType.EMAIL_VERIFICATION, LocalDateTime.now())
-                .filter(VerificationToken::matchesCurrentRecipient);
+                .findValidToken(cleanToken, TokenType.EMAIL_VERIFICATION, LocalDateTime.now());
 
         if (verificationTokenOpt.isEmpty()) {
             logger.warn("Token de verificacion invalido o expirado");
@@ -180,7 +179,9 @@ public class UserService {
         }
 
         VerificationToken verificationToken = verificationTokenOpt.get();
-        User user = verificationToken.getUser();
+        User user = userRepository.findByIdForAuthUpdate(verificationToken.getUser().getId())
+                .filter(account -> verificationToken.matchesRecipient(account.getEmail()))
+                .orElseThrow(() -> new BadRequestException("Token de verificación inválido o expirado"));
 
         // Activar usuario
         user.setEnabled(true);

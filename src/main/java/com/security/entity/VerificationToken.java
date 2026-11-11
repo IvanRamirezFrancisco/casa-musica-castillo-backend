@@ -69,8 +69,8 @@ public class VerificationToken {
         recipientEmail = email;
     }
 
-    public boolean matchesCurrentRecipient() {
-        return recipientEmail != null && recipientEmail.equalsIgnoreCase(user.getEmail());
+    public boolean matchesRecipient(String email) {
+        return recipientEmail != null && recipientEmail.equalsIgnoreCase(email);
     }
 
     public User getUser() {
