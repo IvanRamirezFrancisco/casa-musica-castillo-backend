@@ -178,9 +178,6 @@ logging:
 # ============================================================
 storage:
   provider: CLOUDINARY
-CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:}
-CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:}
-CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:}
 
 # ============================================================
 # CONFIGURACION DE LA TIENDA (API Alexa y Públicos)
