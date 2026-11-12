@@ -28,6 +28,8 @@
         <log4j2.version>2.25.5</log4j2.version>
         <commons-lang3.version>3.21.0</commons-lang3.version>
         <sonar.organization>ivanramirezfrancisco-2</sonar.organization>
+        <sonar.coverage.jacoco.xmlReportPaths>${project.reporting.outputDirectory}/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+        <sonar.javascript.lcov.reportPaths>${project.build.directory}/sonar-ci/lcov.info</sonar.javascript.lcov.reportPaths>
     </properties>
     
     <dependencyManagement>
@@ -247,6 +249,22 @@
     
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.16</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
