@@ -14,6 +14,7 @@ param(
     [switch]$SeedCommerceFixtures,
     [string]$FixtureUsername,
     [ValidateSet('52','53')] [string]$FlywayTarget = '52',
+    [ValidatePattern('^[0-9a-fA-F]{64}$')] [string]$CatalogCandidateSha256,
     [switch]$StartBackend
 )
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,9 @@ if ($FixtureUsername -and (!$SeedCommerceFixtures -or $FixtureUsername -notmatch
 }
 if ($FlywayTarget -eq '53' -and (!$StartBackend -or $RestoreBaseline -or $SeedLegacyMfa -or $SeedCommerceFixtures)) {
     throw 'V53 requiere un arranque separado sobre la base ya ensayada con V52.'
+}
+if ($CatalogCandidateSha256 -and (!$StartBackend -or $FlywayTarget -ne '53' -or !$ExpectedLegacyMfaFixtureSha256)) {
+    throw 'El candidato de catálogo requiere un arranque V53 y la huella del fixture TOTP.'
 }
 $primary = $PrimaryHost.Trim().ToLowerInvariant()
 $stage = $StagingHost.Trim().ToLowerInvariant()
@@ -75,11 +79,16 @@ $candidateHashes = @{
     '53' = '090fad85a77677b6a98ebaa050e6f1e7e6ebc06f3f53e47611c868e0f6b4c485'
 }
 $jar = Join-Path $repo "target/neon-v$FlywayTarget/auth-system-1.0.0.jar"
+$expectedJarHash = $candidateHashes[$FlywayTarget]
+if ($CatalogCandidateSha256) {
+    $jar = Join-Path $repo 'target/neon-v53-catalog/auth-system-1.0.0.jar'
+    $expectedJarHash = $CatalogCandidateSha256
+}
 $baseline = Join-Path $repo 'src/test/resources/db/test-baseline'
 if ($StartBackend) {
     if (!(Test-Path -LiteralPath $jar -PathType Leaf) -or
-        (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash -ne $candidateHashes[$FlywayTarget]) {
-        throw "Falta el JAR verificado V$FlywayTarget en target/neon-v$FlywayTarget o no coincide su SHA-256."
+        (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash -ne $expectedJarHash) {
+        throw "Falta el JAR verificado V$FlywayTarget o no coincide su SHA-256: $jar"
     }
     if (!(Test-Path -LiteralPath (Join-Path $baseline 'V1__legacy_test_schema.sql') -PathType Leaf)) {
         throw 'Falta la migración sintética V1 necesaria para validar el historial restaurado.'
@@ -398,6 +407,9 @@ ON CONFLICT (username) DO NOTHING;
         'Fixtures sintéticos de catálogo preparados.'
     }
     if (!$StartBackend) { return }
+    if ($CatalogCandidateSha256 -and $state.version -ne '53') {
+        throw 'El candidato de catálogo requiere un historial V53 ya aplicado y verificado.'
+    }
     if (!$state.canCreateInAuth -or !$state.canReferenceUsers -or !$state.canWriteHistory) {
         throw 'El rol no tiene los permisos mínimos esperados para el ensayo.'
     }
@@ -435,7 +447,9 @@ ON CONFLICT (username) DO NOTHING;
     $env:SERVER_ADDRESS = '127.0.0.1'
     $env:APP_SECURITY_JWT_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
     $env:PICKUP_CODE_ENCRYPTION_KEY = [guid]::NewGuid().ToString('N')
-    & java '-Xmx384m' '-Xms256m' '-XX:+UseG1GC' -jar $jar
+    $javaOptions = @('-Xmx384m', '-Xms256m', '-XX:+UseG1GC')
+    if ($CatalogCandidateSha256) { $javaOptions += '-XX:+DisableAttachMechanism' }
+    & java @javaOptions -jar $jar
     if ($LASTEXITCODE -ne 0) { throw 'Spring staging terminó con error.' }
 } finally {
     Remove-Item Env:PGPASSWORD,Env:PGPASSFILE,Env:SPRING_DATASOURCE_PASSWORD,Env:APP_SECURITY_JWT_SECRET,Env:PICKUP_CODE_ENCRYPTION_KEY -ErrorAction SilentlyContinue

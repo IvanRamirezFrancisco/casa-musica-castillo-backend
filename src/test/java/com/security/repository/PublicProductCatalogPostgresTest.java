@@ -84,6 +84,31 @@ class PublicProductCatalogPostgresTest {
         assertThat(output.getAll()).doesNotContain("UnknownParameterException", "Silently ignoring");
     }
 
+    @Test
+    void searchesComposedAndDecomposedAccentsWithoutUnaccentExtension() {
+        assertThat(entities.getEntityManager().createNativeQuery(
+                "SELECT count(*) FROM pg_extension WHERE extname = 'unaccent'").getSingleResult()).isEqualTo(0L);
+        var category = category("Música");
+        var brand = brand("Prueba");
+        product("PIANÓ ELÉCTRICO", "COMPOSED", null, category, brand, true);
+        product("Piano ele\u0301ctrico", "DECOMPOSED", null, category, brand, true);
+        product("Piano acústico", "UNMATCHED", null, category, brand, true);
+        entities.flush();
+        entities.clear();
+
+        var result = repository.findCatalogWithKeyword("piano electrico", "piano electrico",
+                "piano electrico", "piano electrico", "piano", "electrico", null, null, null,
+                category.getId(), brand.getId(), PageRequest.of(0, 10));
+        assertThat(result.getContent()).extracting(Product::getSku)
+                .containsExactlyInAnyOrder("COMPOSED", "DECOMPOSED");
+        assertThat(result.getTotalElements()).isEqualTo(2);
+
+        var empty = repository.findCatalogWithKeyword("trombon", "trombon", "trombon", "trombon",
+                "trombon", null, null, null, null, category.getId(), brand.getId(), PageRequest.of(0, 10));
+        assertThat(empty.getContent()).isEmpty();
+        assertThat(empty.getTotalElements()).isZero();
+    }
+
     private Category category(String name) {
         var category = new Category();
         category.setName(name);

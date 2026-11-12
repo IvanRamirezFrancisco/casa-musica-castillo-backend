@@ -116,47 +116,47 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
     String CATALOG_KEYWORD_FILTER = """
             WHERE p.active = true
               AND (
-                   CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.sku)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                   CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.sku) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.sku) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR (p.model IS NOT NULL AND (
-                     CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                  OR CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                  OR CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 ))
-                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(br.name)) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(br.name) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(br.name) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                 OR (
                   :token1 IS NOT NULL
                   AND (
-                       CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                       CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
                   )
                   AND (
                     :token2 IS NULL
-                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
                   )
                   AND (
                     :token3 IS NULL
-                    OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
-                    OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
-                    OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
                   )
                 )
               )
@@ -187,30 +187,30 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
             """ + CATALOG_KEYWORD_FILTER + """
             ORDER BY 
               CASE 
-                   WHEN CAST(function('unaccent', LOWER(p.sku)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 2
-                   WHEN p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 3
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                     OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
-                     OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                     OR CAST(function('unaccent', LOWER(p.sku)) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 4
-                   WHEN CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                     OR CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                   WHEN CAST(catalog_fold(p.sku) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
+                   WHEN CAST(catalog_fold(p.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 2
+                   WHEN p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 3
+                   WHEN CAST(catalog_fold(p.name) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 4
+                   WHEN CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
                      OR (
                        :token1 IS NOT NULL AND :token2 IS NOT NULL
-                       AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
-                       AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                       AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                       AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
                      ) THEN 5
                    WHEN (:brandIntentId IS NOT NULL AND br.id = :brandIntentId)
-                     OR CAST(function('unaccent', LOWER(br.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
-                     OR CAST(function('unaccent', LOWER(br.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
+                     OR CAST(catalog_fold(br.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
                    WHEN (:categoryIntentId IS NOT NULL AND cat.id = :categoryIntentId)
-                     OR CAST(function('unaccent', LOWER(cat.name)) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
-                     OR CAST(function('unaccent', LOWER(cat.name)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 7
-                   WHEN (:token1 IS NOT NULL AND CAST(function('unaccent', LOWER(p.name)) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
-                     OR (p.model IS NOT NULL AND CAST(function('unaccent', LOWER(p.model)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\') THEN 8
-                   WHEN CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
-                     OR CAST(function('unaccent', LOWER(p.description)) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
+                     OR CAST(catalog_fold(cat.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 7
+                   WHEN (:token1 IS NOT NULL AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                     OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\') THEN 8
+                   WHEN CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
                    ELSE 10 END ASC,
               CASE WHEN p.stock > 0 THEN 0 ELSE 1 END ASC,
               p.featured DESC,

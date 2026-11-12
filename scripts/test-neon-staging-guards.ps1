@@ -111,6 +111,7 @@ Assert-Rejected @{PrimaryHost=$primary; StagingHost='ep-staging-pooler.example.a
 Assert-Rejected ($common + @{Database='security_db'; StartBackend=$true}) 'solo están autorizados en castillo_staging'
 Assert-Rejected ($common + @{Database='security_db'; ProvisionDatabaseAs='admin_staging'}) 'solo están autorizados en castillo_staging'
 Assert-Rejected ($common + @{FlywayTarget='53'; StartBackend=$true; SeedLegacyMfa=$true}) 'requiere un arranque separado'
+Assert-Rejected ($common + @{FlywayTarget='53'; StartBackend=$true; CatalogCandidateSha256=('a' * 64)}) 'requiere un arranque V53 y la huella'
 $withoutCa = $common.Clone()
 $withoutCa.Remove('CaBundlePath')
 Assert-Rejected $withoutCa 'Indica -CaBundlePath'
