@@ -69,6 +69,12 @@ jobs:
           name: backend-surefire
           path: target/surefire-reports/TEST-*.xml
           if-no-files-found: warn
+      - name: Verify SonarCloud token and project
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: IvanRamirezFrancisco_backend_
+          SONAR_ORGANIZATION: ivanramirezfrancisco-2
+        run: node .github/scripts/check-sonar-access.mjs
       - name: Analyze with SonarCloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
