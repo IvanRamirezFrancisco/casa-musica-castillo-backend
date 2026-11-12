@@ -41,6 +41,8 @@ powershell -NoProfile -File $launcher @common -SeedLegacyMfa |
 
 Con Mailpit en `127.0.0.1:11025` y su interfaz en `127.0.0.1:18025`, iniciar el JAR exacto V52 preservado en `target/neon-v52`. Para el ensayo local de clientes, la web y el gateway usan el mismo origen HTTPS configurado en la variable siguiente. Mantener la sesión activa durante la prueba.
 
+El arranque lee Flyway en modo de solo lectura y comprueba los checksums y la estructura. Usa `-ExpectedLegacyMfaFixtureSha256` con la huella remota registrada en V50 para impedir el arranque si cambió el fixture TOTP. Con V50 íntegra aplica V51 y V52. Con V51 íntegra aplica V52. Con V52 íntegra Flyway valida el esquema. El lanzador conserva la configuración base del JAR en una copia temporal sin el SQL de inicialización de Hikari y carga solo esa copia y el perfil staging. pgJDBC configura el orden de esquemas mediante `currentSchema` y `lock_timeout=5s` mediante `options`.
+
 ```powershell
 $webOrigin = 'https://localhost:18443'
 powershell -NoProfile -File $launcher @common -WebOrigin $webOrigin -StartBackend

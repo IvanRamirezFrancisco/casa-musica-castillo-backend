@@ -43,13 +43,17 @@ function psql {
     $global:CmcNeonGuardTestState.ConnectionCount++
     $syntheticPassword = $global:CmcNeonGuardTestState.Password
     $grant = $args -contains 'GRANT castillo_staging_migrator TO CURRENT_USER WITH SET TRUE'
+    $history = ($args -join ' ') -like '*legacyMfaFixtureSha256*'
+    $expectedDatabase = if ($history) { 'castillo_staging' } else { 'postgres' }
+    $expectedUser = if ($history) { 'castillo_staging_migrator' } else { 'admin_staging' }
     $expectedOptions = if (!$grant) { '-c default_transaction_read_only=on' }
-    if ($env:PGHOST -cne $global:CmcNeonGuardTestState.Staging -or $env:PGDATABASE -cne 'postgres' -or
-        $env:PGUSER -cne 'admin_staging' -or $env:PGSSLMODE -cne 'verify-full' -or
+    if ($env:PGHOST -cne $global:CmcNeonGuardTestState.Staging -or $env:PGDATABASE -cne $expectedDatabase -or
+        $env:PGUSER -cne $expectedUser -or $env:PGSSLMODE -cne 'verify-full' -or
         $env:PGSSLROOTCERT -cne $global:CmcNeonGuardTestState.CaBundle -or
         $env:SSL_CERT_FILE -or $env:PGOPTIONS -ne $expectedOptions -or
         $env:SPRING_DATASOURCE_URL -or $env:DATABASE_URL -or $env:PGSERVICE -or $env:PGPASSFILE -cne 'NUL' -or
-        $env:JAVA_TOOL_OPTIONS -or $env:PGPASSWORD -cne $syntheticPassword -or
+        $env:JAVA_TOOL_OPTIONS -or $env:SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL -or
+        $env:SPRING_CONFIG_ADDITIONAL_LOCATION -or $env:PGPASSWORD -cne $syntheticPassword -or
         ($args -join ' ').Contains($syntheticPassword)) {
         throw 'The launcher did not isolate the connection or supplied a password as an argument.'
     }
@@ -57,6 +61,8 @@ function psql {
     if ($grant) {
         $global:CmcNeonGuardTestState.GrantCount++
         $global:CmcNeonGuardTestState.Provision.canSetMigrator = $true
+    } elseif ($history) {
+        $global:CmcNeonGuardTestState.History | ConvertTo-Json -Compress -Depth 4
     } else {
         $global:CmcNeonGuardTestState.Provision | ConvertTo-Json -Compress
     }
@@ -77,7 +83,7 @@ function createdb {
 }
 
 function Assert-Rejected($parameters, [string]$message) {
-    try { & $launcher @parameters }
+    try { & $launcher @parameters | Out-Null }
     catch {
         if ($_.Exception.Message -like "*$message*") { return }
         throw
@@ -92,6 +98,8 @@ $env:PGSERVICE = 'production'
 $env:PGPASSFILE = 'must-not-be-read'
 $env:DATABASE_URL = "jdbc:postgresql://$primary/security_db"
 $env:SPRING_DATASOURCE_URL = $env:DATABASE_URL
+$env:SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL = 'must-not-be-read'
+$env:SPRING_CONFIG_ADDITIONAL_LOCATION = 'must-not-be-read'
 $env:JAVA_TOOL_OPTIONS = '-Dspring.profiles.active=production'
 $env:SSL_CERT_FILE = 'must-not-be-read'
 $env:PGSSLROOTCERT = 'must-not-be-read'
@@ -142,6 +150,28 @@ if ($CaBundlePath) {
     }
     'PASS: explicit CA, inherited environment isolation, masked input and password cleanup.'
     'PASS: partial provisioning states and existing objects.'
+
+    $historyRows = @()
+    for ($rank = 1; $rank -lt 48; $rank++) { $historyRows += ,@($rank, [string]$rank, 0, $true) }
+    $historyRows += ,@(48, '50', -1803902864, $true)
+    $historyRows += ,@(49, '51', -1106382170, $true)
+    $fixture = 'a' * 64
+    $state.History = @{
+        database = 'castillo_staging'
+        role = 'castillo_staging_migrator'
+        failed = 0
+        version = '51'
+        history = $historyRows
+        baselineHistorySha256 = 'e5a83c830bd6e62541b2460962fc7145e25b79c9a81bb22e711ac245487a3ec3'
+        legacyMfaFixtureSha256 = $fixture
+    }
+    & $launcher @common -ExpectedLegacyMfaFixtureSha256 $fixture | Out-Null
+    Assert-Rejected ($common + @{ExpectedLegacyMfaFixtureSha256=('b' * 64)}) 'huella del fixture TOTP'
+    $state.History.history[-1][2] = 0
+    Assert-Rejected ($common + @{ExpectedLegacyMfaFixtureSha256=$fixture}) 'checksum'
+    $state.History.failed = 1
+    Assert-Rejected ($common + @{ExpectedLegacyMfaFixtureSha256=$fixture}) 'historial Flyway inesperados'
+    'PASS: read-only V51, TOTP fingerprint, checksum and failed migrations.'
 }
 Remove-Variable -Name CmcNeonGuardTestState -Scope Global
 'PASS: endpoint and invalid CA guards.'

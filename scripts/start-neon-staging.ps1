@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)] [string]$StagingHost,
     [Parameter(Mandatory)] [string]$ExpectedStagingEndpointId,
     [string]$CaBundlePath,
+    [ValidatePattern('^[0-9a-fA-F]{64}$')] [string]$ExpectedLegacyMfaFixtureSha256,
     [ValidateSet('security_db','castillo_staging')] [string]$Database = 'castillo_staging',
     [string]$WebOrigin,
     [switch]$ValidateEndpointsOnly,
@@ -152,12 +153,40 @@ function New-NeonStagingMigrator([Security.SecureString]$Password) {
     }
 }
 
+function Get-StagingJdbcSessionParameters {
+    $schema = [uri]::EscapeDataString('public,auth,security,catalog,sales,customer,ops,analytics')
+    $options = [uri]::EscapeDataString('-c lock_timeout=5s')
+    return "currentSchema=$schema&options=$options"
+}
+
+function Write-StagingSpringDefaults([string]$JarPath, [string]$Destination) {
+    if (!('System.IO.Compression.ZipFile' -as [type])) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+    }
+    $archive = [IO.Compression.ZipFile]::OpenRead($JarPath)
+    try {
+        $entry = $archive.GetEntry('BOOT-INF/classes/application.yml')
+        if (!$entry) { throw 'El JAR no contiene su configuración base esperada.' }
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { $defaults = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+    } finally { $archive.Dispose() }
+
+    $legacySetting = [regex]::new('(?m)^[ \t]+connection-init-sql:[^\r\n]*\r?\n')
+    if ($legacySetting.Matches($defaults).Count -ne 1) {
+        throw 'La configuración Hikari del JAR no coincide con la revisión esperada.'
+    }
+    [IO.File]::WriteAllText($Destination, $legacySetting.Replace($defaults, ''), [Text.UTF8Encoding]::new($false))
+}
+
 # Ejecutar con powershell -NoProfile -File. Aislar el entorno de este proceso y sus hijos.
 $systemVariables = '^(Path|SystemRoot|WINDIR|ComSpec|PATHEXT|TEMP|TMP|USERPROFILE|LOCALAPPDATA|APPDATA|JAVA_HOME|ProgramFiles|ProgramFiles\(x86\)|ProgramData|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS|OS|HOMEDRIVE|HOMEPATH|USERNAME|USERDOMAIN|SystemDrive)$'
 Get-ChildItem Env: | Where-Object Name -NotMatch $systemVariables | ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
 $role = 'castillo_staging_migrator'
 $loginRole = if ($ProvisionDatabaseAs) { $ProvisionDatabaseAs } else { $role }
 $secret = Read-Host "Contraseña del rol $loginRole en Neon staging" -AsSecureString
+$configDir = $null
+$defaultsPath = $null
 try {
     if (!$secret -or $secret.Length -eq 0) { throw 'Se requiere una contraseña local del rol exclusivo de staging.' }
     $env:PGHOST = $stage
@@ -311,16 +340,20 @@ SELECT json_build_object(
         throw 'Identidad o historial Flyway inesperados. Spring permanece detenido.'
     }
     $state | ConvertTo-Json
+    if ($ExpectedLegacyMfaFixtureSha256 -and $state.legacyMfaFixtureSha256 -ne $ExpectedLegacyMfaFixtureSha256) {
+        throw 'La huella del fixture TOTP no coincide con la esperada. Spring permanece detenido.'
+    }
     if ($Database -eq 'security_db') { return }
     $expectedHistory = @{
         '50' = @('48|50|-1803902864|True')
+        '51' = @('48|50|-1803902864|True', '49|51|-1106382170|True')
         '52' = @('48|50|-1803902864|True', '49|51|-1106382170|True', '50|52|1411222195|True')
         '53' = @('48|50|-1803902864|True', '49|51|-1106382170|True', '50|52|1411222195|True', '51|53|-774895556|True')
     }
     $tail = $expectedHistory[[string]$state.version]
     if (!$tail -or $state.history.Count -ne [int]$state.version - 2 -or
         $state.baselineHistorySha256 -cne 'e5a83c830bd6e62541b2460962fc7145e25b79c9a81bb22e711ac245487a3ec3') {
-        throw 'El historial no coincide con las revisiones sintéticas V50, V52 o V53.'
+        throw 'El historial no coincide con las revisiones sintéticas V50 a V53.'
     }
     for ($offset = 1; $offset -le $tail.Count; $offset++) {
         if (($state.history[-$offset] -join '|') -cne $tail[-$offset]) {
@@ -371,24 +404,29 @@ ON CONFLICT (username) DO NOTHING;
     $hasV52Schema = $state.hasV51Tables -and $state.hasV52Column
     if ($FlywayTarget -eq '52') {
         if ($state.v53Columns -ne 0 -or !(($state.version -eq '50' -and !$state.hasEitherV51Table) -or
+            ($state.version -eq '51' -and $state.hasV51Tables -and !$state.hasV52Column) -or
             ($state.version -eq '52' -and $hasV52Schema))) {
-            throw 'El candidato V52 requiere la baseline V50 o un V52 íntegro.'
+            throw 'El candidato V52 requiere una baseline V50, V51 o V52 íntegra.'
         }
     } elseif (!$hasV52Schema -or !(($state.version -eq '52' -and $state.v53Columns -eq 0) -or
         ($state.version -eq '53' -and $state.v53Columns -eq 2))) {
         throw 'El candidato V53 requiere un V52 íntegro o un V53 ya verificado.'
     }
+    $configDir = [IO.Directory]::CreateDirectory((Join-Path ([IO.Path]::GetTempPath()) ('cmc-neon-spring-' + [guid]::NewGuid().ToString('N')))).FullName
+    $defaultsPath = Join-Path $configDir 'application.yml'
+    Write-StagingSpringDefaults $jar $defaultsPath
     $env:SPRING_PROFILES_ACTIVE = 'staging'
-    $env:SPRING_CONFIG_ADDITIONAL_LOCATION = ([uri]$config).AbsoluteUri
+    # Explicit locations exclude the bundled defaults and any configuration in the current directory.
+    $env:SPRING_CONFIG_LOCATION = @(([uri]$defaultsPath).AbsoluteUri, ([uri]$config).AbsoluteUri) -join ','
     # pgJDBC loads sslrootcert with its own LibPQFactory, independently of libpq.
     $jdbcCaBundle = [uri]::EscapeDataString($caBundle)
-    $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://${stage}:5432/${Database}?sslmode=verify-full&sslfactory=org.postgresql.ssl.LibPQFactory&sslrootcert=$jdbcCaBundle"
+    $jdbcSession = Get-StagingJdbcSessionParameters
+    $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://${stage}:5432/${Database}?sslmode=verify-full&sslfactory=org.postgresql.ssl.LibPQFactory&sslrootcert=$jdbcCaBundle&$jdbcSession"
     $env:SPRING_DATASOURCE_USERNAME = $role
     $env:SPRING_DATASOURCE_PASSWORD = $env:PGPASSWORD
     Remove-Item Env:PGPASSWORD
     $env:SPRING_FLYWAY_LOCATIONS = 'filesystem:' + $baseline.Replace('\','/') + ',classpath:db/migration'
     $env:SPRING_FLYWAY_TARGET = $FlywayTarget
-    $env:SPRING_DATASOURCE_HIKARI_CONNECTION_INIT_SQL = "SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics; SET lock_timeout TO '5s'"
     $env:STAGING_PUBLIC_ORIGIN = if ($WebOrigin) { $WebOrigin } else { 'https://castillo-neon-staging.invalid' }
     $env:STAGING_ALLOWED_ORIGINS = $origins
     $env:STAGING_SMTP_HOST = '127.0.0.1'
@@ -402,4 +440,6 @@ ON CONFLICT (username) DO NOTHING;
 } finally {
     Remove-Item Env:PGPASSWORD,Env:PGPASSFILE,Env:SPRING_DATASOURCE_PASSWORD,Env:APP_SECURITY_JWT_SECRET,Env:PICKUP_CODE_ENCRYPTION_KEY -ErrorAction SilentlyContinue
     if ($secret) { $secret.Dispose() }
+    if ($defaultsPath) { [IO.File]::Delete($defaultsPath) }
+    if ($configDir) { [IO.Directory]::Delete($configDir) }
 }
