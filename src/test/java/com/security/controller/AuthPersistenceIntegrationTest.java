@@ -11,9 +11,9 @@ import com.security.service.VerificationService;
 import com.security.support.LocalPostgresIntegrationTest;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -40,8 +40,8 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
     @org.springframework.beans.factory.annotation.Value("${app.security.jwt.secret}")
     String testJwtKey;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
-    @MockBean EmailService email;
-    @MockBean com.security.config.MercadoPagoConfiguration mercadoPagoConfiguration;
+    @MockitoBean EmailService email;
+    @MockitoBean com.security.config.MercadoPagoConfiguration mercadoPagoConfiguration;
     User user;
     private static final String PASSWORD = "SyntheticOnly@zK!928";
 

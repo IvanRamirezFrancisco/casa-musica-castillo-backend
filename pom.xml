@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.16</version>
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
     
@@ -20,15 +20,16 @@
     <properties>
         <java.version>21</java.version>
         <!-- Compatible security fixes published after the Spring Boot 3.5.16 BOM. -->
-        <jackson-bom.version>2.21.8</jackson-bom.version>
+        <jackson-2-bom.version>2.21.8</jackson-2-bom.version>
         <postgresql.version>42.7.14</postgresql.version>
         <httpclient5.version>5.6.4</httpclient5.version>
         <httpcore5.version>5.4.3</httpcore5.version>
-        <tomcat.version>10.1.61</tomcat.version>
         <netty.version>4.1.139.Final</netty.version>
         <log4j2.version>2.25.5</log4j2.version>
         <commons-lang3.version>3.21.0</commons-lang3.version>
         <sonar.organization>ivanramirezfrancisco-2</sonar.organization>
+        <sonar.coverage.jacoco.xmlReportPaths>${project.reporting.outputDirectory}/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+        <sonar.javascript.lcov.reportPaths>${project.build.directory}/sonar-ci/lcov.info</sonar.javascript.lcov.reportPaths>
     </properties>
     
     <dependencyManagement>
@@ -46,7 +47,11 @@
         <!-- Spring Boot Starters -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-restclient</artifactId>
         </dependency>
         
         <dependency>
@@ -76,8 +81,8 @@
 
         <!-- Flyway para migraciones de base de datos -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
@@ -163,15 +168,23 @@
             <optional>true</optional>
         </dependency>
         
-        <!-- DevTools -->
+        <!-- Preserve the existing JSON contract and Jackson 2 integrations. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-devtools</artifactId>
-            <scope>runtime</scope>
-            <optional>true</optional>
+            <artifactId>spring-boot-jackson2</artifactId>
         </dependency>
-        
+
         <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -179,8 +192,8 @@
         </dependency>
         
         <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-test</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -237,6 +250,22 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.16</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
@@ -276,8 +305,8 @@
                     <!-- Use public NVD feeds for a credential-free CI scan. -->
                     <nvdDatafeedUrl>https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz</nvdDatafeedUrl>
                     <connectionTimeout>20000</connectionTimeout>
-                    <readTimeout>60000</readTimeout>
-                    <nvdMaxRetryCount>2</nvdMaxRetryCount>
+                    <readTimeout>120000</readTimeout>
+                    <nvdMaxRetryCount>3</nvdMaxRetryCount>
                     <failOnError>true</failOnError>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <suppressionFile>owasp-suppressions.xml</suppressionFile>

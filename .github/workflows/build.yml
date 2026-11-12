@@ -56,12 +56,33 @@ jobs:
           java-version: '21'
           distribution: temurin
           cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/cache@v4
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
       - name: Run full suite and package
         run: mvn -B --no-transfer-progress package
+      - name: Test Sonar access diagnostics and generate LCOV
+        run: |
+          mkdir -p target/sonar-ci
+          node --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination=target/sonar-ci/lcov.info \
+            src/test/js/check-sonar-access.test.mjs
+      - name: Verify coverage reports
+        run: |
+          test -s target/site/jacoco/jacoco.xml
+          test -s target/sonar-ci/lcov.info
+      - name: Preserve coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: |
+            target/site/jacoco/jacoco.xml
+            target/sonar-ci/lcov.info
+          if-no-files-found: error
       - name: Preserve test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,7 +90,14 @@ jobs:
           name: backend-surefire
           path: target/surefire-reports/TEST-*.xml
           if-no-files-found: warn
+      - name: Verify SonarCloud token and project
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: IvanRamirezFrancisco_backend_
+          SONAR_ORGANIZATION: ivanramirezfrancisco-2
+        run: node .github/scripts/check-sonar-access.mjs
       - name: Analyze with SonarCloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_SCANNER_SKIP_JRE_PROVISIONING: 'true'
         run: mvn -B --no-transfer-progress org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Dsonar.qualitygate.wait=true

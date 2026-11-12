@@ -8,8 +8,8 @@ import com.security.service.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
@@ -30,16 +30,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class TotpExposureProductionTest {
     @Autowired MockMvc mvc;
     @Autowired RequestMappingHandlerMapping mappings;
-    @MockBean UserRepository users;
-    @MockBean UserService userService;
-    @MockBean EmailService email;
-    @MockBean BackupCodeService backups;
-    @MockBean LoginChallengeService challenges;
-    @MockBean LoginSecurityService limits;
-    @MockBean CustomUserDetailsService details;
-    @MockBean JwtTokenProvider jwt;
-    @MockBean SessionManagementService sessions;
-    @MockBean com.security.util.SecurityUtils securityUtils;
+    @MockitoBean UserRepository users;
+    @MockitoBean UserService userService;
+    @MockitoBean EmailService email;
+    @MockitoBean BackupCodeService backups;
+    @MockitoBean LoginChallengeService challenges;
+    @MockitoBean LoginSecurityService limits;
+    @MockitoBean CustomUserDetailsService details;
+    @MockitoBean JwtTokenProvider jwt;
+    @MockitoBean SessionManagementService sessions;
+    @MockitoBean com.security.util.SecurityUtils securityUtils;
     User user;
     @BeforeEach void setup() {
         user=new User();user.setId(1L);user.setEmail("synthetic@example.invalid");user.setEnabled(true);

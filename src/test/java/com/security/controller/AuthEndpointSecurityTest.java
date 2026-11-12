@@ -7,8 +7,8 @@ import com.security.service.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -23,21 +23,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties="cors.allowed-origins=http://localhost:4200")
 class AuthEndpointSecurityTest {
     @Autowired MockMvc mvc;
-    @MockBean AuthService auth;
-    @MockBean VerificationService verification;
-    @MockBean UserService users;
-    @MockBean JwtTokenProvider jwt;
-    @MockBean PasswordResetService passwords;
-    @MockBean SecurePasswordResetService securePasswords;
-    @MockBean LoginSecurityService limits;
-    @MockBean SessionManagementService sessions;
-    @MockBean LoginChallengeService challenges;
-    @MockBean CustomUserDetailsService details;
-    @MockBean TwoFactorService factors;
-    @MockBean BackupCodeService backups;
-    @MockBean com.security.util.SecurityUtils securityUtils;
-    @MockBean com.security.util.PasswordValidator passwordValidator;
-    @MockBean EmailService emailService;
+    @MockitoBean AuthService auth;
+    @MockitoBean VerificationService verification;
+    @MockitoBean UserService users;
+    @MockitoBean JwtTokenProvider jwt;
+    @MockitoBean PasswordResetService passwords;
+    @MockitoBean SecurePasswordResetService securePasswords;
+    @MockitoBean LoginSecurityService limits;
+    @MockitoBean SessionManagementService sessions;
+    @MockitoBean LoginChallengeService challenges;
+    @MockitoBean CustomUserDetailsService details;
+    @MockitoBean TwoFactorService factors;
+    @MockitoBean BackupCodeService backups;
+    @MockitoBean com.security.util.SecurityUtils securityUtils;
+    @MockitoBean com.security.util.PasswordValidator passwordValidator;
+    @MockitoBean EmailService emailService;
 
     @BeforeEach void setup() {
         User user=new User();user.setId(1L);user.setEmail("synthetic@example.invalid");user.setEnabled(true);

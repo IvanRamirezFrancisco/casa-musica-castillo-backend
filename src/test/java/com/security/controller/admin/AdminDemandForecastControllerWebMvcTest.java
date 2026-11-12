@@ -11,9 +11,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import com.security.security.CustomUserDetailsService;
 import com.security.security.JwtAuthenticationEntryPoint;
 import com.security.util.SecurityUtils;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import com.security.config.MercadoPagoConfiguration;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -40,13 +40,13 @@ class AdminDemandForecastControllerWebMvcTest extends com.security.support.Local
     @Autowired
     private MockMvc mockMvc;
 
-    @MockBean
+    @MockitoBean
     private DemandForecastService forecastService;
 
-    @MockBean
+    @MockitoBean
     private SecurityUtils securityUtils;
 
-    @MockBean
+    @MockitoBean
     private MercadoPagoConfiguration mercadoPagoConfiguration;
 
     @Test

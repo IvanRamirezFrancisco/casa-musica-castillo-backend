@@ -28,7 +28,7 @@ public class WebhookRequestCacheConfig {
             // Solo envolver si es el path del webhook y es POST
             if ("POST".equalsIgnoreCase(httpRequest.getMethod())
                     && httpRequest.getRequestURI().contains("/api/webhooks/mercado-pago")) {
-                chain.doFilter(new ContentCachingRequestWrapper(httpRequest), response);
+                chain.doFilter(new ContentCachingRequestWrapper(httpRequest, 0), response);
             } else {
                 chain.doFilter(request, response);
             }

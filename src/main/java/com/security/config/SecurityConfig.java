@@ -1,5 +1,6 @@
 package com.security.config;
 
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import com.security.security.CustomUserDetailsService;
 import com.security.security.JwtAuthenticationEntryPoint;
 import com.security.security.JwtAuthenticationFilter;
@@ -52,12 +53,31 @@ public class SecurityConfig {
         }
 
         @Bean
+        public FilterRegistrationBean<JwtAuthenticationFilter> jwtServletRegistration(JwtAuthenticationFilter filter) {
+                // The security chain invokes this filter after setting up the security context.
+                FilterRegistrationBean<JwtAuthenticationFilter> registration = new FilterRegistrationBean<>(filter);
+                registration.setEnabled(false);
+                return registration;
+        }
+
+        @Bean
         public PasswordEncoder passwordEncoder() {
-                return new BCryptPasswordEncoder(12) {
+                BCryptPasswordEncoder bcrypt = new BCryptPasswordEncoder(12);
+                return new PasswordEncoder() {
+                        @Override
+                        public String encode(CharSequence rawPassword) {
+                                return bcrypt.encode(rawPassword);
+                        }
+
                         @Override
                         public boolean matches(CharSequence rawPassword, String encodedPassword) {
                                 return BcryptPasswordValidator.isWithinLimit(rawPassword)
-                                                && super.matches(rawPassword, encodedPassword);
+                                                && bcrypt.matches(rawPassword, encodedPassword);
+                        }
+
+                        @Override
+                        public boolean upgradeEncoding(String encodedPassword) {
+                                return bcrypt.upgradeEncoding(encodedPassword);
                         }
                 };
         }
@@ -68,8 +88,7 @@ public class SecurityConfig {
 
         @Bean
         public DaoAuthenticationProvider authenticationProvider() {
-                DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
-                authProvider.setUserDetailsService(customUserDetailsService);
+                DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider(customUserDetailsService);
                 authProvider.setPasswordEncoder(passwordEncoder());
                 return authProvider;
         }

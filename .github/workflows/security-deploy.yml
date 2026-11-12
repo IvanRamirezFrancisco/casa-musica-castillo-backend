@@ -22,8 +22,26 @@ jobs:
           java-version: '21'
           distribution: temurin
           cache: maven
+      - name: Set vulnerability cache revision
+        id: nvd
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore vulnerability database
+        id: nvd-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/dependency-check-data
+          key: nvd-v13-${{ runner.os }}-${{ steps.nvd.outputs.day }}
+          restore-keys: nvd-v13-${{ runner.os }}-
+      - name: Refresh vulnerability database
+        run: mvn -B --no-transfer-progress -DdataDirectory="$RUNNER_TEMP/dependency-check-data" org.owasp:dependency-check-maven:update-only
+      - name: Save refreshed vulnerability database
+        if: steps.nvd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dependency-check-data
+          key: ${{ steps.nvd-cache.outputs.cache-primary-key }}
       - name: Audit dependency vulnerabilities
-        run: mvn -B --no-transfer-progress org.owasp:dependency-check-maven:check
+        run: mvn -B --no-transfer-progress -DdataDirectory="$RUNNER_TEMP/dependency-check-data" org.owasp:dependency-check-maven:check
       - name: Preserve vulnerability reports
         if: always()
         uses: actions/upload-artifact@v4
