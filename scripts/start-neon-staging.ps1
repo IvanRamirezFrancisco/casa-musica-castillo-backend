@@ -92,6 +92,66 @@ if ($WebOrigin) {
     $origins += ',' + $WebOrigin
 }
 
+function New-NeonStagingMigrator([Security.SecureString]$Password) {
+    $buffer = [char[]]::new($Password.Length)
+    $pointer = [IntPtr]::Zero
+    $process = $null
+    $invalidPassword = $false
+    try {
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+        [Runtime.InteropServices.Marshal]::Copy($pointer, $buffer, 0, $buffer.Length)
+        # Windows libpq reads PGPASSWORD through its native code page; use ASCII for lossless reuse.
+        foreach ($character in $buffer) {
+            if ([int]$character -eq 0 -or [int]$character -gt 127) {
+                $invalidPassword = $true
+                throw 'Contraseña incompatible con la codificación de Windows libpq.'
+            }
+        }
+
+        $psql = Get-Command psql -CommandType Application | Select-Object -First 1
+        $start = [Diagnostics.ProcessStartInfo]::new($psql.Source, '-X -w -q -v ON_ERROR_STOP=1 -f -')
+        $start.UseShellExecute = $false
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.EnvironmentVariables['PGCLIENTENCODING'] = 'UTF8'
+        $process = [Diagnostics.Process]::Start($start)
+        # PostgreSQL errors can echo SQL. Drain both streams without exposing their content.
+        $stdout = $process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null)
+        $stderr = $process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+        $writer = [IO.StreamWriter]::new($process.StandardInput.BaseStream, [Text.UTF8Encoding]::new($false, $true))
+        try {
+            $writer.Write("CREATE ROLE castillo_staging_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD E'")
+            foreach ($character in $buffer) {
+                switch ($character) {
+                    "'" { $writer.Write("''") }
+                    '\' { $writer.Write('\\') }
+                    "`r" { $writer.Write('\r') }
+                    "`n" { $writer.Write('\n') }
+                    default { $writer.Write([char]$character) }
+                }
+            }
+            $writer.WriteLine("';")
+        } finally {
+            $writer.Dispose()
+        }
+        $process.WaitForExit()
+        $null = $stdout.GetAwaiter().GetResult()
+        $null = $stderr.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw 'Falló CREATE ROLE.' }
+    } catch {
+        if ($invalidPassword) { throw 'Genera una contraseña aleatoria ASCII para el migrador en Windows.' }
+        throw 'No se confirmó la creación del migrador. Repite la inspección antes de reintentar.'
+    } finally {
+        [Array]::Clear($buffer, 0, $buffer.Length)
+        if ($pointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+        if ($process) {
+            if (!$process.HasExited) { $process.Kill(); $process.WaitForExit() }
+            $process.Dispose()
+        }
+    }
+}
+
 # Ejecutar con powershell -NoProfile -File. Aislar el entorno de este proceso y sus hijos.
 $systemVariables = '^(Path|SystemRoot|WINDIR|ComSpec|PATHEXT|TEMP|TMP|USERPROFILE|LOCALAPPDATA|APPDATA|JAVA_HOME|ProgramFiles|ProgramFiles\(x86\)|ProgramData|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS|OS|HOMEDRIVE|HOMEPATH|USERNAME|USERDOMAIN|SystemDrive)$'
 Get-ChildItem Env: | Where-Object Name -NotMatch $systemVariables | ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
@@ -108,45 +168,78 @@ try {
     $env:PGPASSFILE = 'NUL'
     $env:PGSSLMODE = 'verify-full'
     $env:PGSSLROOTCERT = $caBundle
+    $env:PGGSSENCMODE = 'disable'
     $env:PGCONNECT_TIMEOUT = '10'
     $env:PGOPTIONS = '-c default_transaction_read_only=on'
     if ($ProvisionDatabaseAs) {
         $env:PGDATABASE = 'postgres'
-        if ($CreateMigrator) {
-            $roleCheck = @'
-SELECT current_database() = 'postgres'
-   AND NOT pg_is_in_recovery()
-   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolcreatedb AND rolcreaterole)
-   AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'castillo_staging_migrator')
-   AND NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'castillo_staging');
+        $provisionQuery = @'
+SELECT json_build_object(
+  'validSession', current_database() = 'postgres' AND NOT pg_is_in_recovery(),
+  'canCreateRole', admin.rolcreaterole,
+  'canCreateDatabase', admin.rolcreatedb,
+  'roleExists', migrator.oid IS NOT NULL,
+  'roleIsLimited', migrator.rolcanlogin AND NOT migrator.rolsuper AND NOT migrator.rolcreatedb
+                   AND NOT migrator.rolcreaterole AND NOT migrator.rolreplication AND NOT migrator.rolbypassrls
+                   AND NOT EXISTS (SELECT 1 FROM pg_roles AS elevated WHERE elevated.rolname = 'neon_superuser'
+                                   AND pg_has_role(migrator.oid, elevated.oid, 'MEMBER')),
+  'canSetMigrator', pg_has_role(admin.oid, migrator.oid, 'SET'),
+  'databaseOwner', (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'castillo_staging')
+)
+FROM pg_roles AS admin
+LEFT JOIN pg_roles AS migrator ON migrator.rolname = 'castillo_staging_migrator'
+WHERE admin.rolname = current_user;
 '@
-            $canCreateRole = & psql -X -w -At -v ON_ERROR_STOP=1 -c $roleCheck 2>$null
-            if ($LASTEXITCODE -ne 0 -or $canCreateRole -cne 't') {
-                throw 'El rol ya existe, la base ya existe o el administrador de staging no tiene permisos suficientes.'
+        function Get-NeonProvisionState {
+            $result = & psql -X -w -At -v ON_ERROR_STOP=1 -c $provisionQuery 2>$null
+            if ($LASTEXITCODE -ne 0 -or !$result) { throw 'No se pudo inspeccionar el rol y la base de staging.' }
+            $state = $result | ConvertFrom-Json
+            if (!$state.validSession) { throw 'La sesión administrativa de staging no es válida.' }
+            return $state
+        }
+        $provision = Get-NeonProvisionState
+        if ($provision.roleExists -and !$provision.roleIsLimited) {
+            throw 'El migrador existente tiene privilegios inesperados. Se detuvo el aprovisionamiento.'
+        }
+        if ($provision.databaseOwner) {
+            if (!$provision.roleIsLimited -or $provision.databaseOwner -cne $role) {
+                throw 'castillo_staging ya existe con un propietario inesperado. Se detuvo el aprovisionamiento.'
             }
-            Remove-Item Env:PGOPTIONS
-            & psql -X -w -q -v ON_ERROR_STOP=1 --single-transaction `
-                -c 'CREATE ROLE castillo_staging_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE' `
-                -c '\password castillo_staging_migrator' `
-                -c 'GRANT castillo_staging_migrator TO CURRENT_USER WITH SET TRUE'
-            if ($LASTEXITCODE -ne 0) { throw 'No se pudo preparar el rol de staging.' }
+            'Base castillo_staging existente con el propietario esperado.'
+            return
+        }
+        if (!$provision.canCreateDatabase) { throw 'Se requiere un administrador de staging con CREATEDB.' }
+        if (!$provision.roleExists) {
+            if (!$CreateMigrator -or !$provision.canCreateRole) {
+                throw 'Falta el migrador. Se requiere -CreateMigrator y un administrador de staging con CREATEROLE.'
+            }
+            $newPassword = Read-Host 'Nueva contraseña exclusiva de castillo_staging_migrator' -AsSecureString
+            try {
+                if (!$newPassword -or !$newPassword.Length) { throw 'Se requiere una contraseña nueva para el migrador.' }
+                Remove-Item Env:PGOPTIONS
+                New-NeonStagingMigrator $newPassword
+            } finally {
+                if ($newPassword) { $newPassword.Dispose() }
+            }
             $env:PGOPTIONS = '-c default_transaction_read_only=on'
+            $provision = Get-NeonProvisionState
+            if (!$provision.roleIsLimited -or $provision.databaseOwner) {
+                throw 'El estado cambió tras crear el rol. Inspecciona staging antes de continuar.'
+            }
         }
-        $createCheck = @'
-SELECT current_database() = 'postgres'
-   AND NOT pg_is_in_recovery()
-   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolcreatedb)
-   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'castillo_staging_migrator'
-               AND rolcanlogin AND NOT rolsuper AND NOT rolcreaterole AND NOT rolcreatedb)
-   AND NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'castillo_staging');
-'@
-        $canCreate = & psql -X -w -At -v ON_ERROR_STOP=1 -c $createCheck 2>$null
-        if ($LASTEXITCODE -ne 0 -or $canCreate -cne 't') {
-            throw 'Se requiere un rol administrador de staging con CREATEDB, un migrador limitado y un destino aún inexistente.'
+        if (!$provision.canSetMigrator) {
+            Remove-Item Env:PGOPTIONS
+            & psql -X -w -q -v ON_ERROR_STOP=1 -c 'GRANT castillo_staging_migrator TO CURRENT_USER WITH SET TRUE'
+            if ($LASTEXITCODE -ne 0) { throw 'El administrador no pudo asumir el rol propietario. El rol se conserva.' }
         }
-        Remove-Item Env:PGOPTIONS
+        Remove-Item Env:PGOPTIONS -ErrorAction SilentlyContinue
         & createdb -w --maintenance-db=postgres --template=template0 --owner=castillo_staging_migrator castillo_staging
         if ($LASTEXITCODE -ne 0) { throw 'No se pudo crear castillo_staging con el propietario solicitado.' }
+        $env:PGOPTIONS = '-c default_transaction_read_only=on'
+        $provision = Get-NeonProvisionState
+        if (!$provision.roleIsLimited -or $provision.databaseOwner -cne $role) {
+            throw 'No se pudo confirmar el propietario de castillo_staging tras crearla.'
+        }
         'Base castillo_staging creada.'
         return
     }

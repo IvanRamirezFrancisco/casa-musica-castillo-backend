@@ -17,9 +17,19 @@ $global:CmcNeonGuardTestState = @{
     PromptCount = 0
     ConnectionCount = 0
     CreatedbCount = 0
+    GrantCount = 0
     Password = [guid]::NewGuid().ToString('N')
     Staging = $staging
     CaBundle = $common.CaBundlePath
+    Provision = @{
+        validSession = $true
+        canCreateDatabase = $true
+        canCreateRole = $true
+        roleExists = $true
+        roleIsLimited = $true
+        canSetMigrator = $true
+        databaseOwner = $null
+    }
 }
 
 function Read-Host {
@@ -32,17 +42,24 @@ function Read-Host {
 function psql {
     $global:CmcNeonGuardTestState.ConnectionCount++
     $syntheticPassword = $global:CmcNeonGuardTestState.Password
+    $grant = $args -contains 'GRANT castillo_staging_migrator TO CURRENT_USER WITH SET TRUE'
+    $expectedOptions = if (!$grant) { '-c default_transaction_read_only=on' }
     if ($env:PGHOST -cne $global:CmcNeonGuardTestState.Staging -or $env:PGDATABASE -cne 'postgres' -or
         $env:PGUSER -cne 'admin_staging' -or $env:PGSSLMODE -cne 'verify-full' -or
         $env:PGSSLROOTCERT -cne $global:CmcNeonGuardTestState.CaBundle -or
-        $env:SSL_CERT_FILE -or $env:PGOPTIONS -cne '-c default_transaction_read_only=on' -or
+        $env:SSL_CERT_FILE -or $env:PGOPTIONS -ne $expectedOptions -or
         $env:SPRING_DATASOURCE_URL -or $env:DATABASE_URL -or $env:PGSERVICE -or $env:PGPASSFILE -cne 'NUL' -or
         $env:JAVA_TOOL_OPTIONS -or $env:PGPASSWORD -cne $syntheticPassword -or
         ($args -join ' ').Contains($syntheticPassword)) {
         throw 'The launcher did not isolate the connection or supplied a password as an argument.'
     }
     $global:LASTEXITCODE = 0
-    't' # Simulate a successful read-only precondition. No database is contacted.
+    if ($grant) {
+        $global:CmcNeonGuardTestState.GrantCount++
+        $global:CmcNeonGuardTestState.Provision.canSetMigrator = $true
+    } else {
+        $global:CmcNeonGuardTestState.Provision | ConvertTo-Json -Compress
+    }
 }
 
 function createdb {
@@ -55,6 +72,7 @@ function createdb {
         ($args -join ' ').Contains($syntheticPassword)) {
         throw 'createdb did not receive the isolated TLS configuration or exposed a password.'
     }
+    $global:CmcNeonGuardTestState.Provision.databaseOwner = 'castillo_staging_migrator'
     $global:LASTEXITCODE = 0
 }
 
@@ -99,13 +117,31 @@ if ($global:CmcNeonGuardTestState.PromptCount -or $global:CmcNeonGuardTestState.
 }
 
 if ($CaBundlePath) {
-    $result = & $launcher @common -ProvisionDatabaseAs 'admin_staging'
+    $state = $global:CmcNeonGuardTestState
+    $state.Provision.canSetMigrator = $false
+    $result = & $launcher @common -ProvisionDatabaseAs 'admin_staging' -CreateMigrator
     if ($result -notcontains 'Base castillo_staging creada.' -or
-        $global:CmcNeonGuardTestState.PromptCount -ne 1 -or $global:CmcNeonGuardTestState.ConnectionCount -ne 1 -or
-        $global:CmcNeonGuardTestState.CreatedbCount -ne 1 -or $env:PGPASSWORD) {
+        $state.PromptCount -ne 1 -or $state.ConnectionCount -ne 3 -or
+        $state.GrantCount -ne 1 -or $state.CreatedbCount -ne 1 -or $env:PGPASSWORD) {
         throw 'Unexpected prompt count, connection count or remaining password.'
     }
+    $result = & $launcher @common -ProvisionDatabaseAs 'admin_staging' -CreateMigrator
+    if ($result -notcontains 'Base castillo_staging existente con el propietario esperado.' -or
+        $state.CreatedbCount -ne 1 -or $state.PromptCount -ne 2) {
+        throw 'Existing database and role were not reused.'
+    }
+    $state.Provision.databaseOwner = 'unexpected_owner'
+    Assert-Rejected ($common + @{ProvisionDatabaseAs='admin_staging'; CreateMigrator=$true}) 'propietario inesperado'
+    $state.Provision.databaseOwner = $null
+    $state.Provision.roleIsLimited = $false
+    Assert-Rejected ($common + @{ProvisionDatabaseAs='admin_staging'; CreateMigrator=$true}) 'privilegios inesperados'
+    $state.Provision.roleExists = $false
+    Assert-Rejected ($common + @{ProvisionDatabaseAs='admin_staging'}) 'Falta el migrador'
+    if ($state.CreatedbCount -ne 1 -or $state.GrantCount -ne 1 -or $state.PromptCount -ne 5 -or $env:PGPASSWORD) {
+        throw 'An invalid partial state attempted a write or an unexpected password prompt.'
+    }
     'PASS: explicit CA, inherited environment isolation, masked input and password cleanup.'
+    'PASS: partial provisioning states and existing objects.'
 }
 Remove-Variable -Name CmcNeonGuardTestState -Scope Global
 'PASS: endpoint and invalid CA guards.'

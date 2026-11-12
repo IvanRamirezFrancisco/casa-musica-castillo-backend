@@ -12,14 +12,14 @@ $launcher = (Resolve-Path 'scripts/start-neon-staging.ps1').Path
 powershell -NoProfile -File $launcher @common -ValidateEndpointsOnly
 ```
 
-Si el migrador todavía no existe, crear el rol y la base en un solo paso de operador. Si el rol limitado ya existe, omitir `-CreateMigrator`. Si la base ya existe, omitir el paso de aprovisionamiento y pasar a la inspección o restauración de la base vacía.
+El aprovisionamiento inspecciona el rol y la base antes de escribir. Con `-CreateMigrator`, crea el rol únicamente si falta. Conserva un migrador limitado o una base con el propietario esperado de un intento anterior. Detiene el flujo si encuentra privilegios o un propietario inesperados.
 
 ```powershell
 $admin = Read-Host 'Rol administrador del endpoint de staging'
 powershell -NoProfile -File $launcher @common -ProvisionDatabaseAs $admin -CreateMigrator
 ```
 
-El lanzador pide la contraseña del administrador de staging y, si crea el rol, `psql \password` pide la nueva contraseña del migrador dos veces sin mostrarla. El administrador necesita `CREATEDB` y, para crear el rol, `CREATEROLE`. PostgreSQL comprueba las facultades para asignar la propiedad al migrador. El lanzador nunca cambia `security_db`.
+El lanzador pide la contraseña del administrador y solicita la del migrador solo cuando va a crear el rol. Usa una contraseña aleatoria de caracteres ASCII para el migrador, compatible con la página de códigos de libpq en Windows. Ambos prompts están enmascarados. El SQL con la contraseña nueva se envía por entrada estándar a `psql`, en una sesión TLS con `verify-full`. El administrador necesita `CREATEDB` y, para crear el rol, `CREATEROLE`. Antes de continuar se comprueban los privilegios del migrador, su ausencia de membresía en `neon_superuser` y el propietario de la base.
 
 El lanzador valida el archivo PEM antes de solicitar la contraseña. `psql`, `createdb` y `pg_restore` reciben la ruta absoluta mediante `PGSSLROOTCERT`. Spring y Flyway usan pgJDBC, que recibe la ruta codificada en `sslrootcert` y la lee mediante `LibPQFactory`. Ambos clientes verifican la CA y el hostname con `verify-full`.
 
