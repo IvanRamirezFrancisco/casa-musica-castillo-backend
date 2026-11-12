@@ -6,6 +6,9 @@ server:
     include-exception: false
 
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: auth-system
 

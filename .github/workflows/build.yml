@@ -72,4 +72,5 @@ jobs:
       - name: Analyze with SonarCloud
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_SCANNER_SKIP_JRE_PROVISIONING: 'true'
         run: mvn -B --no-transfer-progress org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar -Dsonar.projectKey=IvanRamirezFrancisco_backend_ -Dsonar.qualitygate.wait=true

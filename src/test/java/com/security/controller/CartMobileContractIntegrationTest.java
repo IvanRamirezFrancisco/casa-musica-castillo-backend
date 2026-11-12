@@ -11,9 +11,9 @@ import com.security.security.UserPrincipal;
 import com.security.support.LocalPostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,7 +38,7 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired ProductRepository products;
     @Autowired ShoppingCartRepository carts;
     @Autowired OrderRepository orders;
-    @MockBean com.security.config.MercadoPagoConfiguration payments;
+    @MockitoBean com.security.config.MercadoPagoConfiguration payments;
 
     @Test
     void mobileCartPersistsAndEnforcesOwnerStockAndQuotation() throws Exception {
