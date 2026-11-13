@@ -1,6 +1,7 @@
 package com.security.controller;
 
 import com.security.dto.request.ResendVerificationRequest;
+import com.security.dto.request.VerifyEmailCodeRequest;
 import com.security.dto.request.LoginRequest;
 import com.security.dto.request.RegisterRequest;
 import com.security.dto.request.VerifyEmailRequest;
@@ -50,6 +51,9 @@ public class AuthController {
     private EmailService emailService;
 
     @Autowired
+    private com.security.service.VerificationRequestLimit verificationRequestLimit;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -76,10 +80,11 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<ApiResponse> registerUser(@Valid @RequestBody RegisterRequest registerRequest) {
+    public ResponseEntity<ApiResponse> registerUser(@Valid @RequestBody RegisterRequest registerRequest, HttpServletRequest request) {
+        verificationRequestLimit.check("registration", request.getRemoteAddr(), 30);
         authService.registerUser(registerRequest);
         return ResponseEntity.ok(new ApiResponse(true,
-                "Si los datos permiten registrar la cuenta, recibirás un enlace de verificación."));
+                "Si los datos permiten activar la cuenta, recibirás un enlace y un código de verificación."));
     }
 
     @PostMapping("/login")
@@ -214,7 +219,9 @@ public class AuthController {
     public ResponseEntity<?> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
         try {
             log.debug("Procesando verificación de email");
-            userService.verifyEmailToken(request.getToken());
+            if (!verificationService.verifyToken(request.getToken().trim())) {
+                throw new BadRequestException("El enlace de verificación es inválido o ha expirado.");
+            }
             log.info("Email verificado exitosamente");
             return ResponseEntity
                     .ok(new ApiResponse(true, "¡Email verificado exitosamente! Ya puedes iniciar sesión."));
@@ -235,7 +242,7 @@ public class AuthController {
                 ? emailService.getFrontendBaseUrl()
                 : "http://localhost:4200";
         try {
-            userService.verifyEmailToken(token);
+            if (!verificationService.verifyToken(token.trim())) throw new BadRequestException("Enlace inválido.");
             return ResponseEntity.status(HttpStatus.FOUND)
                     .location(URI.create(frontendBaseUrl + "/login?verified=true"))
                     .build();
@@ -246,12 +253,23 @@ public class AuthController {
         }
     }
 
+    @PostMapping("/verify-email-code")
+    public ResponseEntity<?> verifyEmailCode(@Valid @RequestBody VerifyEmailCodeRequest request, HttpServletRequest client) {
+        verificationRequestLimit.check("activation-code", client.getRemoteAddr(), 60);
+        if (!verificationService.verifyCode(request.email(), request.code())) {
+            return ResponseEntity.badRequest().body(new ApiResponse(false,
+                    "El código es inválido, ha expirado o ya no admite intentos. Solicita otro si es necesario."));
+        }
+        return ResponseEntity.ok(new ApiResponse(true, "Correo verificado. Ya puedes iniciar sesión."));
+    }
+
     @PostMapping("/resend-verification")
-    public ResponseEntity<?> resendVerification(@Valid @RequestBody ResendVerificationRequest request) {
+    public ResponseEntity<?> resendVerification(@Valid @RequestBody ResendVerificationRequest request, HttpServletRequest client) {
         try {
+            verificationRequestLimit.check("resend-activation", client.getRemoteAddr(), 30);
             verificationService.resendVerificationEmail(request.getEmail());
             return ResponseEntity.ok(new ApiResponse(true,
-                    "Si el correo está registrado y pendiente de verificación, recibirás un nuevo enlace de activación."));
+                    "Si el correo está pendiente y puede recibir un reenvío, recibirás un enlace y un código de activación."));
         } catch (AuthFlowException ex) {
             return ResponseEntity.status(ex.getStatus())
                     .body(new ApiResponse(false, ex.getMessage()));

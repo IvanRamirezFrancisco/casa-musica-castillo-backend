@@ -4,14 +4,10 @@ import com.security.dto.request.RegisterRequest;
 import com.security.dto.response.UserResponse;
 import com.security.entity.Role;
 import com.security.entity.User;
-import com.security.entity.VerificationToken;
-import com.security.enums.TokenType;
 import com.security.exception.AuthFlowException;
 import com.security.exception.ResourceNotFoundException;
-import com.security.exception.BadRequestException;
 import com.security.repository.RoleRepository;
 import com.security.repository.UserRepository;
-import com.security.repository.VerificationTokenRepository;
 import com.security.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,7 +24,6 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Locale;
@@ -52,10 +47,10 @@ public class UserService {
     private PasswordEncoder passwordEncoder;
 
     @Autowired
-    private EmailService emailService;
+    private VerificationService verificationService;
 
     @Autowired
-    private VerificationTokenRepository verificationTokenRepository;
+    private RegistrationLegalPolicy legalPolicy;
 
     @Autowired
     private AuditLogService auditLogService;
@@ -82,40 +77,32 @@ public class UserService {
         }
     }
 
-    private record PreparedRegistration(User emailRecipient, String verificationToken) {}
-
     /**
      * Creates a pending account in a short transaction before sending verification email.
      * Repeated anonymous requests never replace an account's data or credentials.
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void createUser(RegisterRequest registerRequest) {
+        legalPolicy.validate(registerRequest.getLegalAcceptance());
         String email = registerRequest.getEmail().trim().toLowerCase(Locale.ROOT);
         String username = registerRequest.getUsername().trim();
-        PreparedRegistration prepared;
+        VerificationService.PendingVerification prepared;
         try {
             prepared = requiresNewTx.execute(status -> prepareRegistrationInTx(registerRequest, email, username));
         } catch (DataIntegrityViolationException ex) {
             // Check after rollback so a simultaneous registration returns the same neutral response.
-            if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return;
-            throw ex;
+            if (!userRepository.existsByEmail(email) && !userRepository.existsByUsername(username)) throw ex;
+            prepared = null;
         }
-        if (prepared == null) return;
-
-        try {
-            emailService.sendVerificationEmail(prepared.emailRecipient(), prepared.verificationToken());
-            logger.info("Correo de verificación aceptado para {}", LogSanitizer.maskEmail(email));
-        } catch (Exception e) {
-            logger.error("Fallo de envío de verificación para {}: {}", LogSanitizer.maskEmail(email),
-                    e.getClass().getSimpleName());
-            throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo enviar el correo de verificación. Puedes solicitar el reenvío.");
+        if (prepared == null) {
+            verificationService.resendVerificationEmail(email);
+        } else {
+            verificationService.deliver(prepared);
         }
     }
 
-    private PreparedRegistration prepareRegistrationInTx(RegisterRequest request, String email, String username) {
+    private VerificationService.PendingVerification prepareRegistrationInTx(RegisterRequest request, String email, String username) {
         if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return null;
-
         User user = new User();
         user.setUsername(username);
         user.setFirstName(request.getFirstName().trim());
@@ -124,6 +111,7 @@ public class UserService {
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setPhone(request.getPhone() == null || request.getPhone().isBlank() ? null : request.getPhone().trim());
         user.setEnabled(false);
+        user.markPendingSelfRegistration();
         user.setTwoFactorEnabled(false);
         user.setAccountNonExpired(true);
         user.setAccountNonLocked(true);
@@ -134,110 +122,10 @@ public class UserService {
                 .orElseThrow(() -> new IllegalStateException("User Role not set."));
         user.setRoles(Collections.singleton(role));
 
-        User savedUser = userRepository.saveAndFlush(user);
-        String token = persistVerificationToken(savedUser);
-        return new PreparedRegistration(buildEmailRecipientSnapshot(savedUser), token);
+        User saved = userRepository.saveAndFlush(user);
+        legalPolicy.record(saved.getId());
+        return verificationService.issue(saved);
     }
-
-    private User buildEmailRecipientSnapshot(User user) {
-        User snapshot = new User();
-        snapshot.setId(user.getId());
-        snapshot.setEmail(user.getEmail());
-        snapshot.setFirstName(user.getFirstName());
-        snapshot.setLastName(user.getLastName());
-        return snapshot;
-    }
-
-    private String persistVerificationToken(User user) {
-        String tokenValue = generateVerificationToken();
-        VerificationToken verificationToken = new VerificationToken();
-        verificationToken.setToken(tokenValue);
-        verificationToken.setUser(user);
-        verificationToken.bindRecipient(user.getEmail());
-        verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION);
-        verificationToken.setExpiryDate(LocalDateTime.now().plusHours(24));
-        verificationToken.setUsed(false);
-        verificationTokenRepository.save(verificationToken);
-        return tokenValue;
-    }
-
-    public boolean verifyEmailToken(String token) {
-        logger.debug("Verificando token de email");
-
-        if (token == null || token.trim().isEmpty()) {
-            throw new BadRequestException("Token de verificación inválido o expirado");
-        }
-
-        String cleanToken = token.trim();
-
-        Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository
-                .findValidToken(cleanToken, TokenType.EMAIL_VERIFICATION, LocalDateTime.now());
-
-        if (verificationTokenOpt.isEmpty()) {
-            logger.warn("Token de verificacion invalido o expirado");
-            throw new BadRequestException("Token de verificación inválido o expirado");
-        }
-
-        VerificationToken verificationToken = verificationTokenOpt.get();
-        User user = userRepository.findByIdForAuthUpdate(verificationToken.getUser().getId())
-                .filter(account -> verificationToken.matchesRecipient(account.getEmail()))
-                .orElseThrow(() -> new BadRequestException("Token de verificación inválido o expirado"));
-
-        // Activar usuario
-        user.setEnabled(true);
-        user.recordEmailVerification(LocalDateTime.now());
-        user.setUpdatedAt(LocalDateTime.now());
-        userRepository.save(user);
-
-        // Marcar token como usado (single-use)
-        verificationToken.setUsed(true);
-        verificationTokenRepository.save(verificationToken);
-        verificationTokenRepository.markTokenAsUsed(verificationToken.getId());
-
-        logger.info("Verificacion completada para: {}", LogSanitizer.maskEmail(user.getEmail()));
-
-        return true;
-    }
-
-    public void resendVerificationEmail(String email) {
-        String normalizedEmail = email != null ? email.trim().toLowerCase(Locale.ROOT) : "";
-        User user = userRepository.findByEmail(normalizedEmail)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "email", normalizedEmail));
-
-        if (Boolean.TRUE.equals(user.getEnabled())) {
-            throw new BadRequestException("El usuario ya está verificado");
-        }
-
-        verificationTokenRepository.deleteByUser(user);
-        String tokenValue = persistVerificationToken(user);
-
-        try {
-            emailService.sendVerificationEmail(buildEmailRecipientSnapshot(user), tokenValue);
-            logger.info("Email de verificacion reenviado a: {}",
-                    LogSanitizer.maskEmail(user.getEmail()));
-        } catch (Exception e) {
-            logger.error("Error reenviando email a {}: {}",
-                    LogSanitizer.maskEmail(user.getEmail()), e.getClass().getSimpleName());
-            throw new AuthFlowException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo enviar el correo de verificación en este momento. Intenta nuevamente más tarde.");
-        }
-    }
-
-    private static final SecureRandom TOKEN_RANDOM = new SecureRandom();
-    /** Alfabeto alfanumérico para generación de tokens de verificación (32 chars = ~190 bits de entropía) */
-    private static final String ALPHANUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-    private String generateVerificationToken() {
-        StringBuilder sb = new StringBuilder(32);
-        for (int i = 0; i < 32; i++) {
-            sb.append(ALPHANUM_CHARS.charAt(TOKEN_RANDOM.nextInt(ALPHANUM_CHARS.length())));
-        }
-        return sb.toString();
-    }
-
-    ///////////////////////
-
     public User getUserById(Long userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));

@@ -16,6 +16,17 @@ public class VerificationToken {
     @Column(nullable = false, unique = true)
     private String token;
 
+    @Column(name = "code_digest", length = 64)
+    private String codeDigest;
+
+    @Column(name = "code_attempts", nullable = false)
+    private int codeAttempts;
+
+    public String getCodeDigest() { return codeDigest; }
+    public void setCodeDigest(String codeDigest) { this.codeDigest = codeDigest; }
+    public int getCodeAttempts() { return codeAttempts; }
+    public void recordCodeAttempt() { codeAttempts++; }
+
     @Column(name = "recipient_email", length = 100)
     private String recipientEmail;
 

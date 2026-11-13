@@ -6,10 +6,6 @@ import com.security.enums.TokenType;
 import com.security.exception.AuthFlowException;
 import com.security.repository.UserRepository;
 import com.security.repository.VerificationTokenRepository;
-import com.security.util.LogSanitizer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -19,200 +15,178 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @Transactional
 public class VerificationService {
+    private static final TokenType TYPE = TokenType.EMAIL_VERIFICATION;
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final int MAX_CODE_ATTEMPTS = 5;
 
-    private static final Logger logger = LoggerFactory.getLogger(VerificationService.class);
+    private final VerificationTokenRepository tokens;
+    private final UserRepository users;
+    private final EmailService emailService;
+    private final TransactionTemplate issuance;
+    private final byte[] codeKey;
 
-    @Autowired
-    private VerificationTokenRepository verificationTokenRepository;
+    record PendingVerification(User recipient, String linkToken, String code) {}
 
-    @Autowired
-    private UserService userService;
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private EmailService emailService;
-
-    @Value("${app.security.verification.email.expiration:86400000}")
-    private long emailTokenExpirationMs;
-
-    private TransactionTemplate requiresNewTx;
-
-    private static final int MAX_RESENDS_PER_WINDOW = 3;
-    private static final int RESEND_WINDOW_MINUTES = 5;
-    private final Map<String, ResendCounter> resendCounters = new ConcurrentHashMap<>();
-
-    private record ResendCounter(int count, LocalDateTime windowStart) {}
-    private record PendingVerification(User recipient, String token) {}
-
-    @Autowired(required = false)
-    public void setTransactionManager(PlatformTransactionManager transactionManager) {
-        if (transactionManager != null) {
-            this.requiresNewTx = new TransactionTemplate(transactionManager);
-            this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        }
+    public VerificationService(VerificationTokenRepository tokens, UserRepository users, EmailService emailService,
+                               PlatformTransactionManager manager, @Value("${app.security.jwt.secret}") String secret) {
+        this.tokens = tokens;
+        this.users = users;
+        this.emailService = emailService;
+        this.issuance = new TransactionTemplate(manager);
+        this.issuance.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.codeKey = mac(secret.getBytes(StandardCharsets.UTF_8), "cmc:email-activation:v1");
     }
 
-    private static final SecureRandom secureRandom = new SecureRandom();
-    private static final String CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    // The caller holds the account lock, or is inserting the new account in this transaction.
+    @Transactional(propagation = Propagation.MANDATORY)
+    PendingVerification issue(User user) {
+        tokens.invalidateForUser(user.getId(), TYPE);
+        String token = randomPart(32);
+        String code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
+        VerificationToken row = new VerificationToken(linkDigest(token), user, LocalDateTime.now().plusHours(24), TYPE);
+        row.bindRecipient(user.getEmail());
+        row.setCodeDigest(codeDigest(user.getId(), row.getToken(), code));
+        tokens.save(row);
+        User recipient = new User();
+        recipient.setEmail(user.getEmail());
+        recipient.setFirstName(user.getFirstName());
+        return new PendingVerification(recipient, token, code);
+    }
 
     public String generateVerificationToken(User user) {
-        StringBuilder token = new StringBuilder(32);
-        for (int i = 0; i < 32; i++) {
-            token.append(CHARACTERS.charAt(secureRandom.nextInt(CHARACTERS.length())));
-        }
-        String tokenValue = token.toString();
-
-        verificationTokenRepository.deleteByUser(user);
-
-        VerificationToken verificationToken = new VerificationToken();
-        verificationToken.setToken(tokenValue);
-        verificationToken.setUser(user);
-        verificationToken.bindRecipient(user.getEmail());
-        verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION);
-        verificationToken.setExpiryDate(LocalDateTime.now().plusSeconds(emailTokenExpirationMs / 1000));
-        verificationToken.setUsed(false);
-
-        verificationTokenRepository.save(verificationToken);
-
-        return tokenValue;
+        return issue(users.findByIdForAuthUpdate(user.getId()).orElseThrow()).linkToken();
     }
 
-    public boolean verifyToken(String token) {
-        if (token == null || token.trim().isEmpty()) {
+    public boolean verifyToken(String raw) {
+        if (raw == null || !raw.matches("[A-Za-z0-9_-]{32,43}")) return false;
+        var candidate = tokens.findByToken(linkDigest(raw)).or(() -> tokens.findByToken(raw)).orElse(null);
+        if (candidate == null || candidate.getTokenType() != TYPE) return false;
+        User user = users.findByIdForAuthUpdate(candidate.getUser().getId()).orElse(null);
+        // Recheck after acquiring the shared account lock, including a concurrent resend.
+        var current = user == null ? null : tokens.findValidToken(candidate.getToken(), TYPE, LocalDateTime.now()).orElse(null);
+        if (!eligible(user, current)) return false;
+        activate(user, current);
+        return true;
+    }
+
+    public boolean verifyCode(String email, String code) {
+        User user = users.findIdByEmailForVerification(normalize(email)).flatMap(users::findByIdForAuthUpdate).orElse(null);
+        if (user == null) return false;
+        var current = tokens.findFirstByUserIdAndTokenTypeAndUsedFalseOrderByCreatedAtDescIdDesc(user.getId(), TYPE)
+                .filter(row -> row.getExpiryDate().isAfter(LocalDateTime.now())).orElse(null);
+        if (!eligible(user, current) || current.getCodeDigest() == null || current.getCodeAttempts() >= MAX_CODE_ATTEMPTS) {
             return false;
         }
-        Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository.findValidToken(
-                token.trim(), TokenType.EMAIL_VERIFICATION, LocalDateTime.now());
-
-        if (verificationTokenOpt.isPresent()) {
-            VerificationToken verificationToken = verificationTokenOpt.get();
-            Optional<User> recipient = userRepository.findByIdForAuthUpdate(verificationToken.getUser().getId())
-                    .filter(user -> verificationToken.matchesRecipient(user.getEmail()));
-            if (recipient.isEmpty()) {
-                return false;
-            }
-            User user = recipient.get();
-
-            user.setEnabled(true);
-            user.recordEmailVerification(LocalDateTime.now());
-            user.setUpdatedAt(LocalDateTime.now());
-            userService.save(user);
-
-            verificationToken.setUsed(true);
-            verificationTokenRepository.save(verificationToken);
-            verificationTokenRepository.markTokenAsUsed(verificationToken.getId());
-            logger.info("Usuario verificado: {}", LogSanitizer.maskEmail(user.getEmail()));
-            return true;
+        byte[] expected = HexFormat.of().parseHex(current.getCodeDigest());
+        byte[] supplied = HexFormat.of().parseHex(codeDigest(user.getId(), current.getToken(), code));
+        if (!MessageDigest.isEqual(expected, supplied)) {
+            current.recordCodeAttempt();
+            return false;
         }
-
-        logger.warn("Token de verificacion invalido o expirado");
-        return false;
+        activate(user, current);
+        return true;
     }
 
-    public void sendVerificationEmail(User user) {
-        String token = generateVerificationToken(user);
-        emailService.sendVerificationEmail(user, token);
+    private static boolean eligible(User user, VerificationToken token) {
+        return user != null && token != null && !Boolean.TRUE.equals(user.getEnabled())
+                && Boolean.TRUE.equals(user.getAccountNonLocked()) && !user.isEmailVerified()
+                && token.matchesRecipient(user.getEmail());
     }
 
-    /**
-     * Reenvía el correo de verificación de manera segura y anti-enumeración.
-     * Si el correo no existe o ya está verificado, retorna de forma uniforme sin revelar estado.
-     * Separa la preparación en BD del envío por red para no retener transacciones abiertas.
-     */
+    private void activate(User user, VerificationToken row) {
+        LocalDateTime now = LocalDateTime.now();
+        user.setEnabled(true);
+        user.recordEmailVerification(now);
+        user.setUpdatedAt(now);
+        row.setUsed(true);
+    }
+
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void resendVerificationEmail(String email) {
-        if (email == null || email.trim().isEmpty()) {
-            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "El correo electrónico es obligatorio");
-        }
-        String normalizedEmail = email.trim().toLowerCase(Locale.ROOT);
+        String address = normalize(email);
+        PendingVerification prepared = issuance.execute(status -> {
+            User user = users.findIdByEmailForVerification(address).flatMap(users::findByIdForAuthUpdate).orElse(null);
+            if (user == null || Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())
+                    || user.isEmailVerified() || !address.equalsIgnoreCase(user.getEmail())) return null;
+            LocalDateTime now = LocalDateTime.now();
+            boolean justIssued = tokens.findFirstByUserIdAndTokenTypeAndUsedFalseOrderByCreatedAtDescIdDesc(user.getId(), TYPE)
+                    .filter(row -> row.getExpiryDate().isAfter(now) && row.getCreatedAt().isAfter(now.minusSeconds(30)))
+                    .isPresent();
+            if (justIssued) return null;
+            if (tokens.countByUserIdAndTokenTypeAndCreatedAtAfter(user.getId(), TYPE,
+                    LocalDateTime.now().minusMinutes(5)) >= 3) return null;
+            user.setUpdatedAt(now);
+            return issue(user);
+        });
+        if (prepared != null) deliver(prepared);
+    }
 
-        enforceResendRateLimit(normalizedEmail);
-
-        PendingVerification pending = requiresNewTx != null
-                ? requiresNewTx.execute(status -> prepareResendInTx(normalizedEmail))
-                : prepareResendInTx(normalizedEmail);
-
-        if (pending == null) {
-            // Respuesta uniforme anti-enumeración para cuentas inexistentes o ya verificadas
-            return;
-        }
-
+    void deliver(PendingVerification prepared) {
         try {
-            emailService.sendVerificationEmail(pending.recipient(), pending.token());
-            logger.info("Correo de verificación reenviado a: {}", LogSanitizer.maskEmail(normalizedEmail));
-        } catch (Exception ex) {
-            decrementResendCount(normalizedEmail);
-            logger.error("Error enviando reenvío de verificación a {}: {}",
-                    LogSanitizer.maskEmail(normalizedEmail), ex.getClass().getSimpleName());
-            throw new AuthFlowException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo enviar el correo de verificación en este momento. Intenta nuevamente más tarde.");
+            emailService.sendVerificationEmail(prepared.recipient(), prepared.linkToken(), prepared.code());
+        } catch (RuntimeException ex) {
+            issuance.executeWithoutResult(status -> tokens.findByToken(linkDigest(prepared.linkToken()))
+                    .ifPresent(row -> {
+                        users.findByIdForAuthUpdate(row.getUser().getId());
+                        row.setUsed(true);
+                    }));
+            throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "No se pudo enviar el correo de verificación. Puedes solicitar el reenvío.");
         }
-    }
-
-    protected PendingVerification prepareResendInTx(String normalizedEmail) {
-        Optional<User> userOpt = userService.findByEmail(normalizedEmail);
-        if (userOpt.isEmpty()) {
-            logger.debug("Solicitud de reenvío para email no registrado: {}", LogSanitizer.maskEmail(normalizedEmail));
-            return null;
-        }
-
-        User user = userOpt.get();
-        if (Boolean.TRUE.equals(user.getEnabled())) {
-            logger.debug("Solicitud de reenvío ignorada (cuenta ya verificada): {}", LogSanitizer.maskEmail(normalizedEmail));
-            return null;
-        }
-
-        String token = generateVerificationToken(user);
-        User recipientSnapshot = new User();
-        recipientSnapshot.setId(user.getId());
-        recipientSnapshot.setEmail(user.getEmail());
-        recipientSnapshot.setFirstName(user.getFirstName());
-        recipientSnapshot.setLastName(user.getLastName());
-
-        return new PendingVerification(recipientSnapshot, token);
-    }
-
-    private void enforceResendRateLimit(String normalizedEmail) {
-        LocalDateTime now = LocalDateTime.now();
-        resendCounters.compute(normalizedEmail, (key, existing) -> {
-            if (existing == null || existing.windowStart().plusMinutes(RESEND_WINDOW_MINUTES).isBefore(now)) {
-                return new ResendCounter(1, now);
-            }
-            if (existing.count() >= MAX_RESENDS_PER_WINDOW) {
-                throw new AuthFlowException(
-                        HttpStatus.TOO_MANY_REQUESTS,
-                        "Has solicitado demasiados reenvíos de verificación. Espera unos minutos antes de intentarlo nuevamente.");
-            }
-            return new ResendCounter(existing.count() + 1, existing.windowStart());
-        });
-    }
-
-    private void decrementResendCount(String normalizedEmail) {
-        resendCounters.computeIfPresent(normalizedEmail, (key, existing) -> {
-            int nextCount = Math.max(0, existing.count() - 1);
-            return nextCount == 0 ? null : new ResendCounter(nextCount, existing.windowStart());
-        });
     }
 
     public void cleanupExpiredTokens() {
-        verificationTokenRepository.deleteExpiredTokens(LocalDateTime.now());
-        logger.info("Tokens de verificacion expirados eliminados");
+        tokens.deleteExpiredTokens(LocalDateTime.now());
     }
 
     public boolean hasValidVerificationToken(User user) {
-        return verificationTokenRepository.countActiveTokensByUserId(user.getId(), LocalDateTime.now()) > 0;
+        return tokens.countActiveTokensByUserId(user.getId(), LocalDateTime.now()) > 0;
+    }
+
+    private static String normalize(String email) {
+        return email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String randomPart(int bytes) {
+        byte[] buffer = new byte[bytes];
+        RANDOM.nextBytes(buffer);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(buffer);
+    }
+
+    private static String linkDigest(String token) {
+        try {
+            return "v1:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.US_ASCII)));
+        } catch (GeneralSecurityException ex) {
+            throw new IllegalStateException("No se pudo proteger el enlace de verificación.", ex);
+        }
+    }
+
+    private String codeDigest(long userId, String tokenDigest, String code) {
+        return HexFormat.of().formatHex(mac(codeKey, userId + ":" + tokenDigest + ":" + code));
+    }
+
+    private static byte[] mac(byte[] key, String value) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(key, "HmacSHA256"));
+            return mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException ex) {
+            throw new IllegalStateException("No se pudo proteger el código de verificación.", ex);
+        }
     }
 }

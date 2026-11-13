@@ -427,23 +427,21 @@ public class JobRunnableFactory {
                 if (params != null && params.containsKey("ghost_hours")) {
                     ghostHours = ((Number) params.get("ghost_hours")).intValue();
                 }
-                LocalDateTime cutoff = LocalDateTime.now().minusHours(ghostHours);
-
-                List<Long> ghostIds = userRepository.findGhostUserIds(cutoff);
-                if (!ghostIds.isEmpty()) {
-                    final List<Long> ids = Collections.unmodifiableList(ghostIds);
-                    // Ejecutar toda la cascada de borrado en una sola transacción
-                    txTemplate.executeWithoutResult(status -> {
-                        // 4a) Tokens de verificación de los fantasmas
+                LocalDateTime now = LocalDateTime.now();
+                LocalDateTime cutoff = now.minusHours(Math.max(48, ghostHours));
+                List<Long> ghostIds = txTemplate.execute(status -> {
+                    List<Long> ids = userRepository.findAbandonedRegistrationsForUpdate(cutoff, now,
+                            org.springframework.data.domain.PageRequest.of(0, 100)).stream()
+                            .map(com.security.entity.User::getId).toList();
+                    if (!ids.isEmpty()) {
                         verificationTokenRepository.deleteByUserIdIn(ids);
-                        // 4b) Tokens de reset de contraseña de los fantasmas
                         passwordResetTokenRepository.deleteByUserIdIn(ids);
-                        // 4c) Filas de la join table user_roles (no tiene cascade)
                         userRepository.deleteUserRolesByUserIds(ids);
-                        // 4d) Eliminar los usuarios fantasma
                         userRepository.deleteByIdIn(ids);
-                    });
-
+                    }
+                    return ids;
+                });
+                if (!ghostIds.isEmpty()) {
                     if (!detail.isEmpty())
                         detail.append(" · ");
                     detail.append(ghostIds.size()).append(" usuarios fantasma purgados (>").append(ghostHours)

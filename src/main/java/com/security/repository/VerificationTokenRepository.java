@@ -21,6 +21,15 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
     // Búsqueda por token
     Optional<VerificationToken> findByToken(String token);
 
+    Optional<VerificationToken> findFirstByUserIdAndTokenTypeAndUsedFalseOrderByCreatedAtDescIdDesc(
+            Long userId, TokenType type);
+
+    long countByUserIdAndTokenTypeAndCreatedAtAfter(Long userId, TokenType type, LocalDateTime since);
+
+    @Modifying
+    @Query("UPDATE VerificationToken vt SET vt.used = true WHERE vt.user.id = :userId AND vt.tokenType = :type AND vt.used = false")
+    void invalidateForUser(@Param("userId") Long userId, @Param("type") TokenType type);
+
     // Búsqueda por usuario y tipo
     Optional<VerificationToken> findByUserAndTokenType(User user, TokenType tokenType);
 

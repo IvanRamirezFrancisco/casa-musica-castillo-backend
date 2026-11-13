@@ -17,6 +17,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -38,6 +39,7 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired ProductRepository products;
     @Autowired ShoppingCartRepository carts;
     @Autowired OrderRepository orders;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean com.security.config.MercadoPagoConfiguration payments;
 
     @Test
@@ -59,13 +61,23 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
         product.setName("Synthetic cart product");
         product.setSku("SYNTHETIC-CART-TEST");
         product.setStock(4);
-        product.setPrice(new BigDecimal("100.00"));
+        product.setPrice(new BigDecimal("7500.00"));
         product = products.saveAndFlush(product);
         var created = mvc.perform(post("/api/cart/items").with(ownerRequest).contentType("application/json")
                 .content(json.writeValueAsString(Map.of("productId", product.getId(), "quantity", 1))))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.items[0].productId").value(product.getId()))
+                .andExpect(jsonPath("$.subtotal").value(7500))
+                .andExpect(jsonPath("$.tax").value(1200))
+                .andExpect(jsonPath("$.total").value(8700))
                 .andReturn();
         long itemId = json.readTree(created.getResponse().getContentAsString()).at("/items/0/itemId").asLong();
+        long cartId = json.readTree(created.getResponse().getContentAsString()).at("/cartId").asLong();
+        jdbc.update("UPDATE sales.shopping_carts SET subtotal = 0, tax = 0, total = 0 WHERE id = ?", cartId);
+        mvc.perform(get("/api/cart").with(ownerRequest)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].subtotal").value(7500))
+                .andExpect(jsonPath("$.total").value(8700));
+        mvc.perform(get("/api/cart/summary").with(ownerRequest)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.subtotal").value(7500)).andExpect(jsonPath("$.total").value(8700));
 
         mvc.perform(get("/api/cart").with(otherRequest)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalItems").value(0));
@@ -74,7 +86,8 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(status().isNotFound());
         mvc.perform(delete("/api/cart/items/{id}", itemId).with(otherRequest)).andExpect(status().isNotFound());
         mvc.perform(put("/api/cart/items/{id}", itemId).with(ownerRequest).contentType("application/json").content(quantity))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].quantity").value(2));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].quantity").value(2))
+                .andExpect(jsonPath("$.total").value(17400));
         mvc.perform(get("/api/cart/summary").with(ownerRequest))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.totalItems").value(2));
         mvc.perform(get("/api/cart/validate").with(ownerRequest))

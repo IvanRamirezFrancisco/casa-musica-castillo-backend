@@ -244,7 +244,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(jsonPath("$.message").value("El enlace de verificación es inválido o ha expirado."));
 
         // Escenario H: Token expirado
-        VerificationToken vtEntity = verificationTokenRepository.findByToken(firstToken).orElseThrow();
+        VerificationToken vtEntity = verificationTokenRepository.findByToken(digestLink(firstToken)).orElseThrow();
         vtEntity.setExpiryDate(LocalDateTime.now().minusHours(2));
         verificationTokenRepository.save(vtEntity);
 
@@ -268,7 +268,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         String secondToken = extractQueryToken(resentMail.body, "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
         assertNotNull(secondToken);
         assertFalse(firstToken.equals(secondToken), "El reenvío debe rotar el token de verificación");
-        assertTrue(verificationTokenRepository.findByToken(firstToken).isEmpty(),
+        assertTrue(verificationTokenRepository.findByToken(digestLink(firstToken)).orElseThrow().getUsed(),
                 "El token anterior debe haber sido eliminado al rotar");
 
         // Escenario F: Confirmación con token válido
@@ -280,7 +280,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
 
         User verifiedUser = userRepository.findByEmail(email).orElseThrow();
         assertTrue(verifiedUser.getEnabled(), "El usuario debe quedar activo (enabled=true) tras verificar");
-        VerificationToken usedVt = verificationTokenRepository.findByToken(secondToken).orElseThrow();
+        VerificationToken usedVt = verificationTokenRepository.findByToken(digestLink(secondToken)).orElseThrow();
         assertTrue(Boolean.TRUE.equals(usedVt.getUsed()), "El token de verificación debe marcarse como usado (used=true)");
 
         // Reutilización del mismo token de verificación debe fallar con 400
@@ -751,6 +751,36 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(status().isBadRequest());
         assertEquals(user.getPassword(), userRepository.findByEmail(email).orElseThrow().getPassword());
         assertFalse(passwordResetTokenRepository.findByToken(token).orElseThrow().getUsed());
+    }
+    @Test
+    void emailCodeIsSingleUseAndInvalidatesTheLink() throws Exception {
+        String email = registerEmail("activacion.codigo");
+        mvc.perform(post("/api/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of(
+                "username", userOf(email), "email", email, "password", "ClaveSegura2026!#",
+                "firstName", "Cuenta", "lastName", "Sintetica")))).andExpect(status().isOk());
+        String body = SMTP_SERVER.getCapturedEmails().getFirst().body;
+        String code = extractQueryToken(body, "Código de activación: ([0-9]{6})");
+        String token = extractQueryToken(body, "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
+        assertNotNull(code);
+        assertNotNull(token);
+        assertTrue(verificationTokenRepository.findByToken(token).isEmpty());
+        String request = json.writeValueAsString(Map.of("email", email, "code", code));
+        mvc.perform(post("/api/auth/verify-email-code").contentType("application/json").content(request))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/auth/verify-email-code").contentType("application/json").content(request))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/verify-email").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("token", token)))).andExpect(status().isBadRequest());
+        assertTrue(userRepository.findByEmail(email).orElseThrow().isEmailVerified());
+    }
+
+    private static String digestLink(String token) {
+        try {
+            return "v1:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.US_ASCII)));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new AssertionError(ex);
+        }
     }
     private static String extractQueryToken(String text, String regex) {
         Matcher matcher = Pattern.compile(regex).matcher(text);

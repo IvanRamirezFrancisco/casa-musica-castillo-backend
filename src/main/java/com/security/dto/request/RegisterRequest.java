@@ -10,6 +10,15 @@ import com.security.validation.ValidEmailDomain;
 
 public class RegisterRequest {
 
+    public record LegalAcceptance(Boolean termsAccepted, Boolean privacyRead,
+                                  @Size(max = 32) String termsVersion, @Size(max = 32) String privacyVersion) {}
+
+    @jakarta.validation.Valid
+    private LegalAcceptance legalAcceptance;
+
+    public LegalAcceptance getLegalAcceptance() { return legalAcceptance; }
+    public void setLegalAcceptance(LegalAcceptance legalAcceptance) { this.legalAcceptance = legalAcceptance; }
+
     @NotBlank(message = "Username is required")
     @Size(min = 3, max = 30, message = "Username must be between 3 and 30 characters")
     @SafeInput(type = SafeInput.SanitizationType.TEXT, message = "Username contains invalid characters")

@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -572,31 +573,23 @@ public class ShoppingCartService {
 
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
 
-        // Calcular subtotal (solo items disponibles)
+        CartAmounts amounts = calculateAmounts(cart, items);
+        cart.setSubtotal(amounts.subtotal());
+        cart.setTax(amounts.tax());
+        cart.setTotal(amounts.total());
+        cartRepository.save(cart);
+    }
+
+    private record CartAmounts(BigDecimal subtotal, BigDecimal tax, BigDecimal discount, BigDecimal total) {}
+
+    private CartAmounts calculateAmounts(ShoppingCart cart, List<CartItem> items) {
         BigDecimal subtotal = items.stream()
                 .filter(this::isItemAvailable)
                 .map(CartItem::getSubtotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        cart.setSubtotal(subtotal);
-
-        // Calcular IVA
-        BigDecimal tax = subtotal.multiply(TAX_RATE);
-        cart.setTax(tax);
-
-        // Aplicar descuento si existe cupón
+        BigDecimal tax = subtotal.multiply(TAX_RATE).setScale(2, RoundingMode.HALF_UP);
         BigDecimal discount = cart.getDiscount() != null ? cart.getDiscount() : BigDecimal.ZERO;
-
-        // Calcular total (solo items disponibles)
-        BigDecimal total = subtotal.add(tax).subtract(discount);
-        if (total.compareTo(BigDecimal.ZERO) < 0) {
-            total = BigDecimal.ZERO;
-        }
-        cart.setTotal(total);
-
-        cartRepository.save(cart);
-        log.debug("Totales recalculados para carrito {}: Subtotal={}, Tax={}, Discount={}, Total={}",
-                cartId, subtotal, tax, discount, total);
+        return new CartAmounts(subtotal, tax, discount, subtotal.add(tax).subtract(discount).max(BigDecimal.ZERO));
     }
 
     /**
@@ -609,6 +602,7 @@ public class ShoppingCartService {
 
         // Read the rows directly because an initialized cart collection can be stale after a mutation.
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
+        CartAmounts amounts = calculateAmounts(cart, items);
         List<CartDTO.CartItemResponse> itemResponses = items.stream()
                 .map(this::buildCartItemResponse)
                 .collect(Collectors.toList());
@@ -632,11 +626,11 @@ public class ShoppingCartService {
                 .totalItems(itemResponses.stream()
                         .filter(CartDTO.CartItemResponse::getAvailable)
                         .mapToInt(CartDTO.CartItemResponse::getQuantity).sum())
-                .subtotal(cart.getSubtotal())
-                .tax(cart.getTax())
+                .subtotal(amounts.subtotal())
+                .tax(amounts.tax())
                 .taxRate(TAX_RATE.multiply(new BigDecimal("100"))) // Convertir a porcentaje
-                .discount(cart.getDiscount())
-                .total(cart.getTotal())
+                .discount(amounts.discount())
+                .total(amounts.total())
                 .couponCode(cart.getCouponCode())
                 .status(cart.getStatus())
                 .canCheckout(canCheckout && !itemResponses.isEmpty())
@@ -697,6 +691,7 @@ public class ShoppingCartService {
         Integer totalItems = cartItemRepository.sumQuantityByCartId(cartId);
         
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
+        CartAmounts amounts = calculateAmounts(cart, items);
         boolean canCheckout = items.stream().allMatch(this::isItemAvailable);
         long unavailableItemsCount = items.stream().filter(item -> !isItemAvailable(item)).count();
         String warningMessage = null;
@@ -707,8 +702,8 @@ public class ShoppingCartService {
         return CartDTO.CartSummaryResponse.builder()
                 .cartId(cart.getId())
                 .totalItems(totalItems != null ? totalItems : 0)
-                .subtotal(cart.getSubtotal())
-                .total(cart.getTotal())
+                .subtotal(amounts.subtotal())
+                .total(amounts.total())
                 .status(cart.getStatus())
                 .canCheckout(canCheckout && !items.isEmpty())
                 .unavailableItemsCount((int) unavailableItemsCount)

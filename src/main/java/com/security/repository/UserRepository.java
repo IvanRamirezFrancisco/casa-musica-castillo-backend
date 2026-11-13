@@ -1,6 +1,7 @@
 package com.security.repository;
 
 import com.security.entity.User;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -14,6 +15,9 @@ import java.util.Optional;
 
 @Repository
 public interface UserRepository extends JpaRepository<User, Long> {
+
+        @Query("SELECT u.id FROM User u WHERE u.email = :email")
+        Optional<Long> findIdByEmailForVerification(@Param("email") String email);
         @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
         @Query("SELECT u FROM User u WHERE u.id = :id")
         Optional<User> findByIdForAuthUpdate(@Param("id") Long id);
@@ -227,8 +231,18 @@ public interface UserRepository extends JpaRepository<User, Long> {
          * Se excluyen usuarios con totalOrders > 0 para evitar borrar cuentas con
          * actividad real.
          */
-        @Query("SELECT u.id FROM User u WHERE u.enabled = false AND u.createdAt < :cutoff")
-        List<Long> findGhostUserIds(@Param("cutoff") LocalDateTime cutoff);
+        @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+        @Query("""
+                SELECT u FROM User u
+                WHERE u.pendingSelfRegistration = true AND u.enabled = false AND u.emailVerifiedAt IS NULL
+                  AND u.createdAt < :cutoff AND u.updatedAt < :cutoff
+                  AND NOT EXISTS (SELECT 1 FROM Order o WHERE o.user = u)
+                  AND NOT EXISTS (SELECT 1 FROM VerificationToken t
+                    WHERE t.user = u AND t.used = false AND t.expiryDate > :now)
+                ORDER BY u.id
+                """)
+        List<User> findAbandonedRegistrationsForUpdate(@Param("cutoff") LocalDateTime cutoff, @Param("now") LocalDateTime now,
+                Pageable page);
 
         /**
          * Eliminar las filas de la tabla intermedia user_roles para los IDs indicados.

@@ -5,7 +5,7 @@ public final class PublicAuthRoutes {
     private PublicAuthRoutes() {}
     public static final String[] EXACT = {
         "/api/auth/login", "/api/auth/register", "/api/auth/verify-email", "/api/auth/verify",
-        "/api/auth/resend-verification", "/api/auth/forgot-password",
+        "/api/auth/resend-verification", "/api/auth/verify-email-code", "/api/auth/forgot-password",
         "/api/auth/validate-reset-token", "/api/auth/reset-password",
         "/api/auth/password-reset/request", "/api/auth/password-reset/confirm",
         "/api/2fa/send-login-code", "/api/2fa/verify"

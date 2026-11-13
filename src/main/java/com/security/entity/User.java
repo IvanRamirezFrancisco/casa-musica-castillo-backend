@@ -45,6 +45,13 @@ public class User {
     @Column(name = "email_verified_at")
     private LocalDateTime emailVerifiedAt;
 
+    @Column(name = "pending_self_registration", nullable = false)
+    private boolean pendingSelfRegistration;
+
+    public void markPendingSelfRegistration() {
+        pendingSelfRegistration = true;
+    }
+
     @NotBlank
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
     @Column(nullable = false)
@@ -270,6 +277,7 @@ public class User {
 
     public void recordEmailVerification(LocalDateTime verifiedAt) {
         emailVerifiedAt = verifiedAt;
+        pendingSelfRegistration = false;
     }
 
     public String getPassword() {

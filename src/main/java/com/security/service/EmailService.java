@@ -83,14 +83,19 @@ public class EmailService {
      * Orden de prioridad: Brevo API (HTTPS 443) → Resend API (HTTPS 443) → SMTP JavaMail (fallback).
      */
     public void sendVerificationEmail(User user, String verificationToken) {
+        sendVerificationEmail(user, verificationToken, null);
+    }
+
+    public void sendVerificationEmail(User user, String verificationToken, String code) {
         logger.info("Preparando envío de correo de verificación para: {}", LogSanitizer.maskEmail(user.getEmail()));
 
         String frontendUrl = getFrontendBaseUrl();
         String verificationUrl = frontendUrl + "/verify-account?token=" + verificationToken;
         String subject = "Verificación de cuenta - Casa de Música Castillo";
-        AuthMailContent content = AuthMailContent.link("Verifica tu correo electrónico", user.getFirstName(),
+        AuthMailContent content = code == null ? AuthMailContent.link("Verifica tu correo electrónico", user.getFirstName(),
                 "Activa tu cuenta de Casa de Música Castillo.", "Verificar mi cuenta", verificationUrl,
-                "El enlace caduca en 24 horas y es de un solo uso. Si no creaste esta cuenta, ignora este correo.");
+                "El enlace caduca en 24 horas y es de un solo uso. Si no creaste esta cuenta, ignora este correo.")
+                : AuthMailContent.activation(user.getFirstName(), verificationUrl, code);
         dispatchEmail(user, subject, content.html(), content.text(), "VERIFICATION");
     }
 

@@ -22,6 +22,18 @@ record AuthMailContent(String html, String text) {
                 "Código: " + code);
     }
 
+    static AuthMailContent activation(String name, String url, String code) {
+        String safeUrl = HtmlUtils.htmlEscape(url);
+        String content = """
+                <p><a href="%s" style="display:inline-block;background:#722F37;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none">Verificar mi cuenta</a></p>
+                <p>También puedes ingresar este código de activación:</p>
+                <p style="display:inline-block;background:#FFCF71;color:#292524;padding:12px 18px;font:bold 26px monospace;letter-spacing:4px">%s</p>
+                """.formatted(safeUrl, HtmlUtils.htmlEscape(code));
+        return render("Verifica tu correo electrónico", name, "Activa tu cuenta de Casa de Música Castillo.",
+                content, "El enlace y el código caducan en 24 horas. Solo puedes usar uno. Si no creaste esta cuenta, ignora este correo.",
+                "Verificar mi cuenta: " + url + "\nCódigo de activación: " + code);
+    }
+
     static AuthMailContent passwordChanged(String name) {
         return render("Contraseña actualizada", name, "La contraseña de tu cuenta se actualizó.",
                 "", "Si no reconoces este cambio, comunícate con soporte.", "");
