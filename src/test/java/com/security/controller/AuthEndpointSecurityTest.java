@@ -30,6 +30,7 @@ class AuthEndpointSecurityTest {
     @MockitoBean PasswordResetService passwords;
     @MockitoBean SecurePasswordResetService securePasswords;
     @MockitoBean LoginSecurityService limits;
+    @MockitoBean VerificationRequestLimit verificationLimits;
     @MockitoBean SessionManagementService sessions;
     @MockitoBean LoginChallengeService challenges;
     @MockitoBean CustomUserDetailsService details;
