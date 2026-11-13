@@ -3,8 +3,9 @@ package com.security.controller;
 import com.security.exception.AuthFlowException;
 import com.security.security.CurrentUser;
 import com.security.security.UserPrincipal;
+import com.security.service.AccountDeletionService;
+import com.security.service.AccountDeletionService.Receipt;
 import com.security.service.RegistrationLegalPolicy;
-import com.security.service.UserService;
 import com.security.service.VerificationRequestLimit;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -13,28 +14,24 @@ import jakarta.validation.constraints.Size;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
 
 @RestController
 public class AccountPrivacyController {
     public record DeletionRequest(@NotBlank @Size(max = 255) String currentPassword, boolean confirmed) {}
-    public record Receipt(UUID requestId, String status, OffsetDateTime receivedAt) {}
+    public record TrackingRequest(@jakarta.validation.constraints.NotNull UUID requestId) {}
 
-    private final JdbcTemplate jdbc;
-    private final UserService users;
+    private final AccountDeletionService deletions;
     private final RegistrationLegalPolicy legal;
     private final VerificationRequestLimit limits;
     private final boolean intakeEnabled;
 
-    public AccountPrivacyController(JdbcTemplate jdbc, UserService users, RegistrationLegalPolicy legal,
+    public AccountPrivacyController(AccountDeletionService deletions, RegistrationLegalPolicy legal,
             VerificationRequestLimit limits, @Value("${app.legal.deletion-intake-enabled:false}") boolean intakeEnabled) {
-        this.jdbc = jdbc;
-        this.users = users;
+        this.deletions = deletions;
         this.legal = legal;
         this.limits = limits;
         this.intakeEnabled = intakeEnabled;
@@ -53,27 +50,24 @@ public class AccountPrivacyController {
         if (!request.confirmed()) throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Confirma la solicitud de eliminación.");
         limits.check("deletion-account", principal.getId().toString(), 5);
         limits.check("deletion-address", client.getRemoteAddr(), 30);
-        users.requireStepUp(principal.getId(), Map.of("currentPassword", request.currentPassword()));
-        // Identity comes from the authenticated session, which already required configured MFA at sign-in.
-        jdbc.update("""
-                INSERT INTO auth.account_deletion_requests (request_id, user_id) VALUES (?, ?)
-                ON CONFLICT (user_id) DO NOTHING
-                """, UUID.randomUUID(), principal.getId());
-        return ResponseEntity.accepted().body(receiptFor(principal.getId()));
+        return ResponseEntity.accepted().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(deletions.request(principal.getId(), request.currentPassword()));
     }
 
     @GetMapping("/api/users/me/deletion-requests")
-    public Receipt ownRequest(@CurrentUser UserPrincipal principal) {
+    public ResponseEntity<Receipt> ownRequest(@CurrentUser UserPrincipal principal) {
         requireIntake();
-        return receiptFor(principal.getId());
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(deletions.ownRequest(principal.getId()));
     }
 
-    private Receipt receiptFor(long userId) {
-        return jdbc.query("""
-                SELECT request_id, received_at FROM auth.account_deletion_requests WHERE user_id = ?
-                """, (row, index) -> new Receipt(row.getObject("request_id", UUID.class), "RECEIVED",
-                row.getObject("received_at", OffsetDateTime.class)), userId)
-                .stream().findFirst().orElseThrow(() -> new AuthFlowException(HttpStatus.NOT_FOUND, "No hay una solicitud registrada."));
+    @PostMapping("/api/public/legal/deletion/status")
+    public ResponseEntity<Receipt> track(@Valid @RequestBody TrackingRequest request, HttpServletRequest client) {
+        requireIntake();
+        limits.check("deletion-tracking-address", client.getRemoteAddr(), 30);
+        // The random receipt is a bearer capability for the outcome only, with no account details.
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(deletions.track(request.requestId()));
     }
 
     private void requireIntake() {

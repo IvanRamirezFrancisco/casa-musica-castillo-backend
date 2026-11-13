@@ -29,6 +29,10 @@
 		path /api/auth/validate-reset-token
 	}
 	@blocked path /api/2fa/debug /api/2fa/debug/*
+	@deletion {
+		method GET POST OPTIONS
+		path /api/public/legal/registration /api/public/legal/deletion /api/public/legal/deletion/status /api/users/me/deletion-requests /api/auth/verify-email-code
+	}
 
 	route {
 		respond @unauthorized 403
@@ -39,6 +43,7 @@
 		reverse_proxy @pricePreview {$CMC_UPSTREAM:backend:8080}
 		reverse_proxy @webRecoveryPost {$CMC_UPSTREAM:backend:8080}
 		reverse_proxy @webRecoveryValidate {$CMC_UPSTREAM:backend:8080}
+		reverse_proxy @deletion {$CMC_UPSTREAM:backend:8080}
 		respond 404
 	}
 }
