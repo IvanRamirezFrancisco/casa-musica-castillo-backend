@@ -4,9 +4,6 @@ import com.security.dto.CartDTO;
 import com.security.entity.*;
 import com.security.exception.*;
 import com.security.repository.*;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.ParameterMode;
-import jakarta.persistence.StoredProcedureQuery;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,7 +34,6 @@ public class ShoppingCartService {
     private final CouponUsageRepository couponUsageRepository;
     private final UserRepository userRepository;
     private final WishlistRepository wishlistRepository;
-    private final EntityManager entityManager;
 
     private static final int CART_EXPIRATION_HOURS = 72;
     private static final BigDecimal TAX_RATE = new BigDecimal("0.16"); // 16% IVA
@@ -425,42 +421,23 @@ public class ShoppingCartService {
             }
         }
 
-        // Verificar monto mínimo
-        if (coupon.getMinimumPurchase() != null &&
-                cart.getSubtotal().compareTo(coupon.getMinimumPurchase()) < 0) {
+        BigDecimal subtotal = availableSubtotal(cartItemRepository.findByCartId(cartId));
+        if (!meetsCouponMinimum(coupon, subtotal)) {
             throw new InvalidCouponException(couponCode,
                     String.format("Compra mínima requerida: $%.2f", coupon.getMinimumPurchase()));
         }
 
-        // Llamar al stored procedure para aplicar el cupón
-        try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_apply_coupon_to_cart");
-            query.registerStoredProcedureParameter("p_cart_id", Long.class, ParameterMode.IN);
-            query.registerStoredProcedureParameter("p_coupon_id", Long.class, ParameterMode.IN);
-
-            query.setParameter("p_cart_id", cartId);
-            query.setParameter("p_coupon_id", coupon.getId());
-
-            query.execute();
-
-            // Refrescar el carrito
-            entityManager.refresh(cart);
-
-            log.info("Cupón {} aplicado exitosamente al carrito {}", couponCode, cartId);
-
-            return CartDTO.CouponAppliedResponse.builder()
-                    .couponCode(couponCode)
-                    .discountType(coupon.getDiscountType())
-                    .discountValue(coupon.getDiscountValue())
-                    .discountApplied(cart.getDiscount())
-                    .newTotal(cart.getTotal())
-                    .message("Cupón aplicado exitosamente")
-                    .build();
-
-        } catch (Exception e) {
-            log.error("Error al aplicar cupón: {}", e.getMessage());
-            throw new InvalidCouponException(couponCode, "Error al aplicar cupón: " + e.getMessage());
-        }
+        CartAmounts amounts = calculateAmounts(subtotal, couponDiscount(coupon, subtotal));
+        cart.setCouponCode(coupon.getCode());
+        saveAmounts(cart, amounts);
+        return CartDTO.CouponAppliedResponse.builder()
+                .couponCode(coupon.getCode())
+                .discountType(coupon.getDiscountType())
+                .discountValue(coupon.getDiscountValue())
+                .discountApplied(amounts.discount())
+                .newTotal(amounts.total())
+                .message("Cupón aplicado exitosamente")
+                .build();
     }
 
     /**
@@ -573,9 +550,13 @@ public class ShoppingCartService {
 
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
 
-        CartAmounts amounts = calculateAmounts(cart, items);
+        saveAmounts(cart, calculateAmounts(cart, items));
+    }
+
+    private void saveAmounts(ShoppingCart cart, CartAmounts amounts) {
         cart.setSubtotal(amounts.subtotal());
         cart.setTax(amounts.tax());
+        cart.setDiscount(amounts.discount());
         cart.setTotal(amounts.total());
         cartRepository.save(cart);
     }
@@ -583,12 +564,34 @@ public class ShoppingCartService {
     private record CartAmounts(BigDecimal subtotal, BigDecimal tax, BigDecimal discount, BigDecimal total) {}
 
     private CartAmounts calculateAmounts(ShoppingCart cart, List<CartItem> items) {
-        BigDecimal subtotal = items.stream()
+        BigDecimal subtotal = availableSubtotal(items);
+        BigDecimal discount = Optional.ofNullable(cart.getCouponCode())
+                .flatMap(couponRepository::findByCodeIgnoreCase)
+                .map(coupon -> couponDiscount(coupon, subtotal))
+                .orElse(BigDecimal.ZERO);
+        return calculateAmounts(subtotal, discount);
+    }
+
+    private BigDecimal availableSubtotal(List<CartItem> items) {
+        return items.stream()
                 .filter(this::isItemAvailable)
                 .map(CartItem::getSubtotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private boolean meetsCouponMinimum(Coupon coupon, BigDecimal subtotal) {
+        return coupon.getMinimumPurchase() == null || subtotal.compareTo(coupon.getMinimumPurchase()) >= 0;
+    }
+
+    private BigDecimal couponDiscount(Coupon coupon, BigDecimal subtotal) {
+        if (!coupon.isValid() || !meetsCouponMinimum(coupon, subtotal)) return BigDecimal.ZERO;
+        BigDecimal discount = coupon.calculateDiscount(subtotal);
+        if (coupon.getMaximumDiscount() != null) discount = discount.min(coupon.getMaximumDiscount());
+        return discount.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private CartAmounts calculateAmounts(BigDecimal subtotal, BigDecimal discount) {
         BigDecimal tax = subtotal.multiply(TAX_RATE).setScale(2, RoundingMode.HALF_UP);
-        BigDecimal discount = cart.getDiscount() != null ? cart.getDiscount() : BigDecimal.ZERO;
         return new CartAmounts(subtotal, tax, discount, subtotal.add(tax).subtract(discount).max(BigDecimal.ZERO));
     }
 

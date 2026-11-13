@@ -1,9 +1,11 @@
 package com.security.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.security.entity.Coupon;
 import com.security.entity.Product;
 import com.security.entity.User;
 import com.security.repository.OrderRepository;
+import com.security.repository.CouponRepository;
 import com.security.repository.ProductRepository;
 import com.security.repository.ShoppingCartRepository;
 import com.security.repository.UserRepository;
@@ -39,6 +41,7 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired ProductRepository products;
     @Autowired ShoppingCartRepository carts;
     @Autowired OrderRepository orders;
+    @Autowired CouponRepository coupons;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean com.security.config.MercadoPagoConfiguration payments;
 
@@ -78,6 +81,10 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(jsonPath("$.total").value(8700));
         mvc.perform(get("/api/cart/summary").with(ownerRequest)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.subtotal").value(7500)).andExpect(jsonPath("$.total").value(8700));
+        mvc.perform(post("/api/checkout/price-preview").with(ownerRequest).contentType("application/json")
+                .content("{\"deliveryOption\":\"PICKUP_STORE\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.subtotal").value(7500))
+                .andExpect(jsonPath("$.tax").value(1200)).andExpect(jsonPath("$.total").value(8700));
 
         mvc.perform(get("/api/cart").with(otherRequest)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalItems").value(0));
@@ -103,6 +110,50 @@ class CartMobileContractIntegrationTest extends LocalPostgresIntegrationTest {
         mvc.perform(delete("/api/cart/items/{id}", itemId).with(ownerRequest))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.totalItems").value(0));
         mvc.perform(delete("/api/cart").with(ownerRequest)).andExpect(status().isOk());
+    }
+
+    @Test
+    void percentageCouponUsesAvailableLinesAndRecalculatesAfterQuantityChanges() throws Exception {
+        var owner = user(UserPrincipal.create(createUser("cart_coupon")));
+        Product product = new Product();
+        product.setName("Synthetic coupon product");
+        product.setSku("SYNTHETIC-COUPON-TEST");
+        product.setStock(3);
+        product.setPrice(new BigDecimal("7500.00"));
+        products.saveAndFlush(product);
+
+        Coupon coupon = new Coupon();
+        coupon.setCode("SYNTHETIC-TEN");
+        coupon.setDiscountType("PERCENTAGE");
+        coupon.setDiscountValue(BigDecimal.TEN);
+        coupon.setMinimumPurchase(new BigDecimal("5000.00"));
+        coupons.saveAndFlush(coupon);
+
+        var created = mvc.perform(post("/api/cart/items").with(owner).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("productId", product.getId(), "quantity", 1))))
+                .andExpect(status().isCreated()).andReturn();
+        var data = json.readTree(created.getResponse().getContentAsString());
+        long itemId = data.at("/items/0/itemId").asLong();
+        jdbc.update("UPDATE sales.shopping_carts SET subtotal = 0, tax = 0, total = 0 WHERE id = ?",
+                data.at("/cartId").asLong());
+
+        mvc.perform(post("/api/cart/coupon").with(owner).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("couponCode", coupon.getCode()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.discountApplied").value(750))
+                .andExpect(jsonPath("$.newTotal").value(7950));
+        mvc.perform(put("/api/cart/items/{id}", itemId).with(owner).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("itemId", itemId, "quantity", 2))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.discount").value(1500))
+                .andExpect(jsonPath("$.total").value(15900));
+        mvc.perform(delete("/api/cart/items/{id}", itemId).with(owner))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.discount").value(0))
+                .andExpect(jsonPath("$.total").value(0));
+        mvc.perform(post("/api/checkout/price-preview").with(owner).contentType("application/json")
+                .content("{\"deliveryOption\":\"PICKUP_STORE\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.canProceedToPayment").value(false));
     }
 
     @Test

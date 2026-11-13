@@ -13,7 +13,6 @@ import com.security.service.BankTransferSettingsService;
 import com.security.service.PaymentProofService;
 import com.security.service.DeliveryMethodService;
 import com.security.service.ShoppingCartService;
-import com.security.entity.ShoppingCart;
 import com.security.service.OrderPickupService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -69,7 +68,8 @@ public class OrderController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
             }
 
-            ShoppingCart cart = shoppingCartService.getOrCreateCartForUser(userId);
+            var activeCart = shoppingCartService.getOrCreateCartForUser(userId);
+            var cart = shoppingCartService.buildCartResponse(activeCart.getId());
             ShippingCalculationResult deliveryResult = deliveryMethodService.calculateDelivery(
                     request.getDeliveryOption(), request.getState(), request.getCity(), request.getPostalCode()
             );
@@ -86,7 +86,7 @@ public class OrderController {
             response.setDeliveryLabel(deliveryResult.getDeliveryLabel());
             response.setRequiresAddress(deliveryResult.isRequiresAddress());
             response.setRequiresQuote(deliveryResult.isRequiresQuote());
-            response.setCanProceedToPayment(deliveryResult.isCanProceedToPayment());
+            response.setCanProceedToPayment(Boolean.TRUE.equals(cart.getCanCheckout()) && deliveryResult.isCanProceedToPayment());
             response.setMessage(deliveryResult.getMessage());
             response.setContactWhatsapp(deliveryResult.getContactWhatsapp());
             response.setContactPhone(deliveryResult.getContactPhone());
