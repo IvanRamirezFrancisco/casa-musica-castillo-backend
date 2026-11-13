@@ -774,6 +774,34 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         assertTrue(userRepository.findByEmail(email).orElseThrow().isEmailVerified());
     }
 
+    @Test
+    void fiveWrongActivationCodesBlockTheCodeButAllowTheLink() throws Exception {
+        String email = registerEmail("activacion.intentos");
+        mvc.perform(post("/api/auth/register").contentType("application/json")
+                .content(json.writeValueAsString(Map.of(
+                        "username", userOf(email), "email", email, "password", "ClaveSegura2026!#",
+                        "firstName", "Cuenta", "lastName", "Sintetica"))))
+                .andExpect(status().isOk());
+        String body = SMTP_SERVER.getCapturedEmails().getFirst().body;
+        String code = extractQueryToken(body, "Código de activación: ([0-9]{6})");
+        String token = extractQueryToken(body, "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
+        assertNotNull(code);
+        assertNotNull(token);
+        String wrongCode = code.equals("000000") ? "000001" : "000000";
+        String wrongRequest = json.writeValueAsString(Map.of("email", email, "code", wrongCode));
+        for (int attempt = 0; attempt < 5; attempt++) {
+            mvc.perform(post("/api/auth/verify-email-code").contentType("application/json").content(wrongRequest))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/api/auth/verify-email-code").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("email", email, "code", code))))
+                .andExpect(status().isBadRequest());
+        assertFalse(userRepository.findByEmail(email).orElseThrow().isEmailVerified());
+        mvc.perform(post("/api/auth/verify-email").contentType("application/json")
+                .content(json.writeValueAsString(Map.of("token", token)))).andExpect(status().isOk());
+        assertTrue(userRepository.findByEmail(email).orElseThrow().isEmailVerified());
+    }
+
     private static String digestLink(String token) {
         try {
             return "v1:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
