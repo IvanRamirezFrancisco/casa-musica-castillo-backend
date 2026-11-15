@@ -427,6 +427,12 @@ public class PaymentService {
                         "local=" + localPayment.getCurrency() + " mp=" + mpCurrency);
                 return; // No marcar PAID
             }
+            if (currentStatus == PaymentTransactionStatus.PAID && mpPaymentIdStr != null
+                    && mpPaymentIdStr.equals(localPayment.getProviderPaymentId())
+                    && (order == null || order.getPaymentStatus() == PaymentStatus.PAID)) {
+                enrichPaidPayment(localPayment, mpPayment, mpPaymentIdStr);
+                return;
+            }
         }
 
         // ── Aplicar transición de estado ─────────────────────────────────────

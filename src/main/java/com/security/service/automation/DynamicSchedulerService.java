@@ -1,9 +1,5 @@
 package com.security.service.automation;
 
-import com.security.dto.admin.AutomationDto;
-import com.security.dto.admin.ExecutionLogDto;
-import com.security.dto.admin.ToggleAutomationRequest;
-import com.security.dto.admin.UpdateAutomationRequest;
 import com.security.entity.AutomationExecutionLog;
 import com.security.entity.SystemAutomation;
 import com.security.entity.User;
@@ -16,13 +12,11 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -42,17 +36,13 @@ import java.util.stream.Collectors;
  * <li>Al arrancar la app, lee los registros con {@code is_enabled = true}
  * y los programa en el {@link ThreadPoolTaskScheduler}.</li>
  * <li>Mantiene un {@code Map<String, ScheduledFuture<?>>} en memoria
- * para poder cancelar tareas cuando el usuario apaga el toggle.</li>
- * <li>Cuando se actualiza un cron/parámetro, cancela el hilo anterior
- * y reprograma con la nueva configuración.</li>
+ * para cerrar las tareas al detener la aplicación.</li>
  * <li>Registra telemetría (duración, estado, errores) en la BD
  * después de cada ejecución.</li>
  * </ol>
  *
  * <h2>Seguridad</h2>
  * <ul>
- * <li>La expresión cron se valida con {@link CronExpression#isValidExpression}
- * antes de programarla.</li>
  * <li>Los parámetros JSONB solo se leen como valores de configuración,
  * nunca se evalúan como código.</li>
  * <li>Todas las escrituras a BD usan Prepared Statements vía Spring Data
@@ -70,6 +60,8 @@ public class DynamicSchedulerService {
     private final JobRunnableFactory jobFactory;
     private final EmailService emailService;
     private final UserRepository userRepository;
+    private final boolean backupDatabaseEnabled;
+    private final boolean inventoryAuditEnabled;
 
     /**
      * Mapa en memoria: jobName → ScheduledFuture.
@@ -83,13 +75,17 @@ public class DynamicSchedulerService {
             @Qualifier("automationTaskScheduler") ThreadPoolTaskScheduler taskScheduler,
             JobRunnableFactory jobFactory,
             EmailService emailService,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            @Value("${app.jobs.backup-database.enabled:${APP_JOBS_BACKUP_DATABASE_ENABLED:true}}") boolean backupDatabaseEnabled,
+            @Value("${app.jobs.inventory-audit.enabled:${APP_JOBS_INVENTORY_AUDIT_ENABLED:true}}") boolean inventoryAuditEnabled) {
         this.automationRepo = automationRepo;
         this.execLogRepo = execLogRepo;
         this.taskScheduler = taskScheduler;
         this.jobFactory = jobFactory;
         this.emailService = emailService;
         this.userRepository = userRepository;
+        this.backupDatabaseEnabled = backupDatabaseEnabled;
+        this.inventoryAuditEnabled = inventoryAuditEnabled;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -103,6 +99,13 @@ public class DynamicSchedulerService {
         log.info("  ↳ {} automatización(es) habilitada(s) encontrada(s).", enabled.size());
 
         for (SystemAutomation auto : enabled) {
+            if ("DB_MAINTENANCE_JOB".equals(auto.getJobName())) {
+                continue;
+            }
+            if (!isLocallyEnabled(auto.getJobName())) {
+                log.info("  ↳ {} omitido por configuración de esta instancia.", auto.getJobName());
+                continue;
+            }
             try {
                 scheduleJob(auto);
                 log.info("  ✅ Programado: {} (cron: {}, tz: {})",
@@ -114,130 +117,19 @@ public class DynamicSchedulerService {
         log.info("⚙️ [DynamicScheduler] Motor inicializado correctamente.");
     }
 
+    private boolean isLocallyEnabled(String jobName) {
+        return switch (jobName) {
+            case "BACKUP_DATABASE_JOB" -> backupDatabaseEnabled;
+            case "INVENTORY_AUDIT_JOB" -> inventoryAuditEnabled;
+            default -> true;
+        };
+    }
+
     @PreDestroy
     public void onShutdown() {
         log.info("⚙️ [DynamicScheduler] Apagando motor — cancelando {} tarea(s)...", scheduledTasks.size());
         scheduledTasks.forEach((name, future) -> future.cancel(false));
         scheduledTasks.clear();
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // CRUD: operaciones expuestas al Controller
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Lista todas las automatizaciones como DTO (lectura segura).
-     */
-    @Transactional(readOnly = true)
-    public List<AutomationDto> listAll() {
-        return automationRepo.findAll()
-                .stream()
-                .map(AutomationDto::from)
-                .toList();
-    }
-
-    /**
-     * Enciende o apaga una automatización y reprograma/cancela el hilo.
-     * Operación atómica: actualiza BD + mapa en memoria en la misma transacción.
-     */
-    @Transactional
-    public AutomationDto toggleStatus(Long id, ToggleAutomationRequest request, Long userId) {
-        SystemAutomation auto = findOrThrow(id);
-        boolean shouldEnable = request.enabled();
-
-        auto.setEnabled(shouldEnable);
-        auto.setUpdatedBy(userId);
-
-        if (shouldEnable) {
-            validateCron(auto.getCronExpression());
-            auto.setNextExecution(calculateNextExecution(auto.getCronExpression(), auto.getTimezone()));
-            automationRepo.save(auto);
-            scheduleJob(auto);
-            log.info("▶️ [DynamicScheduler] Activada: {}", auto.getJobName());
-        } else {
-            auto.setNextExecution(null);
-            automationRepo.save(auto);
-            cancelJob(auto.getJobName());
-            log.info("⏸️ [DynamicScheduler] Desactivada: {}", auto.getJobName());
-        }
-
-        return AutomationDto.from(auto);
-    }
-
-    /**
-     * Actualiza cron, timezone y parámetros de una automatización.
-     * Si estaba habilitada, la reprograma con la nueva configuración.
-     */
-    @Transactional
-    public AutomationDto updateConfig(Long id, UpdateAutomationRequest request, Long userId) {
-        SystemAutomation auto = findOrThrow(id);
-
-        // Validar expresión cron ANTES de persistir
-        validateCron(request.cronExpression());
-        validateTimezone(request.timezone());
-
-        auto.setCronExpression(request.cronExpression());
-        auto.setTimezone(request.timezone());
-        auto.setUpdatedBy(userId);
-
-        if (request.parameters() != null) {
-            auto.setParameters(request.parameters());
-        }
-
-        if (auto.isEnabled()) {
-            auto.setNextExecution(calculateNextExecution(auto.getCronExpression(), auto.getTimezone()));
-            automationRepo.save(auto);
-            // Cancelar hilo anterior y reprogramar
-            cancelJob(auto.getJobName());
-            scheduleJob(auto);
-            log.info("🔄 [DynamicScheduler] Reprogramada: {} → cron={}, tz={}",
-                    auto.getJobName(), auto.getCronExpression(), auto.getTimezone());
-        } else {
-            auto.setNextExecution(null);
-            automationRepo.save(auto);
-        }
-
-        return AutomationDto.from(auto);
-    }
-
-    /**
-     * Ejecuta un job manualmente (fuera de su horario cron).
-     * Útil para pruebas o ejecuciones de emergencia.
-     *
-     * @param triggeredByEmail email del usuario que disparó la ejecución
-     */
-    @Transactional
-    public AutomationDto runNow(Long id, Long userId, String triggeredByEmail) {
-        SystemAutomation auto = findOrThrow(id);
-        auto.setUpdatedBy(userId);
-        automationRepo.save(auto);
-
-        String triggeredBy = (triggeredByEmail != null && !triggeredByEmail.isBlank())
-                ? triggeredByEmail
-                : "MANUAL";
-
-        // Ejecutar en el pool del scheduler (no bloquea)
-        taskScheduler.execute(() -> executeWithTelemetry(auto, triggeredBy));
-        log.info("⚡ [DynamicScheduler] Ejecución manual disparada: {} por {}", auto.getJobName(), triggeredBy);
-
-        return AutomationDto.from(auto);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // HISTORIAL DE EJECUCIONES
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Obtiene el historial paginado de ejecuciones de una automatización.
-     */
-    @Transactional(readOnly = true)
-    public Page<ExecutionLogDto> getExecutionLogs(Long automationId, int page, int size) {
-        // Limitar tamaño máximo de página para evitar DoS
-        int safeSize = Math.min(Math.max(size, 1), 50);
-        int safePage = Math.max(page, 0);
-        return execLogRepo.findByAutomationIdOrderByStartedAtDesc(
-                automationId, PageRequest.of(safePage, safeSize))
-                .map(ExecutionLogDto::from);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -519,32 +411,6 @@ public class DynamicSchedulerService {
     // ═══════════════════════════════════════════════════════════════════════
     // VALIDACIÓN Y UTILIDADES
     // ═══════════════════════════════════════════════════════════════════════
-
-    private SystemAutomation findOrThrow(Long id) {
-        return automationRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Automatización no encontrada: " + id));
-    }
-
-    /**
-     * Valida que la expresión cron tenga el formato Spring de 6 campos.
-     */
-    private void validateCron(String cron) {
-        if (!CronExpression.isValidExpression(cron)) {
-            throw new IllegalArgumentException(
-                    "Expresión cron inválida: '" + cron + "'. Formato esperado: 6 campos Spring Cron.");
-        }
-    }
-
-    /**
-     * Valida que la zona horaria sea un identificador IANA reconocido por Java.
-     */
-    private void validateTimezone(String tz) {
-        try {
-            ZoneId.of(tz);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Zona horaria no reconocida: '" + tz + "'");
-        }
-    }
 
     /**
      * Calcula la próxima ejecución a partir de la expresión cron y la zona horaria.

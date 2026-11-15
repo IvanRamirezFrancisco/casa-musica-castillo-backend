@@ -119,12 +119,16 @@ class OrderExpirationJobTest {
         ReflectionTestUtils.setField(failOrder, "id", 3L);
         failOrder.setStatus(OrderStatus.PENDING);
         failOrder.setPaymentMethod(PaymentMethod.MERCADO_PAGO);
+        failOrder.setPaymentStatus(PaymentStatus.PENDING);
+        failOrder.setShippingStatus(ShippingStatus.PENDING);
         failOrder.setCreatedAt(LocalDateTime.now().minusMinutes(90)); // Expirada MP > 60m
 
         Order successOrder = new Order();
         ReflectionTestUtils.setField(successOrder, "id", 4L);
         successOrder.setStatus(OrderStatus.PENDING);
         successOrder.setPaymentMethod(PaymentMethod.MERCADO_PAGO);
+        successOrder.setPaymentStatus(PaymentStatus.PENDING);
+        successOrder.setShippingStatus(ShippingStatus.PENDING);
         successOrder.setCreatedAt(LocalDateTime.now().minusMinutes(90)); // Expirada MP > 60m
 
         when(orderRepository.findByStatus(OrderStatus.PENDING)).thenReturn(Arrays.asList(failOrder, successOrder));
@@ -148,6 +152,8 @@ class OrderExpirationJobTest {
         ReflectionTestUtils.setField(order, "id", 5L);
         order.setStatus(OrderStatus.PENDING);
         order.setPaymentMethod(PaymentMethod.MERCADO_PAGO);
+        order.setPaymentStatus(PaymentStatus.PENDING);
+        order.setShippingStatus(ShippingStatus.PENDING);
         order.setCreatedAt(LocalDateTime.now().minusMinutes(90));
 
         when(orderRepository.findByStatus(OrderStatus.PENDING)).thenReturn(List.of(order));

@@ -7,6 +7,7 @@ import com.security.repository.PaymentRepository;
 import com.security.service.MercadoPagoWebhookService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -19,6 +20,7 @@ import java.util.List;
  * se pierdan o tarden demasiado.
  */
 @Component
+@ConditionalOnProperty(prefix = "app.mercadopago.reconciliation", name = "enabled", havingValue = "true", matchIfMissing = true)
 @RequiredArgsConstructor
 @Slf4j
 public class MercadoPagoReconciliationJob {

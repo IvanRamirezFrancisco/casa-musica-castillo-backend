@@ -1,5 +1,9 @@
 server:
   port: ${PORT:8080}
+  tomcat:
+    threads:
+      min-spare: ${TOMCAT_MIN_SPARE_THREADS:2}
+      max: ${TOMCAT_MAX_THREADS:24}
   ssl:
     enabled: false  # Render maneja SSL en el borde
 
@@ -16,8 +20,8 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD:${PGPASSWORD}}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:4}
+      minimum-idle: ${HIKARI_MIN_IDLE:1}
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1200000
@@ -106,7 +110,13 @@ app:
       max-delay-minutes: 240
 
   # URL base del frontend en producción
-  base-url: ${APP_BASE_URL:${FRONTEND_URL}}
+  base-url: ${APP_BASE_URL:${FRONTEND_URL:${FRONTEND_PUBLIC_BASE_URL:https://casa-musica-castillo.vercel.app}}}
+
+  jobs:
+    backup-database:
+      enabled: ${APP_JOBS_BACKUP_DATABASE_ENABLED:false}
+    inventory-audit:
+      enabled: ${APP_JOBS_INVENTORY_AUDIT_ENABLED:false}
   
   # Configuraciones de proveedores de email
   email:
@@ -116,8 +126,6 @@ app:
       api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:
       api-key: ${APP_EMAIL_RESEND_API_KEY:${RESEND_API_KEY:}}
-    sendgrid:
-      api-key: ${SENDGRID_API_KEY:}
     mailgun:
       api-key: ${MAILGUN_API_KEY:}
       domain: ${MAILGUN_DOMAIN:}
@@ -125,9 +133,9 @@ app:
   notification:
     sms:
       provider: ${SMS_PROVIDER:sinch}
-      project-id: ${APP_NOTIFICATION_SMS_PROJECT_ID}
-      access-key-id: ${APP_NOTIFICATION_SMS_ACCESS_KEY_ID}
-      secret-key: ${APP_NOTIFICATION_SMS_SECRET_KEY}
+      project-id: ${APP_NOTIFICATION_SMS_PROJECT_ID:}
+      access-key-id: ${APP_NOTIFICATION_SMS_ACCESS_KEY_ID:}
+      secret-key: ${APP_NOTIFICATION_SMS_SECRET_KEY:}
 
   # Mercado Pago Checkout Pro
   mercadopago:
@@ -135,13 +143,15 @@ app:
     environment: ${MERCADO_PAGO_ENVIRONMENT:production}
     access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
     public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
-    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL}
-    backend-base-url: ${BACKEND_PUBLIC_BASE_URL}
+    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL:${FRONTEND_URL:${APP_BASE_URL:https://casa-musica-castillo.vercel.app}}}
+    backend-base-url: ${BACKEND_PUBLIC_BASE_URL:https://casa-musica-castillo-backend-production.up.railway.app}
     webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
+    reconciliation:
+      enabled: ${APP_MERCADOPAGO_RECONCILIATION_ENABLED:true}
 
 # Configuración de CORS para producción
 cors:
-  allowed-origins: ${CORS_ORIGINS}
+  allowed-origins: ${CORS_ORIGINS:https://casa-musica-castillo.vercel.app,https://localhost,capacitor://localhost,http://localhost:8100}
   allowed-methods: GET,POST,PUT,DELETE,PATCH,OPTIONS
   allowed-headers: "*"
   allow-credentials: true

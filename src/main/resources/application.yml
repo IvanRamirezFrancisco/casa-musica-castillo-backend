@@ -152,6 +152,7 @@ app:
   # ============================================================
   backup:
     pg-dump-path: ${PG_DUMP_PATH:pg_dump}
+    pg-restore-path: ${PG_RESTORE_PATH:pg_restore}
     temp-dir: ${BACKUP_TEMP_DIR:/tmp/casamusica-backups}
 
   base-url: ${APP_BASE_URL:${FRONTEND_URL:http://localhost:4200}}
@@ -169,13 +170,6 @@ app:
     backend-base-url: ${BACKEND_PUBLIC_BASE_URL:http://localhost:8080}
   
   
-  # Configuración OAuth2.0
-  oauth2:
-    authorization-code-expiration: 600      # 10 minutos
-    access-token-expiration: 3600           # 1 hora
-    refresh-token-expiration: 2592000       # 30 días
-    redirect-uri-validation: true
-
   # Configuración CORS (legado: solo AdvancedSecurityConfig, perfil deshabilitado)
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200,https://casamusica.com}

@@ -467,7 +467,7 @@ public class OrderService {
     public OrderDTO cancelOrder(Long orderId, String reason, String source, Long actorId) {
         log.info("cancelOrder — orderId={}, source={}, actorId={}", orderId, source, actorId);
 
-        Order order = orderRepository.findById(orderId)
+        Order order = orderRepository.findByIdForUpdate(orderId)
                 .orElseThrow(() -> new IllegalArgumentException("Orden no encontrada"));
 
         // Prevenir doble cancelación o cancelar órdenes ya entregadas
@@ -491,8 +491,16 @@ public class OrderService {
                 throw new IllegalStateException("El pedido ya fue enviado o entregado; inicie un flujo de devolución o incidencia en su lugar.");
             }
         } else if ("SYSTEM".equals(source) || "SYSTEM_EXPIRATION".equals(source)) {
-            if (order.getStatus() != OrderStatus.PENDING) {
-                log.warn("Se intentó expirar una orden que no está PENDING (ID: {})", orderId);
+            if (order.getStatus() != OrderStatus.PENDING || order.getPaymentStatus() != PaymentStatus.PENDING
+                    || order.getShippingStatus() != ShippingStatus.PENDING) {
+                throw new IllegalStateException("La orden ya no está pendiente de pago y envío.");
+            }
+            if (order.getPaymentMethod() == com.security.enums.PaymentMethod.BANK_TRANSFER
+                    && paymentProofRepository.findTopByOrderIdOrderByCreatedAtDesc(orderId)
+                            .filter(proof -> proof.getStatus() == com.security.enums.PaymentProofStatus.PENDING_REVIEW
+                                    || proof.getStatus() == com.security.enums.PaymentProofStatus.APPROVED)
+                            .isPresent()) {
+                throw new IllegalStateException("La orden tiene un comprobante en revisión o aprobado.");
             }
         } else {
             throw new IllegalArgumentException("Origen de cancelación desconocido.");

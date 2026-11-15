@@ -1,6 +1,5 @@
 package com.security.service.automation;
 
-import com.security.dto.admin.TableMaintenanceDto;
 import com.security.entity.Product;
 import com.security.entity.SystemAutomation;
 import com.security.entity.User;
@@ -11,7 +10,6 @@ import com.security.repository.StaffInvitationRepository;
 import com.security.repository.UserRepository;
 import com.security.repository.VerificationTokenRepository;
 import com.security.service.DatabaseBackupService;
-import com.security.service.DatabaseMaintenanceService;
 import com.security.service.EmailService;
 import com.security.service.SessionManagementService;
 import com.security.service.TwoFactorService;
@@ -52,7 +50,6 @@ public class JobRunnableFactory {
     private static final Logger log = LoggerFactory.getLogger(JobRunnableFactory.class);
 
     private final DatabaseBackupService backupService;
-    private final DatabaseMaintenanceService maintenanceService;
     private final SessionManagementService sessionService;
     private final TwoFactorService twoFactorService;
     private final ProductRepository productRepository;
@@ -65,7 +62,6 @@ public class JobRunnableFactory {
 
     public JobRunnableFactory(
             DatabaseBackupService backupService,
-            DatabaseMaintenanceService maintenanceService,
             SessionManagementService sessionService,
             TwoFactorService twoFactorService,
             ProductRepository productRepository,
@@ -76,7 +72,6 @@ public class JobRunnableFactory {
             VerificationTokenRepository verificationTokenRepository,
             PlatformTransactionManager txManager) {
         this.backupService = backupService;
-        this.maintenanceService = maintenanceService;
         this.sessionService = sessionService;
         this.twoFactorService = twoFactorService;
         this.productRepository = productRepository;
@@ -103,7 +98,6 @@ public class JobRunnableFactory {
         return switch (jobName) {
             case "BACKUP_DATABASE_JOB" -> createBackupJob(params);
             case "SESSION_CLEANUP_JOB" -> createSessionCleanupJob();
-            case "DB_MAINTENANCE_JOB" -> createMaintenanceJob(params);
             case "INVENTORY_AUDIT_JOB" -> createInventoryAuditJob(params);
             case "ACCOUNT_CLEANUP_JOB" -> createAccountCleanupJob(params);
             default -> throw new IllegalArgumentException(
@@ -173,119 +167,6 @@ public class JobRunnableFactory {
             }
 
             return String.format("%d proceso(s) de limpieza ejecutados · %s", steps, detail);
-        };
-    }
-
-    // ── Job: Mantenimiento PostgreSQL (VACUUM + ANALYZE) ───────────────────
-
-    private Callable<String> createMaintenanceJob(Map<String, Object> params) {
-        return () -> {
-            log.info("🔄 [AutoJob] Ejecutando DB_MAINTENANCE_JOB");
-            try {
-                // Leer parámetros opcionales
-                // El frontend guarda "run_analyze"; se acepta también "analyze" por
-                // compatibilidad
-                boolean runAnalyze = true;
-                int deadTupleThreshold = 20; // default
-                if (params != null) {
-                    Object analyzeObj = params.containsKey("run_analyze")
-                            ? params.get("run_analyze")
-                            : params.get("analyze");
-                    if (analyzeObj instanceof Boolean b) {
-                        runAnalyze = b;
-                    } else if (analyzeObj instanceof String s) {
-                        runAnalyze = Boolean.parseBoolean(s);
-                    }
-
-                    if (params.containsKey("dead_tuple_threshold")) {
-                        Object threshObj = params.get("dead_tuple_threshold");
-                        if (threshObj instanceof Number n) {
-                            deadTupleThreshold = Math.max(1, n.intValue());
-                        }
-                    }
-                }
-
-                // ── Paso 1: VACUUM ANALYZE sobre tablas con dead tuples ──────
-                List<TableMaintenanceDto> allDirtyTables = maintenanceService.getDeadTuplesStats();
-
-                // Filtrar por umbral configurado
-                final int threshold = deadTupleThreshold;
-                List<TableMaintenanceDto> dirtyTables = allDirtyTables.stream()
-                        .filter(t -> t.deadTuples() > threshold)
-                        .toList();
-
-                int vacuumed = 0;
-                int errors = 0;
-                long totalDeadBefore = 0;
-                long totalDeadAfter = 0;
-
-                if (dirtyTables.isEmpty()) {
-                    log.info("  ↳ No se encontraron tablas con más de {} dead tuples. VACUUM no es necesario.",
-                            threshold);
-                } else {
-                    log.info("  ↳ {} tablas con más de {} dead tuples. Iniciando VACUUM ANALYZE...",
-                            dirtyTables.size(), threshold);
-                    for (TableMaintenanceDto table : dirtyTables) {
-                        try {
-                            long deadBefore = table.deadTuples();
-                            totalDeadBefore += deadBefore;
-
-                            maintenanceService.runVacuumWithLog(
-                                    table.tableName(), "SYSTEM_AUTOMATION");
-                            vacuumed++;
-
-                            // Consultar dead tuples después del vacuum
-                            Integer deadAfter = maintenanceService.queryDeadTuplesPublic(table.tableName());
-                            totalDeadAfter += (deadAfter != null ? deadAfter : 0);
-                        } catch (Exception e) {
-                            errors++;
-                            log.warn("  ↳ Error en VACUUM ANALYZE '{}': {}",
-                                    table.tableName(), e.getMessage());
-                            // Continuar con las demás tablas
-                        }
-                    }
-                    log.info("  ↳ VACUUM completado: {}/{} tablas procesadas ({} errores)",
-                            vacuumed, dirtyTables.size(), errors);
-                }
-
-                // ── Paso 2: ANALYZE global (estadísticas del planificador) ───
-                if (runAnalyze) {
-                    maintenanceService.runAnalyzeAll();
-                    log.info("  ↳ ANALYZE global completado exitosamente.");
-                }
-
-                long deadFreed = Math.max(0, totalDeadBefore - totalDeadAfter);
-
-                log.info("  ↳ DB_MAINTENANCE_JOB finalizado: {} tablas limpiadas, {} dead tuples liberados, {} errores",
-                        vacuumed, deadFreed, errors);
-
-                // Si hubo errores parciales pero no totales, no fallar el job
-                if (errors > 0 && vacuumed == 0 && !dirtyTables.isEmpty()) {
-                    throw new RuntimeException(
-                            "VACUUM falló en todas las " + dirtyTables.size() + " tablas.");
-                }
-
-                // Construir resumen descriptivo
-                StringBuilder summary = new StringBuilder();
-                summary.append(String.format("%d tabla(s) limpiadas", vacuumed));
-                if (deadFreed > 0) {
-                    summary.append(String.format(" · %d dead tuples eliminados", deadFreed));
-                }
-                if (runAnalyze) {
-                    summary.append(" · ANALYZE global ejecutado");
-                }
-                if (errors > 0) {
-                    summary.append(String.format(" · %d error(es)", errors));
-                }
-                if (dirtyTables.isEmpty()) {
-                    return "Sin tablas con dead tuples > " + threshold + " · Base de datos limpia";
-                }
-                return summary.toString();
-
-            } catch (Exception e) {
-                log.error("  ↳ Error en mantenimiento automático: {}", e.getMessage());
-                throw e; // propagar para que el motor marque FAILED
-            }
         };
     }
 

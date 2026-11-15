@@ -26,6 +26,7 @@ public class DatabaseBackupProperties {
      * </ul>
      */
     private String pgDumpPath = "pg_dump";
+    private String pgRestorePath = "pg_restore";
 
     /**
      * Directorio <em>temporal</em> donde se escribe el volcado mientras se
@@ -40,6 +41,8 @@ public class DatabaseBackupProperties {
 
     public String getPgDumpPath()           { return pgDumpPath; }
     public void setPgDumpPath(String v)     { this.pgDumpPath = v; }
+    public String getPgRestorePath()        { return pgRestorePath; }
+    public void setPgRestorePath(String v)  { this.pgRestorePath = v; }
 
     public String getTempDir()              { return tempDir; }
     public void setTempDir(String v)        { this.tempDir = v; }

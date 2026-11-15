@@ -1,13 +1,19 @@
 package com.security.service;
 
 import com.security.entity.Order;
+import com.security.entity.PaymentProof;
 import com.security.entity.User;
 import com.security.enums.OrderStatus;
+import com.security.enums.PaymentMethod;
+import com.security.enums.PaymentProofStatus;
 import com.security.enums.PaymentStatus;
+import com.security.enums.ShippingStatus;
 import com.security.repository.OrderRepository;
 import com.security.event.AuditSuccessEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -18,6 +24,7 @@ import java.util.Collections;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -70,6 +77,7 @@ class OrderServiceTransactionTest {
         order.setId(100L);
         order.setStatus(OrderStatus.PENDING);
         order.setPaymentStatus(PaymentStatus.PENDING);
+        order.setShippingStatus(ShippingStatus.PENDING);
         order.setItems(Collections.emptyList());
         
         User user = new User();
@@ -78,8 +86,33 @@ class OrderServiceTransactionTest {
     }
 
     @Test
+    void expirationRejectsAnOrderAlreadyPaidAfterItWasSelected() {
+        order.setPaymentStatus(PaymentStatus.PAID);
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
+
+        assertThrows(IllegalStateException.class, () -> orderService.cancelOrder(100L, "Expirada", "SYSTEM", null));
+        assertEquals(OrderStatus.PENDING, order.getStatus());
+        verify(orderRepository, never()).saveAndFlush(order);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PaymentProofStatus.class, names = {"PENDING_REVIEW", "APPROVED"})
+    void expirationRechecksTheLatestProofBeforeReleasingStock(PaymentProofStatus status) {
+        order.setPaymentMethod(PaymentMethod.BANK_TRANSFER);
+        var proof = new PaymentProof();
+        proof.setStatus(status);
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
+        when(paymentProofRepository.findTopByOrderIdOrderByCreatedAtDesc(100L)).thenReturn(Optional.of(proof));
+
+        assertThrows(IllegalStateException.class,
+                () -> orderService.cancelOrder(100L, "Expirada", "SYSTEM_EXPIRATION", null));
+        assertEquals(OrderStatus.PENDING, order.getStatus());
+        verify(orderRepository, never()).saveAndFlush(order);
+    }
+
+    @Test
     void testCancelOrder_WhenTimelineFails_ShouldRollbackAndNotPublishSuccessAudit() {
-        when(orderRepository.findById(100L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
         when(orderRepository.saveAndFlush(any(Order.class))).thenAnswer(i -> i.getArgument(0));
 
         // Simulamos que al insertar en el timeline falla la base de datos (después de saveAndFlush y paymentService)
@@ -109,7 +142,7 @@ class OrderServiceTransactionTest {
 
     @Test
     void testCancelOrder_SystemExpiration_RecordsActorTypeSystem() {
-        when(orderRepository.findById(100L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
         when(orderRepository.saveAndFlush(any(Order.class))).thenAnswer(i -> i.getArgument(0));
 
         orderService.cancelOrder(100L, "Expiración por sistema", "SYSTEM_EXPIRATION", null);
@@ -121,7 +154,7 @@ class OrderServiceTransactionTest {
 
     @Test
     void testCancelOrder_Admin_RecordsActorTypeAdmin() {
-        when(orderRepository.findById(100L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
         when(orderRepository.saveAndFlush(any(Order.class))).thenAnswer(i -> i.getArgument(0));
         
         User adminUser = new User();
@@ -137,7 +170,7 @@ class OrderServiceTransactionTest {
 
     @Test
     void testCancelOrder_Customer_RecordsActorTypeCustomer() {
-        when(orderRepository.findById(100L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
         when(orderRepository.saveAndFlush(any(Order.class))).thenAnswer(i -> i.getArgument(0));
         
         when(userRepository.findById(1L)).thenReturn(Optional.of(order.getUser()));
@@ -151,7 +184,7 @@ class OrderServiceTransactionTest {
 
     @Test
     void testCancelOrder_Success_PublishesAuditSuccessEvent() {
-        when(orderRepository.findById(100L)).thenReturn(Optional.of(order));
+        when(orderRepository.findByIdForUpdate(100L)).thenReturn(Optional.of(order));
         when(orderRepository.saveAndFlush(any(Order.class))).thenAnswer(i -> i.getArgument(0));
 
         orderService.cancelOrder(100L, "Éxito", "SYSTEM", null);
