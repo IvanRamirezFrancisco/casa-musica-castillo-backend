@@ -12,6 +12,7 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.scheduling.support.CronTrigger;
@@ -59,6 +60,8 @@ public class DynamicSchedulerService {
     private final JobRunnableFactory jobFactory;
     private final EmailService emailService;
     private final UserRepository userRepository;
+    private final boolean backupDatabaseEnabled;
+    private final boolean inventoryAuditEnabled;
 
     /**
      * Mapa en memoria: jobName → ScheduledFuture.
@@ -72,13 +75,17 @@ public class DynamicSchedulerService {
             @Qualifier("automationTaskScheduler") ThreadPoolTaskScheduler taskScheduler,
             JobRunnableFactory jobFactory,
             EmailService emailService,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            @Value("${app.jobs.backup-database.enabled:${APP_JOBS_BACKUP_DATABASE_ENABLED:true}}") boolean backupDatabaseEnabled,
+            @Value("${app.jobs.inventory-audit.enabled:${APP_JOBS_INVENTORY_AUDIT_ENABLED:true}}") boolean inventoryAuditEnabled) {
         this.automationRepo = automationRepo;
         this.execLogRepo = execLogRepo;
         this.taskScheduler = taskScheduler;
         this.jobFactory = jobFactory;
         this.emailService = emailService;
         this.userRepository = userRepository;
+        this.backupDatabaseEnabled = backupDatabaseEnabled;
+        this.inventoryAuditEnabled = inventoryAuditEnabled;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -95,6 +102,10 @@ public class DynamicSchedulerService {
             if ("DB_MAINTENANCE_JOB".equals(auto.getJobName())) {
                 continue;
             }
+            if (!isLocallyEnabled(auto.getJobName())) {
+                log.info("  ↳ {} omitido por configuración de esta instancia.", auto.getJobName());
+                continue;
+            }
             try {
                 scheduleJob(auto);
                 log.info("  ✅ Programado: {} (cron: {}, tz: {})",
@@ -104,6 +115,14 @@ public class DynamicSchedulerService {
             }
         }
         log.info("⚙️ [DynamicScheduler] Motor inicializado correctamente.");
+    }
+
+    private boolean isLocallyEnabled(String jobName) {
+        return switch (jobName) {
+            case "BACKUP_DATABASE_JOB" -> backupDatabaseEnabled;
+            case "INVENTORY_AUDIT_JOB" -> inventoryAuditEnabled;
+            default -> true;
+        };
     }
 
     @PreDestroy

@@ -39,3 +39,49 @@ Factura estimada = máximo entre USD 5 y el consumo total. Un servicio de stagin
 4. Para una promoción posteriormente autorizada, conservar imagen y configuración de Render, origen previo y respaldo verificado. Coordinar el cambio de tráfico y detener la ejecución duplicada de cron. Ante fallo, devolver tráfico y callbacks a Render, reactivar allí el ejecutor único y verificar salud y datos. La reversión de aplicación conserva el esquema V56. Cambios de esquema futuros requieren un plan de compatibilidad y recuperación propio.
 
 **Decisión técnica.** Hobby es la opción para una prueba aislada de 1 vCPU y 2 GiB. La capacidad efectiva, latencia hacia Neon, entrega Brevo por HTTPS, estabilidad sostenida, aceptación Android y factura deben confirmarse en ese entorno. No se creó ningún recurso Railway.
+
+## Programación selectiva en Railway
+
+En **Variables** del servicio backend, aplicar los valores al publicar un candidato revisado y después de confirmar la cobertura de recuperación indicada abajo:
+
+```dotenv
+APP_JOBS_BACKUP_DATABASE_ENABLED=false
+APP_JOBS_INVENTORY_AUDIT_ENABLED=false
+```
+
+El planificador lee ambos valores al arrancar. Cada variable en `false` impide registrar ese cron aun con una fila `is_enabled=true` en `ops.system_automations`. La ausencia de la variable equivale a `true`. Para volver a habilitar un cron, retirar su variable o fijarla en `true` y arrancar una revisión nueva. La fila debe estar activa según la configuración de base de datos. Ningún ajuste escribe en las filas ni en el historial. El respaldo manual, sus permisos, la descarga firmada, y la consulta de alertas de inventario conservan sus rutas.
+
+| Proceso | Comportamiento |
+| --- | --- |
+| Sesiones y retos MFA | Cron dinámico y purgas de Spring existentes. El filtro comprueba la firma y expiración JWT y consulta el estado de sesión antes de autenticar. La verificación MFA comprueba la caducidad del desafío al usarlo. |
+| Cuentas | Cron dinámico y tareas específicas de recuperación e invitaciones. Los registros abandonados se seleccionan por estado pendiente y antigüedad, sin pedidos ni token vigente y con bloqueo transaccional. |
+| Pedidos | Sigue cada 30 minutos por defecto. La cancelación adquiere un bloqueo por pedido, vuelve a comprobar estado de pago y envío y protege comprobantes en revisión o aprobados. |
+| Mercado Pago | Sigue cada 15 minutos por defecto. Durante coexistencia, fijar `APP_MERCADOPAGO_RECONCILIATION_ENABLED=false` solo en la instancia duplicada. Mantener un reconciliador activo. El webhook y la reconsulta administrativa conservan sus beans y rutas. |
+| Otros trabajos | Se conservan la auditoría de seguridad, los límites de login, las purgas de sesiones y recuperación y el ejecutor manual de respaldos. La inicialización de Hibernate, Flyway y Hikari sigue normal. |
+
+La conciliación consulta pagos existentes. Una aprobación repetida del mismo ID ya aplicado conserva la fecha y evita nuevos eventos de confirmación. Se requiere una prueba en sandbox para confirmar el comportamiento ante webhook y conciliación simultáneos y el resultado de un pago que llega después de expirar una orden. Evitar dos reconciliadores activos. El arranque también revisa respaldos PENDING, por lo que un arranque de la réplica secundaria debe coordinarse con respaldos que estén en ejecución en la principal.
+
+### Recuperación antes del cambio
+
+Se cotejó el SHA-256 del dump productivo del 13 de noviembre de 2026, `c4828777b49f6c100ec1d99b07a61bce843d4a0d7067c1803dacfcc0988c6aa2`. La evidencia local de restauración aislada indica PASS, V53, 51 migraciones y cero fallos. El ensayo se realizó sobre esa revisión y su alcance excluyó un inventario original independiente. Para sustituir el respaldo periódico de Railway, confirmar en Neon la ventana efectiva de recuperación desde la rama raíz, ensayar un punto recuperable en destino separado y verificar que un respaldo actualizado cubra V56 y los datos que deban conservarse. Registrar la antigüedad máxima aceptable del respaldo y el tiempo de recuperación. [Recuperación a un punto en el tiempo en Neon](https://neon.com/docs/postgres/backup-restore/branch-restore)
+
+### Serverless
+
+Mantener Serverless desactivado para este servicio. Railway usa tráfico saliente, incluidos los paquetes hacia PostgreSQL, y puede suspender un contenedor tras unos 5–10 minutos sin salida. Los jobs de sesiones y auditoría tienen intervalos de cinco minutos y pueden producir tráfico incluso sin clientes. Hikari conserva una conexión ociosa por defecto y el pool puede generar tráfico al validar o renovar conexiones. Hibernate y Flyway contribuyen al coste del arranque en frío. Si el servicio llega a suspenderse, los cron internos dejan de ejecutarse hasta que despierte. Esto afecta la puntualidad de la conciliación y la liberación de inventario, y la primera solicitud puede recibir un HTTP 502. Evaluar una réplica aislada solo después de dar a esas tareas una ejecución externa o una garantía de continuidad equivalente. [Funcionamiento de Railway Serverless](https://docs.railway.com/deployments/serverless)
+
+### Ensayo local con Flyway V56
+
+Dos contenedores con el mismo JAR, 1 vCPU, 2 GiB y bases sintéticas clonadas. Las cuatro filas estaban activas y se aceleraron a cron de laboratorio. Cada contenedor se observó durante 90 segundos tras alcanzar UP, sin tráfico de clientes.
+
+| Medición | Ambos jobs habilitados | Ambos jobs deshabilitados |
+| --- | ---: | ---: |
+| Respaldos completados | 5 | 0 |
+| Auditorías automáticas de inventario | 5 | 0 |
+| Limpiezas de sesiones y de cuentas | 5 de cada una | 5 de cada una |
+| CPU de la API durante la ventana | 1.182 CPU-s | 0.796 CPU-s |
+| Pico de memoria del contenedor | 495.57 MiB | 442.91 MiB |
+| Pico RSS de Java | 456.69 MiB | 455.89 MiB |
+| Hilos al final | 34 | 29 |
+| Arranque a UP | 39.25 s | 31.77 s |
+
+No se observaron OOM ni reinicios. El ensayo usó una sola corrida por variante y una frecuencia artificial. No permite extrapolar ahorro mensual ni demostrar mejora sostenida del arranque; las métricas del contenedor excluyen PostgreSQL y el almacenamiento simulados. Evidencias locales en `target/render-free-lab/final-image-jobs1-{enabled,disabled}-2.json`. Maven aprobó 167 pruebas y después aprobó los dos casos adicionales de comprobantes en una regresión focalizada de ocho pruebas.

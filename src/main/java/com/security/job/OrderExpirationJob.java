@@ -4,6 +4,8 @@ import com.security.entity.Order;
 import com.security.entity.PaymentProof;
 import com.security.enums.OrderStatus;
 import com.security.enums.PaymentProofStatus;
+import com.security.enums.PaymentStatus;
+import com.security.enums.ShippingStatus;
 import com.security.repository.OrderRepository;
 import com.security.repository.PaymentProofRepository;
 import com.security.service.OrderService;
@@ -42,7 +44,6 @@ public class OrderExpirationJob {
 
         // Umbrales
         LocalDateTime thresholdMP = LocalDateTime.now().minusMinutes(60);
-        LocalDateTime thresholdBank = LocalDateTime.now().minusHours(48);
 
         // Órdenes en estado PENDING
         List<Order> pendingOrders = orderRepository.findByStatus(OrderStatus.PENDING);
@@ -56,6 +57,10 @@ public class OrderExpirationJob {
 
         for (Order order : pendingOrders) {
             try {
+                if (order.getPaymentStatus() != PaymentStatus.PENDING
+                        || order.getShippingStatus() != ShippingStatus.PENDING) {
+                    continue;
+                }
                 com.security.enums.PaymentMethod method = order.getPaymentMethod();
                 
                 if (method == com.security.enums.PaymentMethod.MERCADO_PAGO) {
@@ -69,9 +74,7 @@ public class OrderExpirationJob {
                     // Si es Transferencia y pasó el tiempo válido
                     LocalDateTime thresholdBankTransfer = LocalDateTime.now().minusHours(paymentValidityHours);
                     
-                    if (order.getCreatedAt().isBefore(thresholdBankTransfer) && 
-                        order.getPaymentStatus() == com.security.enums.PaymentStatus.PENDING &&
-                        order.getShippingStatus() == com.security.enums.ShippingStatus.PENDING) {
+                    if (order.getCreatedAt().isBefore(thresholdBankTransfer)) {
                         
                         // Verificar si tiene un comprobante
                         Optional<PaymentProof> proofOpt = paymentProofRepository.findTopByOrderIdOrderByCreatedAtDesc(order.getId());
