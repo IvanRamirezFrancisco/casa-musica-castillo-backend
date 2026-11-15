@@ -112,6 +112,10 @@ app:
   # URL base del frontend en producción
   base-url: ${APP_BASE_URL:${FRONTEND_URL:${FRONTEND_PUBLIC_BASE_URL:https://casa-musica-castillo.vercel.app}}}
 
+  legal:
+    deletion-intake-enabled: ${APP_LEGAL_DELETION_INTAKE_ENABLED:true}
+    automatic-deletion-enabled: ${APP_LEGAL_AUTOMATIC_DELETION_ENABLED:true}
+
   jobs:
     backup-database:
       enabled: ${APP_JOBS_BACKUP_DATABASE_ENABLED:false}
