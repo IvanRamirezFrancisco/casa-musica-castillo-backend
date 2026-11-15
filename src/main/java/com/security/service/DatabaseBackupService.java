@@ -500,28 +500,7 @@ public class DatabaseBackupService {
     private void runProcess(List<String> command, String label, StringBuilder logBuilder)
             throws BackupException, IOException {
 
-        ProcessBuilder pb = new ProcessBuilder(command);
-        if ("pg_dump".equals(label)) {
-            pb.environment().put("PGPASSWORD", datasourcePassword);
-            var jdbcOptions = org.postgresql.Driver.parseURL(datasourceUrl, null);
-            if (jdbcOptions == null) {
-                throw new BackupException("No se pudo leer la configuración de conexión para pg_dump");
-            }
-            String sslMode = jdbcOptions.getProperty("sslmode");
-            if (sslMode == null && Boolean.parseBoolean(jdbcOptions.getProperty("ssl"))) {
-                sslMode = "verify-full";
-            }
-            if (sslMode != null) {
-                pb.environment().put("PGSSLMODE", sslMode);
-            }
-            String sslRootCert = jdbcOptions.getProperty("sslrootcert");
-            if (sslRootCert != null) {
-                pb.environment().put("PGSSLROOTCERT", sslRootCert);
-            }
-        } else {
-            pb.environment().remove("PGPASSWORD");
-            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        }
+        ProcessBuilder pb = configureProcess(command, label, datasourceUrl, datasourcePassword);
         pb.redirectErrorStream(false);
         // Redirigir stdin al NUL del sistema para que el proceso hijo no quede
         // esperando entrada por consola (comportamiento común en Windows con pg_dump).
@@ -612,9 +591,36 @@ public class DatabaseBackupService {
         }
     }
 
+    static ProcessBuilder configureProcess(List<String> command, String label, String datasourceUrl,
+            String datasourcePassword) throws BackupException {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        if ("pg_dump".equals(label)) {
+            pb.environment().put("PGPASSWORD", datasourcePassword);
+            var jdbcOptions = org.postgresql.Driver.parseURL(datasourceUrl, null);
+            if (jdbcOptions == null) {
+                throw new BackupException("No se pudo leer la configuración de conexión para pg_dump");
+            }
+            String sslMode = jdbcOptions.getProperty("sslmode");
+            if (sslMode == null && Boolean.parseBoolean(jdbcOptions.getProperty("ssl"))) {
+                sslMode = "verify-full";
+            }
+            if (sslMode != null) {
+                pb.environment().put("PGSSLMODE", sslMode);
+            }
+            String sslRootCert = jdbcOptions.getProperty("sslrootcert");
+            if (sslRootCert != null) {
+                pb.environment().put("PGSSLROOTCERT", sslRootCert);
+            }
+        } else {
+            pb.environment().remove("PGPASSWORD");
+            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        }
+        return pb;
+    }
+
     // ── URL JDBC parsing ──────────────────────────────────────────────────────
 
-    private DbCoordinates parseJdbcUrl(String jdbcUrl) throws BackupException {
+    static DbCoordinates parseJdbcUrl(String jdbcUrl) throws BackupException {
         try {
             String raw = jdbcUrl.replace("jdbc:", "");
             int qIdx = raw.indexOf('?');

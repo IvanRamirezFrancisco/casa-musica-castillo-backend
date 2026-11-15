@@ -65,6 +65,56 @@ class SupabaseStorageServiceTest {
         }
     }
 
+    @Test
+    void verifiesPrivacyWhenSupabaseReportsAnExistingBucket() throws IOException {
+        verifyExistingBucket(409, "{}", "{\"public\":false}", false);
+        verifyExistingBucket(400, "{\"code\":\"Duplicate\"}", "{\"public\":false}", false);
+        verifyExistingBucket(400, "{\"message\":\"already exists\"}", "{\"public\":true}", true);
+        verifyExistingBucket(409, "{}", "", true);
+    }
+
+    @Test
+    void rejectsAProviderErrorThatDoesNotRepresentAnExistingBucket() throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/storage/v1/bucket", exchange -> {
+            exchange.sendResponseHeaders(400, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var storage = new SupabaseStorageService(properties(server), RestClient.builder());
+            assertThrows(RuntimeException.class, storage::ensureBucketExists);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void verifyExistingBucket(int createStatus, String createBody, String bucketBody, boolean rejected)
+            throws IOException {
+        List<String> calls = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/storage/v1/bucket", exchange -> {
+            calls.add(exchange.getRequestMethod());
+            respond(exchange, createStatus, createBody);
+        });
+        server.createContext("/storage/v1/bucket/synthetic", exchange -> {
+            calls.add(exchange.getRequestMethod());
+            respond(exchange, 200, bucketBody);
+        });
+        server.start();
+        try {
+            var storage = new SupabaseStorageService(properties(server), RestClient.builder());
+            if (rejected) {
+                assertThrows(IllegalStateException.class, storage::ensureBucketExists);
+            } else {
+                assertDoesNotThrow(storage::ensureBucketExists);
+            }
+            assertEquals(List.of("POST", "GET"), calls);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private SupabaseProperties properties(HttpServer server) {
         var properties = new SupabaseProperties();
         properties.setUrl("http://127.0.0.1:" + server.getAddress().getPort());
@@ -74,9 +124,13 @@ class SupabaseStorageServiceTest {
     }
 
     private void respond(com.sun.net.httpserver.HttpExchange exchange, String json) throws IOException {
+        respond(exchange, 200, json);
+    }
+
+    private void respond(com.sun.net.httpserver.HttpExchange exchange, int status, String json) throws IOException {
         byte[] body = json.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, body.length);
+        exchange.sendResponseHeaders(status, body.length);
         try (var output = exchange.getResponseBody()) {
             output.write(body);
         }

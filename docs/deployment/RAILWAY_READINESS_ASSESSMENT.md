@@ -5,7 +5,7 @@ Evaluación del 14 de noviembre de 2026. Java 21, Spring Boot 4.0.9 y Flyway V56
 | Plan | Precio y consumo incluido | Capacidad publicada | Adecuación |
 | --- | --- | --- | --- |
 | Free | USD 0, con USD 1 mensual de consumo | 1 réplica, 0.5 GB RAM, 1 vCPU, 1 GB efímero | Margen de memoria estrecho y crédito insuficiente para el escenario continuo bajo. |
-| Trial | USD 5 por única vez, durante un máximo de 30 días | Hasta 2 réplicas, 1 GB de RAM y 2 vCPU compartidas según la tabla. Limited Trial restringe salida. | Ensayo breve si la cuenta permite conectividad a Neon y proveedores. |
+| Trial | Crédito gratuito de USD 5 por única vez, hasta 30 días | Hasta 2 réplicas, 1 GB de RAM y 2 vCPU compartidas según la tabla. Limited Trial restringe salida. | Ensayo breve si la cuenta permite conectividad a Neon y proveedores. |
 | Hobby | USD 5/mes, incluye los primeros USD 5 de uso | Hasta 6 réplicas, 48 GB y 48 vCPU como máximos agregados del servicio | Validar 1 réplica con límite inicial de 1 vCPU y 2 GiB. |
 
 Los límites de cuenta se cotejan antes de provisionar. La CPU de 0.1 del perfil anterior produjo arranques de más de 16 minutos. El límite de 2 GiB deja margen respecto al pico anterior de ~458 MiB y permite medir ráfagas y trabajos pesados. [Planes](https://docs.railway.com/pricing/plans) · [Trial](https://docs.railway.com/pricing/free-trial)
