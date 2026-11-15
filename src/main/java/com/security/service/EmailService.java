@@ -134,6 +134,24 @@ public class EmailService {
     }
 
     /**
+     * Envía el enlace seguro de confirmación de eliminación de cuenta (un solo uso, vigencia 30 min).
+     */
+    public void sendAccountDeletionConfirmationEmail(String toEmail, String firstName, String confirmationToken) {
+        AuthMailContent content = AuthMailContent.link(
+                "Confirmar solicitud de eliminación de cuenta",
+                firstName,
+                "Recibimos una solicitud para eliminar la cuenta asociada a este correo en Casa de Música Castillo. Para confirmar de forma explícita tu solicitud, abre el siguiente enlace seguro:",
+                "Confirmar solicitud de eliminación",
+                getFrontendBaseUrl() + "/eliminar-cuenta?token=" + confirmationToken,
+                "Este enlace es de un solo uso y caduca en 30 minutos. Si no solicitaste eliminar tu cuenta, ignora este mensaje y tu cuenta permanecerá intacta.");
+        User recipient = new User();
+        recipient.setEmail(toEmail);
+        recipient.setFirstName(firstName == null ? "" : firstName);
+        dispatchEmail(recipient, "Confirma la eliminación de tu cuenta - Casa de Música Castillo",
+                content.html(), content.text(), "ACCOUNT_DELETION_CONFIRMATION");
+    }
+
+    /**
      * Envía un email HTML genérico a una dirección, usando la cadena de proveedores.
      */
     public void sendHtmlEmail(String to, String subject, String htmlContent) {
