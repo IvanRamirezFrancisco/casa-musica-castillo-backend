@@ -3,9 +3,7 @@ package com.security.controller;
 import com.security.dto.public_api.PublicProductRecommendationDTO;
 import com.security.service.PublicProductRecommendationService;
 import com.security.service.PublicProductService;
-import com.security.service.PublicDemandTrendService;
 import jakarta.persistence.EntityNotFoundException;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -29,9 +27,6 @@ class PublicProductControllerRecommendationTest {
 
     @Mock
     private PublicProductService publicProductService;
-
-    @Mock
-    private PublicDemandTrendService publicDemandTrendService;
 
     @InjectMocks
     private PublicProductController controller;
@@ -77,38 +72,4 @@ class PublicProductControllerRecommendationTest {
         assertNull(response.getBody());
     }
 
-    @Test
-    void getTrendingProducts_Success_ReturnsList() {
-        com.security.dto.public_api.PublicTrendingProductDTO dto = new com.security.dto.public_api.PublicTrendingProductDTO(
-                1L, "SKU", "Name", "Desc", "url", 1L, "Cat", BigDecimal.TEN, BigDecimal.TEN, null, false, "Label", "Reason"
-        );
-        when(publicDemandTrendService.getTrendingProducts(8)).thenReturn(List.of(dto));
-
-        ResponseEntity<List<com.security.dto.public_api.PublicTrendingProductDTO>> response = controller.getTrendingProducts(8);
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertEquals(1, response.getBody().size());
-    }
-
-    @Test
-    void getTrendStatus_Success_ReturnsStatus() {
-        com.security.dto.public_api.ProductTrendStatusDTO dto = new com.security.dto.public_api.ProductTrendStatusDTO(
-                1L, true, "Label", "Reason"
-        );
-        when(publicDemandTrendService.getProductTrendStatus(1L)).thenReturn(dto);
-
-        ResponseEntity<com.security.dto.public_api.ProductTrendStatusDTO> response = controller.getTrendStatus(1L);
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertTrue(response.getBody().trending());
-    }
-
-    @Test
-    void getTrendStatus_NotFound_Returns404() {
-        when(publicDemandTrendService.getProductTrendStatus(99L)).thenThrow(new EntityNotFoundException());
-
-        ResponseEntity<com.security.dto.public_api.ProductTrendStatusDTO> response = controller.getTrendStatus(99L);
-
-        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-    }
 }

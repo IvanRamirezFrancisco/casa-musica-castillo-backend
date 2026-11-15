@@ -65,8 +65,7 @@ public class SupabaseStorageService {
      *
      * <ul>
      *   <li>Si la respuesta es {@code 200} / {@code 201} — bucket creado correctamente.</li>
-     *   <li>Si la respuesta es {@code 400} con código {@code "Duplicate"} — el bucket
-     *       ya existe; se ignora silenciosamente.</li>
+     *   <li>Si el bucket ya existe, se comprueba que sea privado.</li>
      *   <li>Cualquier otro error HTTP se propaga como {@link RuntimeException}.</li>
      * </ul>
      */
@@ -90,16 +89,27 @@ public class SupabaseStorageService {
 
         } catch (RestClientResponseException ex) {
             String body = ex.getResponseBodyAsString();
-            // 400 con "Duplicate" o "already exists" → el bucket ya existía → OK
-            if (ex.getStatusCode() == HttpStatus.BAD_REQUEST
-                    && (body.contains("Duplicate") || body.contains("already exists"))) {
-                log.debug("[Supabase] Bucket '{}' ya existe — continuando.", bucket);
+            if (ex.getStatusCode() == HttpStatus.CONFLICT
+                    || (ex.getStatusCode() == HttpStatus.BAD_REQUEST
+                    && (body.contains("Duplicate") || body.contains("already exists")))) {
+                verifyPrivateBucket();
             } else {
                 log.error("[Supabase] No se pudo crear el bucket '{}' — HTTP {}: {}",
                         bucket, ex.getStatusCode(), body);
                 throw new RuntimeException(
                         "No se pudo crear el bucket de Supabase Storage '" + bucket + "': " + ex.getMessage(), ex);
             }
+        }
+    }
+
+    private void verifyPrivateBucket() {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> bucket = storageClient.get()
+                .uri("/storage/v1/bucket/{bucket}", props.getBucketName())
+                .retrieve()
+                .body(Map.class);
+        if (bucket == null || !Boolean.FALSE.equals(bucket.get("public"))) {
+            throw new IllegalStateException("El bucket de respaldos debe ser privado");
         }
     }
 
@@ -122,6 +132,7 @@ public class SupabaseStorageService {
      * @throws RuntimeException si Supabase devuelve un error HTTP
      */
     public String uploadBackup(Path localFile, String storageFileName) {
+        verifyPrivateBucket();
         String uploadPath = "/storage/v1/object/" + props.getBucketName() + "/" + storageFileName;
         log.info("[Supabase] Subiendo {} → {}", localFile.getFileName(), uploadPath);
 
@@ -159,6 +170,7 @@ public class SupabaseStorageService {
      * @throws RuntimeException si Supabase devuelve un error HTTP
      */
     public String generateSignedUrl(String objectPath, int expiresInSeconds) {
+        verifyPrivateBucket();
         String signPath = "/storage/v1/object/sign/" + props.getBucketName() + "/" + objectPath;
         log.debug("[Supabase] Generando URL firmada para '{}' ({} s)", objectPath, expiresInSeconds);
 

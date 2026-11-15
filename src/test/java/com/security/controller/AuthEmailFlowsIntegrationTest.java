@@ -283,6 +283,10 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         VerificationToken usedVt = verificationTokenRepository.findByToken(digestLink(secondToken)).orElseThrow();
         assertTrue(Boolean.TRUE.equals(usedVt.getUsed()), "El token de verificación debe marcarse como usado (used=true)");
 
+        verificationTokenRepository.deleteExpiredTokens(LocalDateTime.now());
+        assertTrue(verificationTokenRepository.findByToken(digestLink(firstToken)).isEmpty());
+        assertTrue(verificationTokenRepository.findByToken(digestLink(secondToken)).isPresent());
+
         // Reutilización del mismo token de verificación debe fallar con 400
         mvc.perform(post("/api/auth/verify-email")
                         .contentType("application/json")

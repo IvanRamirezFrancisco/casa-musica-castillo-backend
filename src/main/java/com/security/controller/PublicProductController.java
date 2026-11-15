@@ -32,14 +32,11 @@ public class PublicProductController {
 
     private final PublicProductService publicProductService;
     private final com.security.service.PublicProductRecommendationService publicProductRecommendationService;
-    private final com.security.service.PublicDemandTrendService publicDemandTrendService;
 
     public PublicProductController(PublicProductService publicProductService,
-                                   com.security.service.PublicProductRecommendationService publicProductRecommendationService,
-                                   com.security.service.PublicDemandTrendService publicDemandTrendService) {
+                                   com.security.service.PublicProductRecommendationService publicProductRecommendationService) {
         this.publicProductService = publicProductService;
         this.publicProductRecommendationService = publicProductRecommendationService;
-        this.publicDemandTrendService = publicDemandTrendService;
     }
 
     // ── GET /api/public/products (y /api/products) ────────────────────────────
@@ -192,28 +189,4 @@ public class PublicProductController {
         }
     }
 
-    // ── GET /api/public/products/trending ─────────────────────────────────────
-
-    /**
-     * Devuelve los productos en tendencia basados en el pronóstico de demanda de medias móviles.
-     */
-    @GetMapping("/trending")
-    public ResponseEntity<List<com.security.dto.public_api.PublicTrendingProductDTO>> getTrendingProducts(
-            @RequestParam(defaultValue = "8") int limit) {
-        return ResponseEntity.ok(publicDemandTrendService.getTrendingProducts(limit));
-    }
-
-    // ── GET /api/public/products/{id}/trend-status ────────────────────────────
-
-    /**
-     * Verifica de forma segura si un producto está en tendencia.
-     */
-    @GetMapping("/{id}/trend-status")
-    public ResponseEntity<com.security.dto.public_api.ProductTrendStatusDTO> getTrendStatus(@PathVariable Long id) {
-        try {
-            return ResponseEntity.ok(publicDemandTrendService.getProductTrendStatus(id));
-        } catch (EntityNotFoundException ex) {
-            return ResponseEntity.notFound().build();
-        }
-    }
 }

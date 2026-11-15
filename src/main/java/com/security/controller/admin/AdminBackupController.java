@@ -10,6 +10,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
@@ -44,14 +45,33 @@ public class AdminBackupController {
         private final DatabaseBackupService backupService;
         private final SupabaseStorageService supabaseStorage;
         private final BackupLogRepository backupLogRepository;
+        private final JdbcTemplate jdbc;
 
         public AdminBackupController(DatabaseBackupService backupService,
                         SupabaseStorageService supabaseStorage,
-                        BackupLogRepository backupLogRepository) {
+                        BackupLogRepository backupLogRepository,
+                        JdbcTemplate jdbc) {
                 this.backupService = backupService;
                 this.supabaseStorage = supabaseStorage;
                 this.backupLogRepository = backupLogRepository;
+                this.jdbc = jdbc;
         }
+
+        @GetMapping("/tables")
+        public List<BackupTable> listDatabaseTables() {
+                return jdbc.query("""
+                                SELECT t.table_schema || '.' || t.table_name AS name,
+                                       COALESCE(s.n_live_tup, 0) AS row_estimate
+                                FROM information_schema.tables t
+                                LEFT JOIN pg_stat_user_tables s
+                                    ON s.schemaname = t.table_schema AND s.relname = t.table_name
+                                WHERE t.table_schema IN ('auth', 'security', 'catalog', 'sales', 'customer', 'ops')
+                                  AND t.table_type = 'BASE TABLE'
+                                ORDER BY row_estimate DESC, name
+                                """, (rs, row) -> new BackupTable(rs.getString("name"), rs.getLong("row_estimate")));
+        }
+
+        public record BackupTable(String name, long rowEstimate) { }
 
         // ── POST /trigger ─────────────────────────────────────────────────────────
 
