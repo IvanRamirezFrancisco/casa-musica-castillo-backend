@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
@@ -23,6 +24,9 @@ import java.util.UUID;
 @Service
 public class AccountDeletionService {
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String SELECT_USER_EMAIL_FOR_UPDATE = "SELECT email FROM auth.users WHERE id = ? FOR UPDATE";
+    private static final String COL_USER_ID = "user_id";
+    private static final String COL_STATUS = "status";
     private static final String ANONYMIZED_ORDER_MARKER = "[DATOS PERSONALES ELIMINADOS POR SOLICITUD DEL TITULAR]";
     private static final String PUBLIC_REQUEST_MESSAGE =
             "Si el correo está asociado a una cuenta registrada, enviaremos un enlace de verificación con vigencia de 30 minutos para confirmar la eliminación.";
@@ -71,7 +75,7 @@ public class AccountDeletionService {
 
     @Transactional
     public Receipt request(long userId, String currentPassword) {
-        String email = jdbc.query("SELECT email FROM auth.users WHERE id = ? FOR UPDATE",
+        String email = jdbc.query(SELECT_USER_EMAIL_FOR_UPDATE,
                 (row, index) -> row.getString(1), userId).stream().findFirst().orElseThrow(AccountDeletionService::missing);
         users.requireStepUp(userId, Map.of("currentPassword", currentPassword));
         return processVerifiedRequest(userId, email, "AUTHENTICATED", false);
@@ -128,7 +132,7 @@ public class AccountDeletionService {
                 """,
                 (row, index) -> new TokenRow(
                         row.getObject("id", UUID.class),
-                        row.getLong("user_id"),
+                        row.getLong(COL_USER_ID),
                         row.getObject("expires_at", OffsetDateTime.class),
                         row.getObject("used_at", OffsetDateTime.class)),
                 tokenHash);
@@ -137,13 +141,13 @@ public class AccountDeletionService {
             throw invalidOrExpiredToken();
         }
         TokenRow token = tokens.get(0);
-        if (token.usedAt() != null || token.expiresAt() == null || !token.expiresAt().isAfter(OffsetDateTime.now())) {
+        if (token.usedAt() != null || !token.expiresAt().isAfter(OffsetDateTime.now(ZoneOffset.UTC))) {
             throw invalidOrExpiredToken();
         }
 
         jdbc.update("UPDATE auth.account_deletion_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = ?", token.id());
 
-        String email = jdbc.query("SELECT email FROM auth.users WHERE id = ? FOR UPDATE",
+        String email = jdbc.query(SELECT_USER_EMAIL_FOR_UPDATE,
                 (row, index) -> row.getString(1), token.userId()).stream().findFirst().orElseThrow(AccountDeletionService::missing);
 
         return processVerifiedRequest(token.userId(), email, "PUBLIC_EMAIL_TOKEN", true);
@@ -197,12 +201,12 @@ public class AccountDeletionService {
             throw missing();
         }
         Map<String, Object> req = rows.get(0);
-        String currentStatus = String.valueOf(req.get("status"));
+        String currentStatus = String.valueOf(req.get(COL_STATUS));
         if ("COMPLETED".equals(currentStatus)) {
             return track(requestId);
         }
 
-        Number rawUserId = (Number) req.get("user_id");
+        Number rawUserId = (Number) req.get(COL_USER_ID);
         if (rawUserId == null) {
             jdbc.update("""
                     UPDATE auth.account_deletion_requests
@@ -217,7 +221,7 @@ public class AccountDeletionService {
         }
 
         long userId = rawUserId.longValue();
-        String email = jdbc.query("SELECT email FROM auth.users WHERE id = ? FOR UPDATE",
+        String email = jdbc.query(SELECT_USER_EMAIL_FOR_UPDATE,
                 (row, index) -> row.getString(1), userId).stream().findFirst().orElseThrow(AccountDeletionService::missing);
 
         boolean hasStaffRole = Boolean.TRUE.equals(jdbc.queryForObject("""
@@ -237,7 +241,7 @@ public class AccountDeletionService {
                     "La cuenta tiene pedidos en curso o comprobantes de pago pendientes de revisión. Concluye esas operaciones antes de eliminar la cuenta.");
         }
 
-        anonymizeAndDetachRetainedRecords(userId, email);
+        anonymizeAndDetachRetainedRecords(userId);
         eraseAccount(userId, email);
 
         jdbc.update("""
@@ -295,13 +299,9 @@ public class AccountDeletionService {
 
     private Receipt lookup(String sql, Object identifier) {
         return jdbc.query(sql, (row, index) -> new Receipt(row.getObject("request_id", UUID.class),
-                row.getString("status"), row.getObject("received_at", OffsetDateTime.class),
+                row.getString(COL_STATUS), row.getObject("received_at", OffsetDateTime.class),
                 row.getObject("completed_at", OffsetDateTime.class)), identifier)
                 .stream().findFirst().orElseThrow(AccountDeletionService::missing);
-    }
-
-    private boolean requiresReview(long userId, String email) {
-        return classifyReviewReason(userId, email) != null;
     }
 
     private boolean hasBlockingCommercialOperations(long userId) {
@@ -364,7 +364,7 @@ public class AccountDeletionService {
         return hasAuditRecords ? "AUDIT_OR_SECURITY_RECORDS" : null;
     }
 
-    private void anonymizeAndDetachRetainedRecords(long userId, String email) {
+    private void anonymizeAndDetachRetainedRecords(long userId) {
         jdbc.update("""
                 UPDATE sales.orders
                 SET user_id = NULL,
@@ -420,10 +420,10 @@ public class AccountDeletionService {
     }
 
     private static AdminRequestSummary mapAdminSummary(java.sql.ResultSet row, int index) throws java.sql.SQLException {
-        Number rawUserId = (Number) row.getObject("user_id");
+        Number rawUserId = (Number) row.getObject(COL_USER_ID);
         return new AdminRequestSummary(
                 row.getObject("request_id", UUID.class),
-                row.getString("status"),
+                row.getString(COL_STATUS),
                 row.getObject("received_at", OffsetDateTime.class),
                 row.getObject("completed_at", OffsetDateTime.class),
                 rawUserId != null ? rawUserId.longValue() : null,

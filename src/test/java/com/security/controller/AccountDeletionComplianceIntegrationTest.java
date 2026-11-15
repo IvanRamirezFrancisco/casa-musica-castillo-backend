@@ -2,11 +2,14 @@ package com.security.controller;
 
 import com.security.entity.Role;
 import com.security.entity.User;
+import com.security.exception.AuthFlowException;
 import com.security.repository.RoleRepository;
 import com.security.repository.UserRepository;
 import com.security.security.JwtTokenProvider;
 import com.security.security.UserPrincipal;
+import com.security.service.AccountDeletionService;
 import com.security.service.EmailService;
+import com.security.service.UserService;
 import com.security.support.LocalPostgresIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -15,14 +18,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.MockMvcPrint;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.client.RestTemplate;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -34,6 +41,8 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -57,6 +66,7 @@ class AccountDeletionComplianceIntegrationTest extends LocalPostgresIntegrationT
     @Autowired private RoleRepository roles;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private JwtTokenProvider jwtTokenProvider;
+    @Autowired private UserService userService;
     @MockitoBean private EmailService emailService;
 
     private final ObjectMapper json = new ObjectMapper();
@@ -283,9 +293,79 @@ class AccountDeletionComplianceIntegrationTest extends LocalPostgresIntegrationT
         Map<String, Object> retainedOrder = jdbc.queryForMap(
                 "SELECT user_id, shipping_address, notes, total FROM sales.orders WHERE id = ?", orderId);
         assertThat(retainedOrder.get("user_id")).isNull();
-        assertThat(retainedOrder.get("shipping_address")).isEqualTo("[DATOS PERSONALES ELIMINADOS POR SOLICITUD DEL TITULAR]");
+        assertThat(retainedOrder).containsEntry("shipping_address", "[DATOS PERSONALES ELIMINADOS POR SOLICITUD DEL TITULAR]");
         assertThat(retainedOrder.get("notes")).isNull();
         assertThat(retainedOrder.get("total").toString()).startsWith("1160");
+
+        // Re-approving an already COMPLETED request is idempotent
+        mvc.perform(post("/api/admin/account-deletion-requests/" + requestId + "/approve")
+                        .header("Authorization", "Bearer " + adminBearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
+    }
+
+    @Test
+    void coversAdminListingStaffBlockDisabledServiceAndConfirmationEmailTemplate() throws Exception {
+        mvc.perform(post("/api/public/legal/deletion/confirm")
+                        .with(req -> { req.setRemoteAddr("10.10.5.1"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("token", "UnknownToken_12345678901234567890", "confirmed", false))))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(post("/api/public/legal/deletion/confirm")
+                        .with(req -> { req.setRemoteAddr("10.10.5.2"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("token", "UnknownToken_12345678901234567890", "confirmed", true))))
+                .andExpect(status().isBadRequest());
+
+        User admin = createAdmin("admin.staffblock@example.invalid");
+        String adminBearer = issueSessionJwt(admin);
+
+        String adminReqBody = mvc.perform(post("/api/users/me/deletion-requests")
+                        .header("Authorization", "Bearer " + adminBearer)
+                        .with(req -> { req.setRemoteAddr("10.10.5.3"); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("currentPassword", "Synthetic@9zN", "confirmed", true))))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value("REVIEW_REQUIRED"))
+                .andReturn().getResponse().getContentAsString();
+
+        UUID adminRequestId = UUID.fromString(json.readTree(adminReqBody).get("requestId").asText());
+        createdRequests.add(adminRequestId);
+
+        mvc.perform(get("/api/admin/account-deletion-requests")
+                        .header("Authorization", "Bearer " + adminBearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId == '" + adminRequestId + "')].reviewReason")
+                        .value(org.hamcrest.Matchers.contains("STAFF_OR_ADMIN_ROLE")));
+
+        mvc.perform(post("/api/admin/account-deletion-requests/" + adminRequestId + "/approve")
+                        .header("Authorization", "Bearer " + adminBearer))
+                .andExpect(status().isConflict());
+
+        AccountDeletionService disabledService = new AccountDeletionService(jdbc, userService, true);
+        assertThatThrownBy(() -> disabledService.requestPublicByEmail(admin.getEmail(), "127.0.0.1"))
+                .isInstanceOf(AuthFlowException.class);
+        assertThatThrownBy(() -> disabledService.confirmPublicToken("UnknownToken_12345678901234567890"))
+                .isInstanceOf(AuthFlowException.class);
+
+        AccountDeletionService noEmailService = new AccountDeletionService(jdbc, userService, null, true, true);
+        assertThatThrownBy(() -> noEmailService.requestPublicByEmail(admin.getEmail(), null))
+                .isInstanceOf(AuthFlowException.class);
+
+        EmailService realEmailService = new EmailService();
+        RestTemplate mockRest = mock(RestTemplate.class);
+        when(mockRest.postForEntity(anyString(), any(), eq(String.class)))
+                .thenReturn(new ResponseEntity<>("{}", HttpStatus.CREATED));
+        ReflectionTestUtils.setField(realEmailService, "baseUrl", "https://casa-musica-castillo.vercel.app/");
+        ReflectionTestUtils.setField(realEmailService, "brevoApiKey", "synthetic-brevo-key");
+        ReflectionTestUtils.setField(realEmailService, "senderAddress", "noreply@casamusicacastillo.com");
+        ReflectionTestUtils.setField(realEmailService, "senderName", "Casa de Música Castillo");
+        ReflectionTestUtils.setField(realEmailService, "restTemplate", mockRest);
+
+        realEmailService.sendAccountDeletionConfirmationEmail("cliente@example.invalid", "Ana", "Tok_Sample_1234567890");
+        realEmailService.sendAccountDeletionConfirmationEmail("cliente2@example.invalid", null, "Tok_Sample_0987654321");
+        verify(mockRest, times(2)).postForEntity(anyString(), any(), eq(String.class));
     }
 
     private User createCustomer(String email) {
