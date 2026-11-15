@@ -31,10 +31,10 @@ public class AdminController {
     private UserService userService;
 
     /**
-     * Dashboard de administrador - Solo ADMIN
+     * Dashboard de administrador — Requiere DASHBOARD_VIEW
      */
     @GetMapping("/dashboard")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('DASHBOARD_VIEW')")
     public ResponseEntity<?> getDashboard(@CurrentUser UserPrincipal currentUser) {
         try {
             // Estadísticas básicas
@@ -59,10 +59,10 @@ public class AdminController {
     }
 
     /**
-     * Listar todos los usuarios - Solo ADMIN
+     * Listar todos los usuarios — Requiere USER_READ
      */
     @GetMapping("/users")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_READ')")
     public ResponseEntity<?> getAllUsers(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
@@ -89,10 +89,10 @@ public class AdminController {
     }
 
     /**
-     * Desactivar usuario - Solo ADMIN
+     * Desactivar usuario — Requiere USER_UPDATE
      */
     @PutMapping("/users/{userId}/disable")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<?> disableUser(@PathVariable Long userId) {
         try {
             userService.disableUser(userId);
@@ -105,10 +105,10 @@ public class AdminController {
     }
 
     /**
-     * Activar usuario - Solo ADMIN
+     * Activar usuario — Requiere USER_UPDATE
      */
     @PutMapping("/users/{userId}/enable")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<?> enableUser(@PathVariable Long userId) {
         try {
             userService.enableUser(userId);
@@ -121,10 +121,10 @@ public class AdminController {
     }
 
     /**
-     * Obtener logs de seguridad - Solo SUPER_ADMIN
+     * Obtener logs de seguridad — Solo SUPER_ADMIN
      */
     @GetMapping("/security-logs")
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('SYSTEM_SETTINGS')")
     public ResponseEntity<?> getSecurityLogs() {
         try {
             // Implementar cuando tengas servicio de logs
@@ -137,10 +137,10 @@ public class AdminController {
     }
 
     /**
-     * Endpoint de prueba para verificar acceso ADMIN
+     * Endpoint de prueba para verificar acceso admin
      */
     @GetMapping("/test")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('DASHBOARD_VIEW')")
     public ResponseEntity<?> testAdminAccess(@CurrentUser UserPrincipal currentUser) {
         return ResponseEntity.ok(Map.of(
                 "message", "¡Acceso ADMIN concedido!",

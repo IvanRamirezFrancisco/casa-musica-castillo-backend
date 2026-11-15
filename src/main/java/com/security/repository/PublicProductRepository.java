@@ -6,8 +6,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.support.PageableExecutionUtils;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -87,41 +89,159 @@ public interface PublicProductRepository extends JpaRepository<Product, Long> {
      * @param brandId    ID de marca (null = sin filtro)
      * @param pageable   paginación (el servicio limita a máx. 50 por página)
      */
-    @Query("""
-            SELECT DISTINCT p FROM Product p
+    /**
+     * Catálogo genérico SIN keyword. Soporta orden dinámico del Pageable (price, newest, featured, etc).
+     */
+    @Query(value = """
+            SELECT p FROM Product p
             LEFT JOIN FETCH p.category cat
             LEFT JOIN FETCH p.brand br
             WHERE p.active = true
-              AND (CAST(:keyword AS string) IS NULL
-                   OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%'))
-                   OR LOWER(p.sku)  LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%')))
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
-            ORDER BY p.createdAt DESC
+            """,
+           countQuery = """
+            SELECT COUNT(p) FROM Product p
+            LEFT JOIN p.category cat
+            LEFT JOIN p.brand br
+            WHERE p.active = true
+              AND (:categoryId IS NULL OR cat.id = :categoryId)
+              AND (:brandId    IS NULL OR br.id  = :brandId)
             """)
-    Page<Product> findCatalog(
-            @Param("keyword") String keyword,
+    Page<Product> findCatalogWithoutKeyword(
             @Param("categoryId") Long categoryId,
             @Param("brandId") Long brandId,
             Pageable pageable);
 
-    /**
-     * Query de conteo separada para la paginación del catálogo (evita DISTINCT
-     * en la query de conteo, que puede ser costoso).
-     */
-    @Query("""
-            SELECT COUNT(DISTINCT p.id) FROM Product p
-            LEFT JOIN p.category cat
-            LEFT JOIN p.brand br
+    String CATALOG_KEYWORD_FILTER = """
             WHERE p.active = true
-              AND (CAST(:keyword AS string) IS NULL
-                   OR LOWER(p.name) LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%'))
-                   OR LOWER(p.sku)  LIKE LOWER(CONCAT('%', CAST(:keyword AS string), '%')))
+              AND (
+                   CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.sku) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.sku) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (p.model IS NOT NULL AND (
+                     CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                  OR CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                ))
+                OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(br.name) AS string)  LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(br.name) AS string)  LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                OR (
+                  :token1 IS NOT NULL
+                  AND (
+                       CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token2 IS NULL
+                    OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                  )
+                  AND (
+                    :token3 IS NULL
+                    OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\')
+                    OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                    OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:token3 AS string), '%') ESCAPE '\\'
+                  )
+                )
+              )
               AND (:categoryId IS NULL OR cat.id = :categoryId)
               AND (:brandId    IS NULL OR br.id  = :brandId)
+            """;
+
+    /**
+     * Conserva el ranking y la paginación del catálogo con búsqueda.
+     * El Pageable debe llegar sin orden para mantener el ORDER BY de relevancia.
+     */
+    default Page<Product> findCatalogWithKeyword(
+            String exactOriginal, String escapedOriginal, String exactCanonical, String escapedCanonical,
+            String token1, String token2, String token3, Long categoryIntentId, Long brandIntentId,
+            Long categoryId, Long brandId, Pageable pageable) {
+        List<Product> products = findCatalogKeywordRows(exactOriginal, escapedOriginal, exactCanonical,
+                escapedCanonical, token1, token2, token3, categoryIntentId, brandIntentId,
+                categoryId, brandId, pageable);
+        // El conteo solo recibe filtros. Los parámetros de ranking pertenecen a la consulta de contenido.
+        return PageableExecutionUtils.getPage(products, pageable, () -> countCatalogKeywordMatches(
+                escapedOriginal, escapedCanonical, token1, token2, token3, categoryId, brandId));
+    }
+
+    @Query("""
+            SELECT p FROM Product p
+            LEFT JOIN FETCH p.category cat
+            LEFT JOIN FETCH p.brand br
+            """ + CATALOG_KEYWORD_FILTER + """
+            ORDER BY 
+              CASE 
+                   WHEN CAST(catalog_fold(p.sku) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 1
+                   WHEN CAST(catalog_fold(p.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 2
+                   WHEN p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string)) THEN 3
+                   WHEN CAST(catalog_fold(p.name) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT(CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.sku) AS string) LIKE CONCAT(CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 4
+                   WHEN CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\'
+                     OR (
+                       :token1 IS NOT NULL AND :token2 IS NOT NULL
+                       AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\'
+                       AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token2 AS string), '%') ESCAPE '\\'
+                     ) THEN 5
+                   WHEN (:brandIntentId IS NOT NULL AND br.id = :brandIntentId)
+                     OR CAST(catalog_fold(br.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(catalog_fold(br.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 6
+                   WHEN (:categoryIntentId IS NOT NULL AND cat.id = :categoryIntentId)
+                     OR CAST(catalog_fold(cat.name) AS string) IN (CAST(:exactOriginal AS string), CAST(:exactCanonical AS string))
+                     OR CAST(catalog_fold(cat.name) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 7
+                   WHEN (:token1 IS NOT NULL AND CAST(catalog_fold(p.name) AS string) LIKE CONCAT('%', CAST(:token1 AS string), '%') ESCAPE '\\')
+                     OR (p.model IS NOT NULL AND CAST(catalog_fold(p.model) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\') THEN 8
+                   WHEN CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedOriginal AS string), '%') ESCAPE '\\'
+                     OR CAST(catalog_fold(p.description) AS string) LIKE CONCAT('%', CAST(:escapedCanonical AS string), '%') ESCAPE '\\' THEN 9
+                   ELSE 10 END ASC,
+              CASE WHEN p.stock > 0 THEN 0 ELSE 1 END ASC,
+              p.featured DESC,
+              p.createdAt DESC,
+              p.id ASC
             """)
-    long countCatalog(
-            @Param("keyword") String keyword,
+    List<Product> findCatalogKeywordRows(
+            @Param("exactOriginal") String exactOriginal,
+            @Param("escapedOriginal") String escapedOriginal,
+            @Param("exactCanonical") String exactCanonical,
+            @Param("escapedCanonical") String escapedCanonical,
+            @Param("token1") String token1,
+            @Param("token2") String token2,
+            @Param("token3") String token3,
+            @Param("categoryIntentId") Long categoryIntentId,
+            @Param("brandIntentId") Long brandIntentId,
+            @Param("categoryId") Long categoryId,
+            @Param("brandId") Long brandId,
+            Pageable pageable);
+
+    @Query("""
+            SELECT COUNT(p) FROM Product p
+            LEFT JOIN p.category cat
+            LEFT JOIN p.brand br
+            """ + CATALOG_KEYWORD_FILTER)
+    long countCatalogKeywordMatches(
+            @Param("escapedOriginal") String escapedOriginal,
+            @Param("escapedCanonical") String escapedCanonical,
+            @Param("token1") String token1,
+            @Param("token2") String token2,
+            @Param("token3") String token3,
             @Param("categoryId") Long categoryId,
             @Param("brandId") Long brandId);
 

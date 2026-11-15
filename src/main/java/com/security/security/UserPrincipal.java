@@ -5,9 +5,11 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Set;
 
 public class UserPrincipal implements UserDetails {
 
@@ -38,10 +40,21 @@ public class UserPrincipal implements UserDetails {
     }
 
     public static UserPrincipal create(User user) {
-        // Obtener nombres de roles (String directamente)
-        List<GrantedAuthority> authorities = user.getRoles().stream()
-                .map(role -> new SimpleGrantedAuthority(role.getName()))
-                .collect(Collectors.toList());
+        // Build authorities: include BOTH roles (e.g. ROLE_ADMIN) and
+        // individual permissions (e.g. USER_CREATE, PRODUCT_READ).
+        // LinkedHashSet preserves insertion order and avoids duplicates.
+        Set<GrantedAuthority> authoritySet = new LinkedHashSet<>();
+
+        user.getRoles().forEach(role -> {
+            // Role-level authority (Spring hasRole() checks for these)
+            authoritySet.add(new SimpleGrantedAuthority(role.getName()));
+
+            // Permission-level authorities (Spring hasAuthority() checks for these)
+            role.getPermissions()
+                    .forEach(permission -> authoritySet.add(new SimpleGrantedAuthority(permission.getName())));
+        });
+
+        List<GrantedAuthority> authorities = new ArrayList<>(authoritySet);
 
         return new UserPrincipal(
                 user.getId(),

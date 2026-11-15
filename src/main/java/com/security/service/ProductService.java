@@ -118,7 +118,14 @@ public class ProductService {
         product.setDiscountPrice(productDTO.getDiscountPrice());
         product.setStock(productDTO.getStock());
         product.setImageUrl(productDTO.getImageUrl());
-        product.setSku(productDTO.getSku());
+        // SKU: si el frontend lo omitió (creación manual) se genera después del save
+        // para poder usar el ID auto-incremental.
+        // CSV import siempre envía el SKU del archivo → se respeta tal cual.
+        if (productDTO.getSku() != null && !productDTO.getSku().isBlank()) {
+            product.setSku(productDTO.getSku());
+        } else {
+            product.setSku("__PENDING__"); // placeholder temporal hasta obtener el ID
+        }
         product.setCategory(category);
         product.setBrand(brand);
         product.setModel(productDTO.getModel());
@@ -133,6 +140,14 @@ public class ProductService {
         logger.info("Guardando producto en base de datos...");
         Product savedProduct = productRepository.save(product);
         logger.info("Producto guardado con ID: {}", savedProduct.getId());
+
+        // --- Generar SKU automático si era manual (sin SKU del frontend) ---
+        if (productDTO.getSku() == null || productDTO.getSku().isBlank()) {
+            String generatedSku = generateSku(category, brand, savedProduct.getId());
+            savedProduct.setSku(generatedSku);
+            savedProduct = productRepository.save(savedProduct);
+            logger.info("SKU autogenerado: {}", generatedSku);
+        }
 
         // Guardar galería de imágenes adicionales
         if (productDTO.getImages() != null && !productDTO.getImages().isEmpty()) {
@@ -519,6 +534,46 @@ public class ProductService {
         long count = productAttributeRepository.countByProductId(product.getId());
         logger.info(">>> Verificación en BD - Total de atributos para product_id {}: {}",
                 product.getId(), count);
+    }
+
+    // =========================================================================
+    // SKU GENERATION
+    // =========================================================================
+
+    /**
+     * Genera un SKU con formato [CATEGORIA]-[MARCA]-[ID].
+     * Ejemplos: GUIT-FEND-0042 | ELEC-0018 (sin marca)
+     *
+     * Reglas:
+     * - Prefijo de categoría: primeras 4 letras mayúsculas sin espacios/tildes.
+     * - Prefijo de marca: primeras 4 letras mayúsculas (se omite si es null).
+     * - ID secuencial: 4 dígitos con ceros a la izquierda.
+     */
+    private String generateSku(Category category, Brand brand, Long productId) {
+        String catPrefix = buildPrefix(category != null ? category.getName() : "PROD", 4);
+        String idPart = String.format("%04d", productId);
+
+        if (brand != null) {
+            String brandPrefix = buildPrefix(brand.getName(), 4);
+            return catPrefix + "-" + brandPrefix + "-" + idPart;
+        }
+        return catPrefix + "-" + idPart;
+    }
+
+    /**
+     * Extrae los primeros {@code maxLen} caracteres alfabéticos en mayúsculas,
+     * eliminando tildes, espacios y caracteres no ASCII.
+     */
+    private String buildPrefix(String name, int maxLen) {
+        if (name == null || name.isBlank())
+            return "PROD";
+        String normalized = java.text.Normalizer
+                .normalize(name, java.text.Normalizer.Form.NFD)
+                .replaceAll("[^\\p{ASCII}]", "")
+                .replaceAll("[^A-Za-z]", "")
+                .toUpperCase();
+        return normalized.isEmpty() ? "PROD"
+                : normalized.substring(0, Math.min(maxLen, normalized.length()));
     }
 
     /**

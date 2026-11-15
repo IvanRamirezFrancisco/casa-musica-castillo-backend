@@ -3,11 +3,9 @@ package com.security.service;
 import com.security.entity.User;
 import com.security.enums.TwoFactorType;
 import com.security.repository.UserRepository;
-import com.warrenstrange.googleauth.GoogleAuthenticator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.annotation.Propagation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,18 +14,20 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TwoFactorService {
-    private static final Logger logger = LoggerFactory.getLogger(TwoFactorService.class);
+    private static final Logger log = LoggerFactory.getLogger(TwoFactorService.class);
 
     @Autowired
     private UserService userService;
 
     @Autowired
     private TotpService totpService;
+
+    @Autowired
+    private TotpSecretStorage secretStorage;
 
     @Autowired
     private UserRepository userRepository;
@@ -38,61 +38,44 @@ public class TwoFactorService {
     @Autowired
     private BackupCodeService backupCodeService;
 
-    // Cache temporal para códigos de email (en producción usar Redis)
-    private final Map<Long, String> emailCodes = new HashMap<>();
-    private final Map<Long, LocalDateTime> emailCodeExpiry = new HashMap<>();
+    private static final int MAX_EMAIL_CODE_ATTEMPTS = 5;
+
+    // Cache concurrente seguro para códigos de email con control de expiración e intentos
+    private final Map<Long, String> emailCodes = new ConcurrentHashMap<>();
+    private final Map<Long, LocalDateTime> emailCodeExpiry = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> emailCodeAttempts = new ConcurrentHashMap<>();
 
     private static final SecureRandom secureRandom = new SecureRandom();
 
     // ===== GOOGLE AUTHENTICATOR (TOTP) =====
 
-    /**
-     * MÉTODO SIN TRANSACCIONES: Setup completo de Google Authenticator
-     * RETORNA: Map con secret, QR y toda la información necesaria
-     * NOTA: Usa repositorio directo para evitar conflictos JPA/transaccional
-     */
+    @Transactional
     public Map<String, Object> setupGoogleAuthenticatorComplete(Long userId) {
-        System.out.println("🚀 === SETUP GOOGLE AUTHENTICATOR (REPOSITORIO DIRECTO) ===");
-        System.out.println("  - Usuario ID: " + userId);
+        log.debug("Iniciando setup Google Authenticator para usuario ID {}", userId);
 
         try {
-            // 1. Cargar usuario usando REPOSITORIO DIRECTO (sin transacciones)
-            User user = userRepository.findById(userId)
+            User user = userRepository.findByIdForAuthUpdate(userId)
                     .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-            System.out.println("  - Usuario encontrado: " + user.getEmail());
 
-            // 2. Verificar si ya está configurado
             if (user.getGoogleAuthEnabled() != null && user.getGoogleAuthEnabled()) {
                 throw new RuntimeException("Google Authenticator ya está habilitado para este usuario");
             }
 
-            // 3. Generar secret ANTES de cualquier operación de BD
             String secret = totpService.generateSecretKey();
-            System.out.println(
-                    "  - Secret generado: " + secret.substring(0, 4) + "... (length: " + secret.length() + ")");
-
-            // 4. Generar QR ANTES de guardar en BD (para evitar rollback)
             String qrCodeBase64 = totpService.generateQRCodeBase64(secret, user.getEmail());
-            System.out.println("  ✅ QR Code generado antes de guardar");
 
-            // 5. Guardar usando REPOSITORIO DIRECTO (sin transacciones adicionales)
             try {
-                // Configurar usuario directamente
-                user.setGoogleAuthSecret(secret);
+                user.setGoogleAuthSecret(secretStorage.encode(userId, secret));
                 user.setTwoFactorType(TwoFactorType.GOOGLE_AUTHENTICATOR);
-                user.setGoogleAuthEnabled(false); // Se activa después de confirmación
-
-                // CRÍTICO: Usar repositorio directo sin UserService
+                user.setGoogleAuthEnabled(false);
                 userRepository.save(user);
-                System.out.println("  ✅ Secret guardado en BD con repositorio directo");
-
+                log.debug("Secret de Google Authenticator guardado en BD para usuario ID {}", userId);
             } catch (Exception saveException) {
-                logger.error("❌ Error guardando en BD: " + saveException.getMessage());
-                saveException.printStackTrace();
-                throw new RuntimeException("Error guardando configuración: " + saveException.getMessage());
+                log.error("Error guardando configuración Google Authenticator para usuario ID {}: {}",
+                        userId, saveException.getClass().getSimpleName());
+                throw new RuntimeException("Error guardando configuración: " + saveException.getClass().getSimpleName());
             }
 
-            // 6. Preparar respuesta completa (todo generado exitosamente)
             Map<String, Object> result = new HashMap<>();
             result.put("secret", secret);
             result.put("manualEntryKey", secret);
@@ -104,137 +87,93 @@ public class TwoFactorService {
             result.put("nextStep", "Usa POST /api/two-factor/google/confirm con el código generado");
             result.put("setupTime", System.currentTimeMillis());
 
-            System.out.println("  🎉 Setup completo exitoso - Sin errores JPA");
+            log.info("Setup Google Authenticator completado para usuario ID {}", userId);
             return result;
 
         } catch (Exception e) {
-            logger.error("❌ Error en setup: " + e.getMessage());
-            e.printStackTrace();
-            throw new RuntimeException("Error configurando Google Authenticator: " + e.getMessage());
+            log.error("Error en setup Google Authenticator para usuario ID {}: {}", userId, e.getClass().getSimpleName());
+            throw new RuntimeException("Error configurando Google Authenticator: " + e.getClass().getSimpleName());
         }
     }
 
-    /**
-     * MÉTODO MEJORADO: Llama al setup completo y devuelve solo el secret
-     * EVITA duplicación de lógica y usa repositorio directo
-     */
-    public String enableGoogleAuthenticator(Long userId) {
+    @Transactional
+    public Map<String, String> getPendingGoogleEnrollment(Long userId) {
+        User user = pendingEnrollment(userId);
+        Map<String, String> data = pendingManualEntry(user);
         try {
-            System.out.println("🔧 Habilitando Google Auth (delegando a setupCompleto con repo directo)");
-
-            // Usar el método completo que funciona con repositorio directo
-            Map<String, Object> setup = setupGoogleAuthenticatorComplete(userId);
-            String secret = (String) setup.get("secret");
-
-            System.out.println("✅ Secret obtenido del setup completo: " + secret.substring(0, 4) + "...");
-            return secret;
-
-        } catch (Exception e) {
-            logger.error("❌ Error habilitando: " + e.getMessage());
-            throw new RuntimeException("Error habilitando Google Authenticator: " + e.getMessage());
+            data.put("qrCode", "data:image/png;base64," + totpService.generateQRCodeBase64(data.get("manualEntryKey"), user.getEmail()));
+        } catch (Exception ex) {
+            throw new IllegalStateException("No se pudo generar el QR de enrollment");
         }
+        return data;
     }
 
-    /**
-     * MÉTODO CRÍTICO: Genera QR Code usando el secret EXACTO de la BD
-     * FLUJO: Leer secret de BD → Usar TotpService para generar QR → Retornar base64
-     */
-    @Transactional(readOnly = true)
-    public String generateQRCode(Long userId) {
-        User user = userService.getUserById(userId);
-
-        if (user.getGoogleAuthSecret() == null || user.getGoogleAuthSecret().isEmpty()) {
-            throw new RuntimeException("Please enable Google Authenticator first by calling /api/2fa/google/enable");
-        }
-
-        try {
-            System.out.println("🖼️  === GENERANDO QR CODE ===");
-            System.out.println("  - Usuario ID: " + userId);
-            System.out.println("  - Email: " + user.getEmail());
-
-            // CRÍTICO: Usar el secret EXACTO guardado en la BD (sin regenerar)
-            String secretFromDB = user.getGoogleAuthSecret();
-            System.out.println("  - Secret de BD: " + secretFromDB.substring(0, 4) + "... (usando EXACTO de BD)");
-
-            // Generar QR usando TotpService (única fuente de verdad para formato)
-            String qrCodeBase64 = totpService.generateQRCodeBase64(secretFromDB, user.getEmail());
-
-            System.out.println("  ✅ QR Code generado exitosamente");
-            System.out.println("  📱 Este QR contiene el MISMO secret que está en la BD");
-
-            return qrCodeBase64;
-        } catch (Exception e) {
-            logger.error("❌ ERROR generando QR code para user " + userId + ": " + e.getMessage());
-            throw new RuntimeException("Error generating QR code: " + e.getMessage(), e);
-        }
+    @Transactional
+    public Map<String, String> getPendingGoogleManualEntry(Long userId) {
+        return pendingManualEntry(pendingEnrollment(userId));
     }
 
-    /**
-     * CONFIRMACIÓN SIN TRANSACCIONES: Verifica código y activa Google Authenticator
-     * NOTA: Usa repositorio directo para evitar conflictos JPA
-     */
+    private User pendingEnrollment(Long userId) {
+        User user = userRepository.findByIdForAuthUpdate(userId).orElseThrow();
+        if (Boolean.TRUE.equals(user.getGoogleAuthEnabled())) {
+            throw new com.security.exception.AuthFlowException(org.springframework.http.HttpStatus.FORBIDDEN);
+        }
+        if (user.getGoogleAuthSecret() == null || user.getGoogleAuthSecret().isBlank()) {
+            throw new com.security.exception.AuthFlowException(org.springframework.http.HttpStatus.BAD_REQUEST);
+        }
+        return user;
+    }
+
+    private Map<String, String> pendingManualEntry(User user) {
+        Map<String, String> data = new HashMap<>();
+        data.put("manualEntryKey", secretStorage.decode(user.getId(), user.getGoogleAuthSecret()));
+        data.put("issuer", "AuthSystem");
+        data.put("accountName", user.getEmail());
+        return data;
+    }
+
+    @Transactional
     public boolean confirmGoogleAuthenticator(Long userId, String code) {
         try {
-            // Usar REPOSITORIO DIRECTO en lugar de UserService
-            User user = userRepository.findById(userId)
+            User user = userRepository.findByIdForAuthUpdate(userId)
                     .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
 
             if (user.getGoogleAuthSecret() == null || user.getGoogleAuthSecret().isEmpty()) {
                 throw new RuntimeException("Google Authenticator no configurado. Ejecuta /setup primero.");
             }
 
-            System.out.println("🔐 === CONFIRMANDO GOOGLE AUTHENTICATOR (REPOSITORIO DIRECTO) ===");
-            System.out.println("  - Usuario: " + user.getEmail());
-            System.out.println("  - Código: " + code);
-
-            // Verificar código TOTP
-            boolean isValid = totpService.verifyCode(user.getGoogleAuthSecret(), code);
+            log.debug("Confirmando Google Authenticator para usuario ID {}", userId);
+            boolean isValid = totpService.verifyCode(secretStorage.decode(userId, user.getGoogleAuthSecret()), code);
 
             if (isValid) {
                 try {
-                    // Activar 2FA usando REPOSITORIO DIRECTO
                     user.setTwoFactorEnabled(true);
                     user.setGoogleAuthEnabled(true);
                     userRepository.save(user);
-
-                    System.out.println("  ✅ Google Auth ACTIVADO con repositorio directo");
+                    log.info("Google Authenticator activado para usuario ID {}", userId);
                     return true;
                 } catch (Exception saveError) {
-                    logger.error("❌ Error guardando activación: " + saveError.getMessage());
-                    throw new RuntimeException("Error activando Google Authenticator: " + saveError.getMessage());
+                    log.error("Error guardando activación de Google Auth para usuario ID {}: {}",
+                            userId, saveError.getClass().getSimpleName());
+                    throw new RuntimeException("Error activando Google Authenticator: " + saveError.getClass().getSimpleName());
                 }
             } else {
-                System.out.println("  ❌ Código inválido");
+                log.warn("Código Google Authenticator inválido para usuario ID {}", userId);
                 return false;
             }
 
         } catch (Exception e) {
-            logger.error("❌ Error confirmando: " + e.getMessage());
-            throw new RuntimeException("Error confirmando Google Authenticator: " + e.getMessage());
+            log.error("Error confirmando Google Authenticator para usuario ID {}: {}", userId, e.getClass().getSimpleName());
+            throw new RuntimeException("Error confirmando Google Authenticator: " + e.getClass().getSimpleName());
         }
     }
 
-    /**
-     * Método SOLO para verificación durante login - NO actualiza la base de datos
-     */
-    public boolean verifyGoogleAuthenticatorForLogin(Long userId, String code) {
+    public java.util.OptionalLong findGoogleAuthenticatorLoginSlot(Long userId, String code) {
         User user = userService.getUserById(userId);
-
-        if (user.getGoogleAuthSecret() == null || !user.getGoogleAuthEnabled()) {
-            logger.error("❌ Google Authenticator not enabled for user {}", userId);
-            return false;
+        if (!Boolean.TRUE.equals(user.getGoogleAuthEnabled()) || user.getGoogleAuthSecret() == null) {
+            return java.util.OptionalLong.empty();
         }
-
-        System.out.println("🔑 Verificando Google Auth para login:");
-        System.out.println("  - Usuario ID: " + userId);
-        System.out.println("  - Google Auth habilitado: " + user.getGoogleAuthEnabled());
-        System.out.println("  - Tiene secret: " + (user.getGoogleAuthSecret() != null));
-
-        boolean isValid = totpService.verifyCode(user.getGoogleAuthSecret(), code);
-
-        System.out.println("  - Resultado verificación: " + isValid);
-
-        return isValid;
+        return totpService.findMatchingSlot(secretStorage.decode(userId, user.getGoogleAuthSecret()), code);
     }
 
     // ===== EMAIL 2FA =====
@@ -242,18 +181,19 @@ public class TwoFactorService {
     public void sendEmailCode(Long userId) {
         User user = userService.getUserById(userId);
 
-        // Generate 6-digit code
         String code = String.format("%06d", secureRandom.nextInt(1000000));
 
-        // Store with expiry (5 minutes)
         emailCodes.put(userId, code);
         emailCodeExpiry.put(userId, LocalDateTime.now().plusMinutes(5));
+        emailCodeAttempts.put(userId, 0);
 
-        // Send email
         emailService.send2FACodeEmail(user, code);
     }
 
     public boolean verifyEmailCode(Long userId, String code) {
+        if (code == null || !code.trim().matches("[0-9]{6}")) {
+            return false;
+        }
         String storedCode = emailCodes.get(userId);
         LocalDateTime expiry = emailCodeExpiry.get(userId);
 
@@ -262,29 +202,35 @@ public class TwoFactorService {
         }
 
         if (LocalDateTime.now().isAfter(expiry)) {
-            // Cleanup expired
-            emailCodes.remove(userId);
-            emailCodeExpiry.remove(userId);
+            clearEmailCode(userId);
             return false;
         }
 
-        boolean isValid = storedCode.equals(code);
+        int attempts = emailCodeAttempts.merge(userId, 1, Integer::sum);
+        if (attempts > MAX_EMAIL_CODE_ATTEMPTS) {
+            clearEmailCode(userId);
+            return false;
+        }
 
-        if (isValid) {
-            // Cleanup after successful verification
-            emailCodes.remove(userId);
-            emailCodeExpiry.remove(userId);
+        boolean isValid = storedCode.equals(code.trim());
+
+        if (isValid || attempts >= MAX_EMAIL_CODE_ATTEMPTS) {
+            clearEmailCode(userId);
         }
 
         return isValid;
     }
 
-    // ===== EMAIL 2FA =====
+    private void clearEmailCode(Long userId) {
+        emailCodes.remove(userId);
+        emailCodeExpiry.remove(userId);
+        emailCodeAttempts.remove(userId);
+    }
 
     public boolean verifyToken(Long userId, String token) {
         User user = userService.getUserById(userId);
 
-        if (!user.getTwoFactorEnabled()) {
+        if (!Boolean.TRUE.equals(user.getTwoFactorEnabled())) {
             return false;
         }
 
@@ -294,7 +240,7 @@ public class TwoFactorService {
 
         switch (user.getTwoFactorType()) {
             case GOOGLE_AUTHENTICATOR:
-                return totpService.verifyCode(user.getGoogleAuthSecret(), token);
+                return totpService.verifyCode(secretStorage.decode(userId, user.getGoogleAuthSecret()), token);
             case EMAIL:
                 return verifyEmailCode(userId, token);
             default:
@@ -311,9 +257,7 @@ public class TwoFactorService {
         user.setTwoFactorType(null);
         userService.save(user);
 
-        // Cleanup any pending codes
-        emailCodes.remove(userId);
-        emailCodeExpiry.remove(userId);
+        clearEmailCode(userId);
     }
 
     // ===== MÉTODOS LEGACY (para compatibilidad) =====
@@ -323,17 +267,17 @@ public class TwoFactorService {
     }
 
     public String generateToken(Long userId) {
-        // Generate 6-digit token for email 2FA
         String token = String.format("%06d", secureRandom.nextInt(1000000));
         emailCodes.put(userId, token);
         emailCodeExpiry.put(userId, LocalDateTime.now().plusMinutes(5));
+        emailCodeAttempts.put(userId, 0);
         return token;
     }
 
     public void enableTwoFactor(Long userId) {
         String secret = generateSecret();
         User user = userService.getUserById(userId);
-        user.setGoogleAuthSecret(secret);
+        user.setGoogleAuthSecret(secretStorage.encode(userId, secret));
         user.setTwoFactorEnabled(true);
         user.setTwoFactorType(TwoFactorType.GOOGLE_AUTHENTICATOR);
         userService.save(user);
@@ -343,25 +287,12 @@ public class TwoFactorService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        // Habilitar Email 2FA
         user.setEmailEnabled(true);
         user.setTwoFactorEnabled(true);
         user.setTwoFactorType(TwoFactorType.EMAIL);
-
-        // Guardar cambios
         userRepository.save(user);
 
-        // Log para debugging
-        System.out.println("Email 2FA enabled for user: " + user.getEmail());
-    }
-
-    public String getQRCodeUrl(Long userId, String issuer) {
-        User user = userService.getUserById(userId);
-        if (user.getGoogleAuthSecret() == null) {
-            throw new RuntimeException("Two-factor authentication is not enabled for this user");
-        }
-
-        return totpService.generateQRCodeImageUri(user.getGoogleAuthSecret(), user.getEmail());
+        log.info("Email 2FA habilitado para usuario ID {}", userId);
     }
 
     public void cleanupExpiredTokens() {
@@ -369,21 +300,19 @@ public class TwoFactorService {
         emailCodes.entrySet().removeIf(entry -> {
             Long userId = entry.getKey();
             LocalDateTime expiry = emailCodeExpiry.get(userId);
-            return expiry == null || now.isAfter(expiry);
+            if (expiry == null || now.isAfter(expiry)) {
+                emailCodeAttempts.remove(userId);
+                return true;
+            }
+            return false;
         });
         emailCodeExpiry.entrySet().removeIf(entry -> now.isAfter(entry.getValue()));
     }
 
     public void cleanupOldUsedTokens() {
-        // For in-memory implementation, this is handled automatically
         cleanupExpiredTokens();
     }
 
-    // ===== MÉTODOS ESPECÍFICOS PARA MÚLTIPLES 2FA =====
-
-    /**
-     * Desactivar método específico de 2FA
-     */
     public void disableSpecificTwoFactor(Long userId, String method) {
         User user = userService.getUserById(userId);
         boolean wasDisabled = false;
@@ -401,9 +330,7 @@ public class TwoFactorService {
                 if (user.getEmailEnabled() != null && user.getEmailEnabled()) {
                     user.setEmailEnabled(false);
                     wasDisabled = true;
-                    // Limpiar códigos pendientes
-                    emailCodes.remove(userId);
-                    emailCodeExpiry.remove(userId);
+                    clearEmailCode(userId);
                 }
                 break;
             default:
@@ -414,7 +341,6 @@ public class TwoFactorService {
             throw new RuntimeException(method + " two-factor authentication is not enabled");
         }
 
-        // Si no quedan métodos 2FA activos, desactivar el flag global
         if (!hasAnyTwoFactorEnabled(user)) {
             user.setTwoFactorEnabled(false);
             user.setTwoFactorType(null);
@@ -423,17 +349,11 @@ public class TwoFactorService {
         userService.save(user);
     }
 
-    /**
-     * Verificar si el usuario tiene algún método 2FA activo
-     */
     private boolean hasAnyTwoFactorEnabled(User user) {
         return (user.getGoogleAuthEnabled() != null && user.getGoogleAuthEnabled()) ||
                 (user.getEmailEnabled() != null && user.getEmailEnabled());
     }
 
-    /**
-     * Obtener métodos 2FA disponibles para el usuario
-     */
     public Map<String, Boolean> getAvailableTwoFactorMethods(Long userId) {
         User user = userService.getUserById(userId);
         Map<String, Boolean> methods = new HashMap<>();
@@ -447,151 +367,15 @@ public class TwoFactorService {
 
     // ===== BACKUP CODES =====
 
-    /**
-     * Verificar código de respaldo usando el servicio especializado
-     */
     public boolean verifyBackupCode(Long userId, String code) {
         return backupCodeService.verifyBackupCode(userId, code);
     }
 
-    /**
-     * Generar códigos de backup
-     */
     public List<String> generateBackupCodes(Long userId) {
         return backupCodeService.generateBackupCodes(userId);
     }
 
-    /**
-     * Obtener estadísticas de backup codes
-     */
     public Map<String, Object> getBackupCodeStats(Long userId) {
         return backupCodeService.getBackupCodeStats(userId);
-    }
-
-    /**
-     * Genera el código QR y la información asociada para configurar Google
-     * Authenticator
-     */
-    public Map<String, String> generateQRCodeWithSecret(Long userId) {
-        try {
-            User user = userRepository.findById(userId)
-                    .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-
-            String secret = user.getGoogleAuthSecret();
-            if (secret == null || secret.isEmpty()) {
-                throw new RuntimeException("No hay secreto configurado para el usuario");
-            }
-
-            String qrCodeImage = totpService.generateQRCodeBase64(secret, user.getEmail());
-
-            Map<String, String> result = new HashMap<>();
-            result.put("qrCode", "data:image/png;base64," + qrCodeImage);
-            result.put("secret", secret);
-            result.put("manualEntryKey", secret);
-
-            return result;
-
-        } catch (Exception e) {
-            throw new RuntimeException("Error al generar código QR: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Obtiene la URL OTP para debug
-     */
-    public String getOtpAuthUrlForDebug(Long userId) {
-        try {
-            User user = userRepository.findById(userId)
-                    .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-
-            String secret = user.getGoogleAuthSecret();
-            if (secret == null || secret.isEmpty()) {
-                throw new RuntimeException("No hay secreto configurado para el usuario");
-            }
-
-            return totpService.generateQRCodeImageUri(secret, user.getEmail());
-
-        } catch (Exception e) {
-            throw new RuntimeException("Error al obtener URL OTP: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * MÉTODO DE DEBUGGING: Genera un código TOTP válido actual para testing
-     */
-    public String generateCurrentValidCode(Long userId) {
-        try {
-            User user = userRepository.findById(userId)
-                    .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-
-            String secret = user.getGoogleAuthSecret();
-            if (secret == null || secret.isEmpty()) {
-                throw new RuntimeException("No hay secreto configurado para el usuario");
-            }
-
-            // Usar TotpService para generar el código (única fuente de verdad)
-            String currentCode = totpService.generateCurrentValidCode(secret);
-
-            System.out.println("🧪 === CÓDIGO DE TESTING GENERADO ===");
-            System.out.println("  - Usuario: " + user.getEmail());
-            System.out.println("  - Secret: " + secret.substring(0, 4) + "...");
-            System.out.println("  - Código actual: " + currentCode);
-            System.out.println("  💡 Usa este código para probar en Google Authenticator");
-
-            return currentCode;
-
-        } catch (Exception e) {
-            throw new RuntimeException("Error al generar código actual: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * MÉTODO DE VALIDACIÓN COMPLETA: Valida todo el flujo TOTP
-     */
-    public Map<String, Object> validateCompleteTotp(Long userId) {
-        try {
-            User user = userService.getUserById(userId);
-            Map<String, Object> validation = new HashMap<>();
-
-            System.out.println("🔍 === VALIDACIÓN COMPLETA TOTP ===");
-            System.out.println("  - Usuario: " + user.getEmail());
-
-            // Validar secret en BD
-            String secret = user.getGoogleAuthSecret();
-            boolean hasSecret = secret != null && !secret.isEmpty();
-            validation.put("hasSecret", hasSecret);
-
-            if (hasSecret) {
-                validation.put("secretLength", secret.length());
-                validation.put("secretPreview", secret.substring(0, Math.min(4, secret.length())) + "...");
-
-                // Generar URL otpauth
-                String otpAuthUrl = totpService.generateOtpAuthUrl(secret, user.getEmail());
-                validation.put("otpAuthUrl", otpAuthUrl);
-
-                // Generar código actual
-                String currentCode = totpService.generateCurrentValidCode(secret);
-                validation.put("currentValidCode", currentCode);
-
-                // Verificar que el código generado sea válido
-                boolean selfValidation = totpService.verifyCode(secret, currentCode);
-                validation.put("selfValidation", selfValidation);
-
-                System.out.println("  ✅ Secret válido: " + hasSecret);
-                System.out.println("  📏 Length: " + secret.length());
-                System.out.println("  🔗 URL: " + otpAuthUrl);
-                System.out.println("  🔢 Código actual: " + currentCode);
-                System.out.println("  🔍 Auto-validación: " + selfValidation);
-            }
-
-            validation.put("isEnabled", user.getGoogleAuthEnabled());
-            validation.put("isConfigured", user.getTwoFactorEnabled());
-
-            return validation;
-
-        } catch (Exception e) {
-            logger.error("❌ Error en validación completa: " + e.getMessage());
-            throw new RuntimeException("Error validating TOTP flow: " + e.getMessage(), e);
-        }
     }
 }

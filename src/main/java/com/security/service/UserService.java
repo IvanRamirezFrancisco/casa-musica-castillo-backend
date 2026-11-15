@@ -4,26 +4,30 @@ import com.security.dto.request.RegisterRequest;
 import com.security.dto.response.UserResponse;
 import com.security.entity.Role;
 import com.security.entity.User;
-import com.security.entity.VerificationToken;
-import com.security.enums.TokenType;
+import com.security.exception.AuthFlowException;
 import com.security.exception.ResourceNotFoundException;
-import com.security.exception.BadRequestException;
 import com.security.repository.RoleRepository;
 import com.security.repository.UserRepository;
-import com.security.repository.VerificationTokenRepository;
 import com.security.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -43,158 +47,95 @@ public class UserService {
     private PasswordEncoder passwordEncoder;
 
     @Autowired
-    private EmailService emailService;
+    private VerificationService verificationService;
+
     @Autowired
-    private VerificationTokenRepository verificationTokenRepository;
+    private RegistrationLegalPolicy legalPolicy;
 
     @Autowired
     private AuditLogService auditLogService;
 
-    public User createUser(RegisterRequest registerRequest) {
-        if (userRepository.existsByEmail(registerRequest.getEmail())) {
-            throw new BadRequestException("Email address already in use!");
-        }
+    @Autowired
+    private AdminHierarchyService adminHierarchyService;
 
-        if (userRepository.existsByUsername(registerRequest.getUsername())) {
-            throw new BadRequestException("Username already in use!");
-        }
+    @Autowired
+    private SessionManagementService sessionManagementService;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
+    private TransactionTemplate requiresNewTx;
+
+    @Autowired(required = false)
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        if (transactionManager != null) {
+            this.requiresNewTx = new TransactionTemplate(transactionManager);
+            this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        }
+    }
+
+    /**
+     * Creates a pending account in a short transaction before sending verification email.
+     * Repeated anonymous requests never replace an account's data or credentials.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void createUser(RegisterRequest registerRequest) {
+        legalPolicy.validate(registerRequest.getLegalAcceptance());
+        String email = registerRequest.getEmail().trim().toLowerCase(Locale.ROOT);
+        String username = registerRequest.getUsername().trim();
+        VerificationService.PendingVerification prepared;
+        try {
+            prepared = requiresNewTx.execute(status -> prepareRegistrationInTx(registerRequest, email, username));
+        } catch (DataIntegrityViolationException ex) {
+            // Check after rollback so a simultaneous registration returns the same neutral response.
+            if (!userRepository.existsByEmail(email) && !userRepository.existsByUsername(username)) throw ex;
+            prepared = null;
+        }
+        if (prepared == null) {
+            verificationService.resendVerificationEmail(email);
+        } else {
+            verificationService.deliver(prepared);
+        }
+    }
+
+    private VerificationService.PendingVerification prepareRegistrationInTx(RegisterRequest request, String email, String username) {
+        if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return null;
         User user = new User();
-        user.setUsername(registerRequest.getUsername());
-        user.setFirstName(registerRequest.getFirstName());
-        user.setLastName(registerRequest.getLastName());
-        user.setEmail(registerRequest.getEmail());
-        user.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
-        user.setPhone(registerRequest.getPhone());
-        user.setEnabled(false); // Se habilitará tras verificar el email
+        user.setUsername(username);
+        user.setFirstName(request.getFirstName().trim());
+        user.setLastName(request.getLastName().trim());
+        user.setEmail(email);
+        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setPhone(request.getPhone() == null || request.getPhone().isBlank() ? null : request.getPhone().trim());
+        user.setEnabled(false);
+        user.markPendingSelfRegistration();
         user.setTwoFactorEnabled(false);
         user.setAccountNonExpired(true);
         user.setAccountNonLocked(true);
         user.setCredentialsNonExpired(true);
-
-        // CRÍTICO: Los usuarios registrados públicamente son CLIENTES, no Staff.
-        // Sin esta línea el valor por defecto de la entidad es false → aparecerían como
-        // Staff.
         user.setIsCustomer(true);
 
-        Role userRole = roleRepository.findByName("ROLE_USER")
-                .orElseThrow(() -> new RuntimeException("User Role not set."));
+        Role role = roleRepository.findByName("ROLE_USER")
+                .orElseThrow(() -> new IllegalStateException("User Role not set."));
+        user.setRoles(Collections.singleton(role));
 
-        user.setRoles(Collections.singleton(userRole));
-
-        // Guardar usuario primero
-        User savedUser = userRepository.save(user);
-
-        // Crear y guardar token de verificación
-        String tokenValue = generateVerificationToken();
-        VerificationToken verificationToken = new VerificationToken();
-        verificationToken.setToken(tokenValue);
-        verificationToken.setUser(savedUser);
-        verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION); // 🔴 USAR ENUM
-        verificationToken.setExpiryDate(LocalDateTime.now().plusHours(24));
-        verificationToken.setUsed(false); // 🔴 IMPORTANTE
-        verificationTokenRepository.save(verificationToken);
-
-        // Enviar email de verificación
-        try {
-            emailService.sendVerificationEmail(savedUser, tokenValue);
-            logger.info("Email de verificacion enviado a: {}",
-                    LogSanitizer.maskEmail(savedUser.getEmail()));
-        } catch (Exception e) {
-            logger.error("Error enviando email de verificacion a {}: {}",
-                    LogSanitizer.maskEmail(savedUser.getEmail()), e.getMessage());
-            // No fallar el registro, solo log del error
-        }
-
-        return savedUser;
+        User saved = userRepository.saveAndFlush(user);
+        legalPolicy.record(saved.getId());
+        return verificationService.issue(saved);
     }
-
-    public boolean verifyEmailToken(String token) {
-        logger.debug("Verificando token de email");
-
-        Optional<VerificationToken> verificationTokenOpt = verificationTokenRepository
-                .findValidToken(token, LocalDateTime.now());
-
-        if (verificationTokenOpt.isEmpty()) {
-            logger.warn("Token de verificacion invalido o expirado");
-            throw new BadRequestException("Token de verificación inválido o expirado");
-        }
-
-        VerificationToken verificationToken = verificationTokenOpt.get();
-        User user = verificationToken.getUser();
-
-        // Activar usuario
-        user.setEnabled(true);
-        user.setUpdatedAt(LocalDateTime.now());
-        userRepository.save(user);
-
-        // Marcar token como usado
-        verificationTokenRepository.markTokenAsUsed(verificationToken.getId());
-
-        logger.info("Verificacion completada para: {}", LogSanitizer.maskEmail(user.getEmail()));
-
-        return true;
-    }
-
-    public void resendVerificationEmail(String email) {
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "email", email));
-
-        if (user.getEnabled()) {
-            throw new BadRequestException("El usuario ya está verificado");
-        }
-
-        // Eliminar tokens anteriores del usuario
-        verificationTokenRepository.deleteByUser(user);
-
-        // Crear nuevo token
-        String tokenValue = generateVerificationToken();
-        VerificationToken verificationToken = new VerificationToken();
-        verificationToken.setToken(tokenValue);
-        verificationToken.setUser(user);
-        verificationToken.setTokenType(TokenType.EMAIL_VERIFICATION);
-        verificationToken.setExpiryDate(LocalDateTime.now().plusHours(24));
-        verificationToken.setUsed(false);
-        verificationTokenRepository.save(verificationToken);
-
-        // Enviar email
-        try {
-            emailService.sendVerificationEmail(user, tokenValue);
-            logger.info("Email de verificacion reenviado a: {}",
-                    LogSanitizer.maskEmail(user.getEmail()));
-        } catch (Exception e) {
-            logger.error("Error reenviando email a {}: {}",
-                    LogSanitizer.maskEmail(user.getEmail()), e.getMessage());
-            throw new RuntimeException("Error enviando email de verificación");
-        }
-    }
-
-    private static final SecureRandom TOKEN_RANDOM = new SecureRandom();
-    /** Alfabeto alfanumérico para generación de tokens de verificación */
-    private static final String ALPHANUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-    /**
-     * Genera un token de verificacion de 32 caracteres alfanumericos aleatorios.
-     * UUID.randomUUID().substring(0,8) es inseguro (solo 4 bytes de entropía).
-     */
-    private String generateVerificationToken() {
-        StringBuilder sb = new StringBuilder(32);
-        for (int i = 0; i < 32; i++) {
-            sb.append(ALPHANUM_CHARS.charAt(TOKEN_RANDOM.nextInt(ALPHANUM_CHARS.length())));
-        }
-        return sb.toString();
-    }
-
-    ///////////////////////
-
     public User getUserById(Long userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User", "id", userId));
     }
 
     public User getUserByEmail(String email) {
-        return userRepository.findByEmail(email)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "email", email));
+        String normalized = email != null ? email.trim() : "";
+        return userRepository.findByEmail(normalized)
+                .orElseGet(() -> userRepository.findByEmail(normalized.toLowerCase(Locale.ROOT))
+                        .orElseThrow(() -> new ResourceNotFoundException("User", "email", normalized)));
     }
 
     public UserResponse getUserResponseById(Long userId) {
@@ -209,6 +150,7 @@ public class UserService {
 
     public User updateUser(Long userId, User updatedUser) {
         User user = getUserById(userId);
+        assertCanActOn(user, "UPDATE");
 
         if (updatedUser.getFirstName() != null) {
             user.setFirstName(updatedUser.getFirstName());
@@ -226,11 +168,13 @@ public class UserService {
 
     public void deleteUser(Long userId) {
         User user = getUserById(userId);
+        assertCanActOn(user, "DELETE");
         userRepository.delete(user);
     }
 
     public void enableUser(Long userId) {
         User user = getUserById(userId);
+        assertCanActOn(user, "ENABLE");
         user.setEnabled(true);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
@@ -246,6 +190,7 @@ public class UserService {
 
     public void disableUser(Long userId) {
         User user = getUserById(userId);
+        assertCanActOn(user, "DISABLE");
         user.setEnabled(false);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
@@ -259,8 +204,64 @@ public class UserService {
         }
     }
 
+    private User lockAccount(Long userId) {
+        User user = userRepository.findByIdForAuthUpdate(userId)
+                .orElseThrow(() -> new AuthFlowException(HttpStatus.UNAUTHORIZED));
+        entityManager.refresh(user);
+        return user;
+    }
+
+    @Transactional(noRollbackFor = AuthFlowException.class)
+    public <T> T completePasswordLogin(com.security.security.UserPrincipal authenticated,
+            java.util.function.Function<User, T> issueLogin) {
+        User user = lockAccount(authenticated.getId());
+        if (!java.util.Objects.equals(user.getPassword(), authenticated.getPassword())
+                || !Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())
+                || !Boolean.TRUE.equals(user.getAccountNonExpired()) || !Boolean.TRUE.equals(user.getCredentialsNonExpired())) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Credenciales inválidas");
+        }
+        return issueLogin.apply(user);
+    }
+
+    public void requireStepUp(Long userId, Map<String, String> body) {
+        String currentPassword = body == null ? null : body.get("currentPassword");
+        if (currentPassword == null || currentPassword.isBlank()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere confirmar la contrase\u00f1a actual");
+        }
+        User user = getUserById(userId);
+        if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
+            throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
+                || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contrase\u00f1a actual es incorrecta");
+        }
+    }
+
+    public void changeOwnPassword(Long userId, String currentPassword, String newPassword) {
+        User user = lockAccount(userId);
+        if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
+            throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
+                || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta");
+        }
+        if (currentPassword.equals(newPassword)) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La nueva contraseña debe ser diferente a la actual");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setCredentialsNonExpired(true);
+        user.setUpdatedAt(now);
+        sessionManagementService.invalidateAllUserSessions(user.getEmail());
+        jdbcTemplate.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",
+                now, userId);
+    }
+
     public void changePassword(Long userId, String newPassword) {
         User user = getUserById(userId);
+        assertCanActOn(user, "PASSWORD");
         user.setPassword(passwordEncoder.encode(newPassword));
         user.setCredentialsNonExpired(true);
         user.setUpdatedAt(LocalDateTime.now());
@@ -277,6 +278,7 @@ public class UserService {
 
     public void enableTwoFactor(Long userId, String secret) {
         User user = getUserById(userId);
+        assertCanActOn(user, "UPDATE");
         user.setTwoFactorEnabled(true);
         user.setTwoFactorSecret(secret);
         user.setUpdatedAt(LocalDateTime.now());
@@ -285,6 +287,7 @@ public class UserService {
 
     public void disableTwoFactor(Long userId) {
         User user = getUserById(userId);
+        assertCanActOn(user, "RESET_2FA");
         user.setTwoFactorEnabled(false);
         user.setTwoFactorSecret(null);
         user.setUpdatedAt(LocalDateTime.now());
@@ -299,16 +302,22 @@ public class UserService {
         return userRepository.existsByUsername(username);
     }
 
-    // Método para buscar por email (lo necesita VerificationService)
     public Optional<User> findByEmail(String email) {
-        return userRepository.findByEmail(email);
+        if (email == null) {
+            return Optional.empty();
+        }
+        String normalized = email.trim();
+        Optional<User> direct = userRepository.findByEmail(normalized);
+        if (direct.isPresent()) {
+            return direct;
+        }
+        return userRepository.findByEmail(normalized.toLowerCase(Locale.ROOT));
     }
 
     public Optional<User> findByUsername(String username) {
         return userRepository.findByUsername(username);
     }
 
-    // Método para guardar usuario (lo necesita VerificationService)
     public User save(User user) {
         return userRepository.save(user);
     }
@@ -316,11 +325,13 @@ public class UserService {
     public UserResponse convertToUserResponse(User user) {
         UserResponse userResponse = new UserResponse();
         userResponse.setId(user.getId());
+        userResponse.setProtectedOwner(adminHierarchyService.isProtectedOwner(user));
         userResponse.setFirstName(user.getFirstName());
         userResponse.setLastName(user.getLastName());
         userResponse.setEmail(user.getEmail());
         userResponse.setPhone(user.getPhone());
-        userResponse.setEnabled(user.getEnabled());
+        userResponse.setEnabled(Boolean.TRUE.equals(user.getEnabled()));
+        userResponse.setEmailVerified(user.isEmailVerified());
         userResponse.setGoogleAuthEnabled(user.getGoogleAuthEnabled());
         userResponse.setEmailEnabled(user.getEmailEnabled());
         userResponse.setBackupCodesEnabled(user.getBackupCodesEnabled());
@@ -328,53 +339,65 @@ public class UserService {
         userResponse.setCreatedAt(user.getCreatedAt());
         userResponse.setUpdatedAt(user.getUpdatedAt());
 
-        // Obtener nombres de roles (ahora es String directamente)
-        Set<String> roleNames = user.getRoles().stream()
-                .map(role -> role.getName())
-                .collect(Collectors.toSet());
+        Set<String> roleNames = user.getRoles() != null
+                ? user.getRoles().stream().map(Role::getName).collect(Collectors.toSet())
+                : Collections.emptySet();
         userResponse.setRoles(roleNames);
 
-        // <-- AGREGA ESTA LÍNEA
-        userResponse.setGoogleAuthEnabled(user.getGoogleAuthEnabled());
+        Set<String> permissionNames = user.getRoles() != null
+                ? user.getRoles().stream()
+                        .filter(role -> role.getPermissions() != null)
+                        .flatMap(role -> role.getPermissions().stream())
+                        .map(permission -> permission.getName())
+                        .collect(Collectors.toSet())
+                : Collections.emptySet();
+        userResponse.setPermissions(permissionNames);
+
+        userResponse.setIsCustomer(user.getIsCustomer());
 
         return userResponse;
     }
 
-    // ===== MÉTODOS PARA ADMINISTRACIÓN =====
+    private void assertCanActOn(User targetUser, String action) {
+        org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || "anonymousUser".equals(auth.getName()) || "SYSTEM".equals(auth.getName())) {
+            return;
+        }
 
-    /**
-     * Obtener total de usuarios
-     */
+        String email = auth.getName();
+        User actor = userRepository.findByEmail(email).orElse(null);
+        if (actor != null) {
+            if ("DELETE".equals(action)) {
+                adminHierarchyService.assertCanDeleteUser(actor, targetUser);
+            } else if ("DISABLE".equals(action)) {
+                adminHierarchyService.assertCanDisableUser(actor, targetUser);
+            } else if ("RESET_2FA".equals(action)) {
+                adminHierarchyService.assertCanResetTwoFactor(actor, targetUser);
+            } else if ("PASSWORD".equals(action)) {
+                adminHierarchyService.assertCanChangePasswordAdmin(actor, targetUser);
+            } else {
+                adminHierarchyService.assertCanManageUser(actor, targetUser);
+            }
+        }
+    }
+
     public long getTotalUsersCount() {
         return userRepository.count();
     }
 
-    /**
-     * Obtener usuarios activos (habilitados)
-     */
     public long getActiveUsersCount() {
         return userRepository.countByEnabledTrue();
     }
 
-    /**
-     * Obtener usuarios verificados
-     */
     public long getVerifiedUsersCount() {
-        return userRepository.countByEnabledTrue(); // Enabled implica verificado
+        return userRepository.countByEnabledTrue();
     }
 
-    /**
-     * Obtener usuarios con MFA habilitado
-     */
     public long getUsersWithMFACount() {
         return userRepository.countByTwoFactorEnabledTrue();
     }
 
-    /**
-     * Obtener todos los usuarios paginados
-     */
     public Page<User> getAllUsersPaginated(Pageable pageable) {
         return userRepository.findAll(pageable);
     }
-
 }

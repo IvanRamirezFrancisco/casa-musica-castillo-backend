@@ -13,6 +13,7 @@ public class ChangePasswordRequest {
     @NotBlank(message = "Nueva contraseña es requerida")
     @Size(min = 8, max = 255, message = "La contraseña debe tener entre 8 y 255 caracteres")
     @SecurePassword
+    @com.security.validation.BcryptPassword
     private String newPassword;
 
     // Constructors

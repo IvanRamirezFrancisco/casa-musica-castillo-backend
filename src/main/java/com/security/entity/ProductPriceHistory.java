@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
  * Tabla: product_price_history
  */
 @Entity
-@Table(name = "product_price_history", indexes = {
+@Table(name = "product_price_history", schema = "catalog", indexes = {
         @Index(name = "idx_price_history_product", columnList = "product_id, effective_from"),
         @Index(name = "idx_price_history_dates", columnList = "effective_from, effective_to"),
         @Index(name = "idx_price_history_user", columnList = "changed_by")

@@ -9,7 +9,9 @@ public class ResetPasswordRequest {
     private String token;
 
     @NotBlank(message = "Nueva contraseña es requerida")
-    @Size(min = 8, message = "La contraseña debe tener al menos 8 caracteres")
+    @Size(min = 8, max = 255, message = "La contraseña debe tener al menos 8 caracteres")
+    @com.security.validation.SecurePassword(message = "La contraseña debe incluir mayúsculas, minúsculas, números y caracteres especiales sin patrones simples")
+    @com.security.validation.BcryptPassword
     private String newPassword;
 
     // Constructors

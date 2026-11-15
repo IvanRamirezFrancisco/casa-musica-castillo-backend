@@ -17,7 +17,7 @@ import java.util.Set;
  * Entidad para cupones de descuento
  */
 @Entity
-@Table(name = "coupons", indexes = {
+@Table(name = "coupons", schema = "sales", indexes = {
         @Index(name = "idx_coupon_type", columnList = "discount_type"),
         @Index(name = "idx_coupon_active", columnList = "is_active"),
         @Index(name = "idx_coupon_dates", columnList = "valid_from, valid_until")
@@ -122,7 +122,7 @@ public class Coupon {
      * Si está vacío, aplica a todas las categorías.
      */
     @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(name = "coupon_applicable_categories", joinColumns = @JoinColumn(name = "coupon_id"), inverseJoinColumns = @JoinColumn(name = "category_id"))
+    @JoinTable(name = "coupon_applicable_categories", schema = "sales", joinColumns = @JoinColumn(name = "coupon_id"), inverseJoinColumns = @JoinColumn(name = "category_id"))
     private Set<Category> applicableCategories = new HashSet<>();
 
     /**
@@ -131,7 +131,7 @@ public class Coupon {
      * Si está vacío, aplica a todos los productos.
      */
     @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(name = "coupon_applicable_products", joinColumns = @JoinColumn(name = "coupon_id"), inverseJoinColumns = @JoinColumn(name = "product_id"))
+    @JoinTable(name = "coupon_applicable_products", schema = "sales", joinColumns = @JoinColumn(name = "coupon_id"), inverseJoinColumns = @JoinColumn(name = "product_id"))
     private Set<Product> applicableProducts = new HashSet<>();
 
     @CreationTimestamp

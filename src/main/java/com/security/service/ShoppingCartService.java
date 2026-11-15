@@ -4,15 +4,13 @@ import com.security.dto.CartDTO;
 import com.security.entity.*;
 import com.security.exception.*;
 import com.security.repository.*;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.ParameterMode;
-import jakarta.persistence.StoredProcedureQuery;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,30 +33,91 @@ public class ShoppingCartService {
     private final CouponRepository couponRepository;
     private final CouponUsageRepository couponUsageRepository;
     private final UserRepository userRepository;
-    private final EntityManager entityManager;
+    private final WishlistRepository wishlistRepository;
 
     private static final int CART_EXPIRATION_HOURS = 72;
     private static final BigDecimal TAX_RATE = new BigDecimal("0.16"); // 16% IVA
 
     /**
-     * Obtiene o crea un carrito activo para un usuario
+     * Valida si un item está disponible (activo y con stock suficiente)
+     */
+    private boolean isItemAvailable(CartItem item) {
+        Product p = item.getProduct();
+        return p != null && Boolean.TRUE.equals(p.getActive()) 
+               && p.getStock() != null && p.getStock() >= item.getQuantity();
+    }
+
+    /**
+     * Obtiene o crea el carrito activo para un usuario autenticado.
+     *
+     * <p>Estrategia de búsqueda en orden (FASE 1.2):
+     * <ol>
+     *   <li>Consulta TODOS los carritos con status='ACTIVE' ignorando expiresAt
+     *       (evita que un carrito vencido pase desapercibido y cause un INSERT
+     *       que violaría el constraint único {@code ux_shopping_carts_one_active_per_user}).</li>
+     *   <li>Si existen, toma el más reciente:
+     *       <ul>
+     *         <li>Si su expiresAt ya venció → lo <strong>renueva</strong> (+7 días) en lugar
+     *             de crear uno nuevo.</li>
+     *         <li>Si todavía es válido → lo devuelve directamente.</li>
+     *         <li>Si había más de uno → cierra los duplicados como ABANDONED (FASE 1.1).</li>
+     *       </ul>
+     *   </li>
+     *   <li>Si no existe ningún carrito ACTIVE → crea uno nuevo (INSERT seguro).</li>
+     * </ol>
      */
     @Transactional
     public ShoppingCart getOrCreateCartForUser(Long userId) {
-        log.info("Obteniendo o creando carrito para usuario ID: {}", userId);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + userId));
 
         LocalDateTime now = LocalDateTime.now();
-        Optional<ShoppingCart> existingCart = cartRepository.findActiveCartByUserId(userId, now);
 
-        if (existingCart.isPresent()) {
-            log.debug("Carrito existente encontrado: {}", existingCart.get().getId());
-            return existingCart.get();
+        // ── FASE 1.2: consulta SIN filtro de expiresAt para detectar carritos vencidos ──
+        List<ShoppingCart> allActiveCarts =
+                cartRepository.findAllActiveCartsByUserIdIgnoringExpiry(userId);
+
+        if (!allActiveCarts.isEmpty()) {
+
+            ShoppingCart keptCart = allActiveCarts.get(0); // el más reciente (orden garantizado por query)
+
+            // FASE 1.1: cerrar duplicados si los hubiera
+            if (allActiveCarts.size() > 1) {
+                int closedCount = 0;
+                for (int i = 1; i < allActiveCarts.size(); i++) {
+                    ShoppingCart duplicate = allActiveCarts.get(i);
+                    duplicate.setStatus("ABANDONED");
+                    cartRepository.save(duplicate);
+                    closedCount++;
+                }
+                log.warn(
+                    "Multiple active carts detected for userId={}. Keeping cartId={} and closing {} duplicate(s).",
+                    userId,
+                    keptCart.getId(),
+                    closedCount
+                );
+            }
+
+            // FASE 1.2: si el carrito elegido está vencido, renovar expiresAt en lugar de
+            // intentar un INSERT que causaría DataIntegrityViolationException + AssertionFailure.
+            if (keptCart.getExpiresAt() != null && keptCart.getExpiresAt().isBefore(now)) {
+                LocalDateTime newExpiry = now.plusDays(7);
+                keptCart.setExpiresAt(newExpiry);
+                keptCart.setUpdatedAt(now);
+                cartRepository.save(keptCart);
+                log.info(
+                    "Carrito vencido renovado: cartId={}, nuevoExpiresAt={}",
+                    keptCart.getId(), newExpiry
+                );
+            } else {
+                log.debug("Carrito activo existente encontrado: cartId={}", keptCart.getId());
+            }
+
+            return keptCart;
         }
 
-        // Crear nuevo carrito
+        // ── Sin ningún carrito ACTIVE: crear uno nuevo ──
         ShoppingCart newCart = new ShoppingCart();
         newCart.setUser(user);
         newCart.setStatus("ACTIVE");
@@ -68,7 +127,7 @@ public class ShoppingCartService {
         newCart.setTotal(BigDecimal.ZERO);
 
         ShoppingCart savedCart = cartRepository.save(newCart);
-        log.info("Nuevo carrito creado: {}", savedCart.getId());
+        log.info("Nuevo carrito creado: cartId={}", savedCart.getId());
         return savedCart;
     }
 
@@ -173,6 +232,115 @@ public class ShoppingCartService {
         return buildCartResponse(cartId);
     }
 
+    /*
+     * Safe wrappers for authenticated flows. These methods derive the user's
+     * cart (or validate ownership) from the provided userId so controllers do
+     * NOT trust any cartId coming from the client.
+     */
+    @Transactional
+    public CartDTO.CartResponse addItemToUserCart(Long userId, Long productId, Integer quantity) {
+        ShoppingCart cart = getOrCreateCartForUser(userId);
+        return addItemToCart(cart.getId(), productId, quantity);
+    }
+
+    @Transactional
+    public CartDTO.CartResponse updateItemQuantityForUser(Long userId, Long itemId, Integer newQuantity) {
+        // Ownership check: item must belong to user's active cart
+        CartItem item = cartItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Item no encontrado"));
+
+        Long ownerId = item.getCart().getUser() != null ? item.getCart().getUser().getId() : null;
+        if (ownerId == null || !ownerId.equals(userId)) {
+            throw new ResourceNotFoundException("Item no encontrado");
+        }
+
+        return updateItemQuantity(itemId, newQuantity);
+    }
+
+    @Transactional
+    public CartDTO.CartResponse removeItemForUser(Long userId, Long itemId) {
+        CartItem item = cartItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Item no encontrado"));
+
+        Long ownerId = item.getCart().getUser() != null ? item.getCart().getUser().getId() : null;
+        if (ownerId == null || !ownerId.equals(userId)) {
+            throw new ResourceNotFoundException("Item no encontrado");
+        }
+
+        return removeItem(itemId);
+    }
+
+    @Transactional
+    public CartDTO.CartResponse moveItemToWishlistForUser(Long userId, Long itemId) {
+        // Ownership check
+        CartItem item = cartItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Item no encontrado"));
+
+        Long ownerId = item.getCart().getUser() != null ? item.getCart().getUser().getId() : null;
+        if (ownerId == null || !ownerId.equals(userId)) {
+            throw new ResourceNotFoundException("Item no encontrado");
+        }
+
+        Product product = item.getProduct();
+
+        // Add to wishlist if not exists
+        if (!wishlistRepository.existsByUserIdAndProductId(userId, product.getId())) {
+            Wishlist wishlistItem = new Wishlist();
+            wishlistItem.setUser(item.getCart().getUser());
+            wishlistItem.setProduct(product);
+            wishlistItem.setPriority(2); // Medium
+            BigDecimal currentPrice = product.getDiscountPrice() != null ? product.getDiscountPrice() : product.getPrice();
+            wishlistItem.setPriceWhenAdded(currentPrice);
+            wishlistRepository.save(wishlistItem);
+        }
+
+        // Delete from cart
+        Long cartId = item.getCart().getId();
+        cartItemRepository.delete(item);
+
+        // Recalculate totals
+        recalculateCartTotals(cartId);
+
+        return buildCartResponse(cartId);
+    }
+
+    @Transactional
+    public CartDTO.CouponAppliedResponse applyCouponForUser(Long userId, String couponCode) {
+        ShoppingCart cart = getOrCreateCartForUser(userId);
+        return applyCoupon(cart.getId(), couponCode);
+    }
+
+    @Transactional
+    public CartDTO.CartResponse removeCouponForUser(Long userId) {
+        ShoppingCart cart = getOrCreateCartForUser(userId);
+        return removeCoupon(cart.getId());
+    }
+
+    @Transactional
+    public void clearCartForUser(Long userId) {
+        ShoppingCart cart = getOrCreateCartForUser(userId);
+        clearCart(cart.getId());
+    }
+
+    @Transactional(readOnly = true)
+    public CartDTO.CartSummaryResponse getCartSummaryForUser(Long userId) {
+        return cartRepository.findAllActiveCartsByUserIdIgnoringExpiry(userId).stream().findFirst()
+                .filter(ShoppingCart::isActive)
+                .map(cart -> getCartSummary(cart.getId()))
+                .orElseGet(() -> CartDTO.CartSummaryResponse.builder()
+                        .totalItems(0).subtotal(BigDecimal.ZERO).total(BigDecimal.ZERO)
+                        .canCheckout(false).unavailableItemsCount(0).build());
+    }
+
+    @Transactional(readOnly = true)
+    public CartDTO.CartValidationResponse validateCartForUser(Long userId) {
+        return cartRepository.findAllActiveCartsByUserIdIgnoringExpiry(userId).stream().findFirst()
+                .filter(ShoppingCart::isActive)
+                .map(cart -> validateCartForCheckout(cart.getId()))
+                .orElseGet(() -> CartDTO.CartValidationResponse.builder()
+                        .globalErrors(List.of("El carrito está vacío")).itemWarnings(List.of()).build());
+    }
+
     /**
      * Actualiza la cantidad de un item
      */
@@ -185,7 +353,11 @@ public class ShoppingCartService {
 
         Product product = item.getProduct();
 
-        // Verificar stock
+        // Verificar stock y disponibilidad
+        if (product == null || !Boolean.TRUE.equals(product.getActive()) || product.getStock() == null || product.getStock() == 0) {
+            throw new IllegalStateException("El producto está agotado o inactivo. Elimínalo o muévelo a tu lista de deseos.");
+        }
+
         if (product.getStock() < newQuantity) {
             throw new InsufficientStockException(product.getId(), newQuantity, product.getStock());
         }
@@ -249,42 +421,23 @@ public class ShoppingCartService {
             }
         }
 
-        // Verificar monto mínimo
-        if (coupon.getMinimumPurchase() != null &&
-                cart.getSubtotal().compareTo(coupon.getMinimumPurchase()) < 0) {
+        BigDecimal subtotal = availableSubtotal(cartItemRepository.findByCartId(cartId));
+        if (!meetsCouponMinimum(coupon, subtotal)) {
             throw new InvalidCouponException(couponCode,
                     String.format("Compra mínima requerida: $%.2f", coupon.getMinimumPurchase()));
         }
 
-        // Llamar al stored procedure para aplicar el cupón
-        try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_apply_coupon_to_cart");
-            query.registerStoredProcedureParameter("p_cart_id", Long.class, ParameterMode.IN);
-            query.registerStoredProcedureParameter("p_coupon_id", Long.class, ParameterMode.IN);
-
-            query.setParameter("p_cart_id", cartId);
-            query.setParameter("p_coupon_id", coupon.getId());
-
-            query.execute();
-
-            // Refrescar el carrito
-            entityManager.refresh(cart);
-
-            log.info("Cupón {} aplicado exitosamente al carrito {}", couponCode, cartId);
-
-            return CartDTO.CouponAppliedResponse.builder()
-                    .couponCode(couponCode)
-                    .discountType(coupon.getDiscountType())
-                    .discountValue(coupon.getDiscountValue())
-                    .discountApplied(cart.getDiscount())
-                    .newTotal(cart.getTotal())
-                    .message("Cupón aplicado exitosamente")
-                    .build();
-
-        } catch (Exception e) {
-            log.error("Error al aplicar cupón: {}", e.getMessage());
-            throw new InvalidCouponException(couponCode, "Error al aplicar cupón: " + e.getMessage());
-        }
+        CartAmounts amounts = calculateAmounts(subtotal, couponDiscount(coupon, subtotal));
+        cart.setCouponCode(coupon.getCode());
+        saveAmounts(cart, amounts);
+        return CartDTO.CouponAppliedResponse.builder()
+                .couponCode(coupon.getCode())
+                .discountType(coupon.getDiscountType())
+                .discountValue(coupon.getDiscountValue())
+                .discountApplied(amounts.discount())
+                .newTotal(amounts.total())
+                .message("Cupón aplicado exitosamente")
+                .build();
     }
 
     /**
@@ -346,49 +499,46 @@ public class ShoppingCartService {
             return getOrCreateCartForUser(userId);
         }
 
-        // Buscar carrito existente del usuario
-        Optional<ShoppingCart> userCart = cartRepository.findActiveCartByUserId(userId, now);
+        // Buscar carrito existente del usuario usando el método tolerante a duplicados.
+        // getOrCreateCartForUser ya cierra eventuales duplicados si los hubiera.
+        // FASE 1.1: no usamos findActiveCartByUserId directamente aquí.
+        ShoppingCart targetCart = getOrCreateCartForUser(userId);
 
-        if (userCart.isPresent()) {
-            // Merge: mover items del carrito anónimo al carrito del usuario
-            ShoppingCart targetCart = userCart.get();
-            ShoppingCart sourceCart = anonymousCart.get();
+        ShoppingCart sourceCart = anonymousCart.get();
 
-            List<CartItem> itemsToTransfer = cartItemRepository.findByCartId(sourceCart.getId());
-
-            for (CartItem item : itemsToTransfer) {
-                // Verificar si el producto ya existe en el carrito del usuario
-                Optional<CartItem> existingItem = cartItemRepository.findByCartIdAndProductId(
-                        targetCart.getId(), item.getProduct().getId());
-
-                if (existingItem.isPresent()) {
-                    // Sumar cantidades
-                    CartItem existing = existingItem.get();
-                    existing.setQuantity(existing.getQuantity() + item.getQuantity());
-                    existing.calculateSubtotal();
-                    cartItemRepository.save(existing);
-                } else {
-                    // Mover item al carrito del usuario
-                    item.setCart(targetCart);
-                    cartItemRepository.save(item);
-                }
-            }
-
-            // Marcar carrito anónimo como convertido
-            sourceCart.setStatus("CONVERTED");
-            cartRepository.save(sourceCart);
-
-            // Recalcular totales del carrito destino
-            recalculateCartTotals(targetCart.getId());
-
+        // Evitar merge consigo mismo si la sesión ya está asignada al usuario
+        if (sourceCart.getId().equals(targetCart.getId())) {
+            log.info("El carrito de sesión {} ya pertenece al usuario {}", sessionId, userId);
             return targetCart;
-        } else {
-            // Simplemente asignar el carrito anónimo al usuario
-            ShoppingCart cart = anonymousCart.get();
-            cart.setUser(user);
-            cart.setSessionId(null);
-            return cartRepository.save(cart);
         }
+
+        List<CartItem> itemsToTransfer = cartItemRepository.findByCartId(sourceCart.getId());
+
+        for (CartItem item : itemsToTransfer) {
+            // Verificar si el producto ya existe en el carrito del usuario
+            Optional<CartItem> existingItem = cartItemRepository.findByCartIdAndProductId(
+                    targetCart.getId(), item.getProduct().getId());
+
+            if (existingItem.isPresent()) {
+                // Sumar cantidades
+                CartItem existing = existingItem.get();
+                existing.setQuantity(existing.getQuantity() + item.getQuantity());
+                existing.calculateSubtotal();
+                cartItemRepository.save(existing);
+            } else {
+                // Mover item al carrito del usuario
+                item.setCart(targetCart);
+                cartItemRepository.save(item);
+            }
+        }
+
+        // Marcar carrito anónimo como CONVERTED y recalcular totales destino
+        sourceCart.setStatus("CONVERTED");
+        cartRepository.save(sourceCart);
+
+        recalculateCartTotals(targetCart.getId());
+
+        return targetCart;
     }
 
     /**
@@ -400,30 +550,49 @@ public class ShoppingCartService {
 
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
 
-        // Calcular subtotal
-        BigDecimal subtotal = items.stream()
+        saveAmounts(cart, calculateAmounts(cart, items));
+    }
+
+    private void saveAmounts(ShoppingCart cart, CartAmounts amounts) {
+        cart.setSubtotal(amounts.subtotal());
+        cart.setTax(amounts.tax());
+        cart.setDiscount(amounts.discount());
+        cart.setTotal(amounts.total());
+        cartRepository.save(cart);
+    }
+
+    private record CartAmounts(BigDecimal subtotal, BigDecimal tax, BigDecimal discount, BigDecimal total) {}
+
+    private CartAmounts calculateAmounts(ShoppingCart cart, List<CartItem> items) {
+        BigDecimal subtotal = availableSubtotal(items);
+        BigDecimal discount = Optional.ofNullable(cart.getCouponCode())
+                .flatMap(couponRepository::findByCodeIgnoreCase)
+                .map(coupon -> couponDiscount(coupon, subtotal))
+                .orElse(BigDecimal.ZERO);
+        return calculateAmounts(subtotal, discount);
+    }
+
+    private BigDecimal availableSubtotal(List<CartItem> items) {
+        return items.stream()
+                .filter(this::isItemAvailable)
                 .map(CartItem::getSubtotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
 
-        cart.setSubtotal(subtotal);
+    private boolean meetsCouponMinimum(Coupon coupon, BigDecimal subtotal) {
+        return coupon.getMinimumPurchase() == null || subtotal.compareTo(coupon.getMinimumPurchase()) >= 0;
+    }
 
-        // Calcular IVA
-        BigDecimal tax = subtotal.multiply(TAX_RATE);
-        cart.setTax(tax);
+    private BigDecimal couponDiscount(Coupon coupon, BigDecimal subtotal) {
+        if (!coupon.isValid() || !meetsCouponMinimum(coupon, subtotal)) return BigDecimal.ZERO;
+        BigDecimal discount = coupon.calculateDiscount(subtotal);
+        if (coupon.getMaximumDiscount() != null) discount = discount.min(coupon.getMaximumDiscount());
+        return discount.setScale(2, RoundingMode.HALF_UP);
+    }
 
-        // Aplicar descuento si existe cupón
-        BigDecimal discount = cart.getDiscount() != null ? cart.getDiscount() : BigDecimal.ZERO;
-
-        // Calcular total
-        BigDecimal total = subtotal.add(tax).subtract(discount);
-        if (total.compareTo(BigDecimal.ZERO) < 0) {
-            total = BigDecimal.ZERO;
-        }
-        cart.setTotal(total);
-
-        cartRepository.save(cart);
-        log.debug("Totales recalculados para carrito {}: Subtotal={}, Tax={}, Discount={}, Total={}",
-                cartId, subtotal, tax, discount, total);
+    private CartAmounts calculateAmounts(BigDecimal subtotal, BigDecimal discount) {
+        BigDecimal tax = subtotal.multiply(TAX_RATE).setScale(2, RoundingMode.HALF_UP);
+        return new CartAmounts(subtotal, tax, discount, subtotal.add(tax).subtract(discount).max(BigDecimal.ZERO));
     }
 
     /**
@@ -431,26 +600,45 @@ public class ShoppingCartService {
      */
     @Transactional(readOnly = true)
     public CartDTO.CartResponse buildCartResponse(Long cartId) {
-        ShoppingCart cart = cartRepository.findByIdWithItems(cartId)
+        ShoppingCart cart = cartRepository.findById(cartId)
                 .orElseThrow(() -> new CartNotFoundException(cartId));
 
-        List<CartDTO.CartItemResponse> itemResponses = cart.getItems().stream()
+        // Read the rows directly because an initialized cart collection can be stale after a mutation.
+        List<CartItem> items = cartItemRepository.findByCartId(cartId);
+        CartAmounts amounts = calculateAmounts(cart, items);
+        List<CartDTO.CartItemResponse> itemResponses = items.stream()
                 .map(this::buildCartItemResponse)
                 .collect(Collectors.toList());
+
+        boolean canCheckout = itemResponses.stream().allMatch(CartDTO.CartItemResponse::getAvailable);
+        String warningMessage = null;
+        if (!canCheckout && !itemResponses.isEmpty()) {
+            warningMessage = "El carrito contiene productos no disponibles. Por favor, elimínalos o muévelos a tu lista de deseos para poder comprar.";
+        }
+
+        BigDecimal unavailableItemsTotal = items.stream()
+                .filter(item -> !isItemAvailable(item))
+                .map(CartItem::getSubtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         return CartDTO.CartResponse.builder()
                 .cartId(cart.getId())
                 .userId(cart.getUser() != null ? cart.getUser().getId() : null)
                 .sessionId(cart.getSessionId())
                 .items(itemResponses)
-                .totalItems(itemResponses.stream().mapToInt(CartDTO.CartItemResponse::getQuantity).sum())
-                .subtotal(cart.getSubtotal())
-                .tax(cart.getTax())
+                .totalItems(itemResponses.stream()
+                        .filter(CartDTO.CartItemResponse::getAvailable)
+                        .mapToInt(CartDTO.CartItemResponse::getQuantity).sum())
+                .subtotal(amounts.subtotal())
+                .tax(amounts.tax())
                 .taxRate(TAX_RATE.multiply(new BigDecimal("100"))) // Convertir a porcentaje
-                .discount(cart.getDiscount())
-                .total(cart.getTotal())
+                .discount(amounts.discount())
+                .total(amounts.total())
                 .couponCode(cart.getCouponCode())
                 .status(cart.getStatus())
+                .canCheckout(canCheckout && !itemResponses.isEmpty())
+                .warningMessage(warningMessage)
+                .unavailableItemsTotal(unavailableItemsTotal)
                 .expiresAt(cart.getExpiresAt())
                 .createdAt(cart.getCreatedAt())
                 .updatedAt(cart.getUpdatedAt())
@@ -462,6 +650,21 @@ public class ShoppingCartService {
      */
     private CartDTO.CartItemResponse buildCartItemResponse(CartItem item) {
         Product product = item.getProduct();
+        
+        boolean isAvailable = isItemAvailable(item);
+        String availabilityStatus = "AVAILABLE";
+        String warningMessage = null;
+
+        if (product == null || !Boolean.TRUE.equals(product.getActive())) {
+            availabilityStatus = "INACTIVE";
+            warningMessage = "El producto ya no está disponible.";
+        } else if (product.getStock() == null || product.getStock() == 0) {
+            availabilityStatus = "OUT_OF_STOCK";
+            warningMessage = "El producto está agotado.";
+        } else if (product.getStock() < item.getQuantity()) {
+            availabilityStatus = "INSUFFICIENT_STOCK";
+            warningMessage = String.format("Solo hay %d unidades disponibles.", product.getStock());
+        }
 
         return CartDTO.CartItemResponse.builder()
                 .itemId(item.getId())
@@ -473,6 +676,9 @@ public class ShoppingCartService {
                 .unitPrice(item.getUnitPrice())
                 .subtotal(item.getSubtotal())
                 .availableStock(product.getStock())
+                .available(isAvailable)
+                .availabilityStatus(availabilityStatus)
+                .warningMessage(warningMessage)
                 .addedAt(item.getAddedAt())
                 .build();
     }
@@ -486,13 +692,25 @@ public class ShoppingCartService {
                 .orElseThrow(() -> new CartNotFoundException(cartId));
 
         Integer totalItems = cartItemRepository.sumQuantityByCartId(cartId);
+        
+        List<CartItem> items = cartItemRepository.findByCartId(cartId);
+        CartAmounts amounts = calculateAmounts(cart, items);
+        boolean canCheckout = items.stream().allMatch(this::isItemAvailable);
+        long unavailableItemsCount = items.stream().filter(item -> !isItemAvailable(item)).count();
+        String warningMessage = null;
+        if (!canCheckout && !items.isEmpty()) {
+            warningMessage = "El carrito contiene productos no disponibles. Por favor, elimínalos o muévelos a tu lista de deseos para poder comprar.";
+        }
 
         return CartDTO.CartSummaryResponse.builder()
                 .cartId(cart.getId())
                 .totalItems(totalItems != null ? totalItems : 0)
-                .subtotal(cart.getSubtotal())
-                .total(cart.getTotal())
+                .subtotal(amounts.subtotal())
+                .total(amounts.total())
                 .status(cart.getStatus())
+                .canCheckout(canCheckout && !items.isEmpty())
+                .unavailableItemsCount((int) unavailableItemsCount)
+                .warningMessage(warningMessage)
                 .build();
     }
 
@@ -500,37 +718,58 @@ public class ShoppingCartService {
      * Valida el carrito antes de checkout
      */
     @Transactional(readOnly = true)
-    public List<String> validateCartForCheckout(Long cartId) {
-        List<String> errors = new ArrayList<>();
+    public CartDTO.CartValidationResponse validateCartForCheckout(Long cartId) {
+        List<String> globalErrors = new ArrayList<>();
+        List<CartDTO.CartItemValidation> itemWarnings = new ArrayList<>();
 
         ShoppingCart cart = cartRepository.findById(cartId)
                 .orElseThrow(() -> new CartNotFoundException(cartId));
 
         if (!cart.isActive()) {
-            errors.add("El carrito no está activo");
-            return errors;
+            globalErrors.add("El carrito no está activo");
         }
 
         List<CartItem> items = cartItemRepository.findByCartId(cartId);
 
         if (items.isEmpty()) {
-            errors.add("El carrito está vacío");
+            globalErrors.add("El carrito está vacío");
         }
 
         // Validar stock de cada item
         for (CartItem item : items) {
             Product product = item.getProduct();
+            
+            String availabilityStatus = "AVAILABLE";
+            String warningMessage = null;
 
-            if (!product.getActive()) {
-                errors.add(String.format("Producto '%s' no está disponible", product.getName()));
+            if (product == null || !Boolean.TRUE.equals(product.getActive())) {
+                availabilityStatus = "INACTIVE";
+                warningMessage = "El producto ya no está disponible.";
+            } else if (product.getStock() == null || product.getStock() == 0) {
+                availabilityStatus = "OUT_OF_STOCK";
+                warningMessage = "El producto está agotado.";
+            } else if (product.getStock() < item.getQuantity()) {
+                availabilityStatus = "INSUFFICIENT_STOCK";
+                warningMessage = String.format("Solo hay %d unidades disponibles. Solicitado: %d", product.getStock(), item.getQuantity());
             }
 
-            if (product.getStock() < item.getQuantity()) {
-                errors.add(String.format("Stock insuficiente para '%s'. Disponible: %d, Solicitado: %d",
-                        product.getName(), product.getStock(), item.getQuantity()));
+            if (!"AVAILABLE".equals(availabilityStatus)) {
+                itemWarnings.add(CartDTO.CartItemValidation.builder()
+                        .itemId(item.getId())
+                        .productId(product != null ? product.getId() : null)
+                        .availabilityStatus(availabilityStatus)
+                        .warningMessage(warningMessage)
+                        .build());
             }
         }
 
-        return errors;
+        boolean canCheckout = globalErrors.isEmpty() && itemWarnings.isEmpty();
+
+        return CartDTO.CartValidationResponse.builder()
+                .valid(canCheckout)
+                .canCheckout(canCheckout)
+                .globalErrors(globalErrors)
+                .itemWarnings(itemWarnings)
+                .build();
     }
 }

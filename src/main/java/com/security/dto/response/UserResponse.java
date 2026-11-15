@@ -11,13 +11,17 @@ public class UserResponse {
     private String email;
     private String phone;
     private boolean enabled;
+    private boolean emailVerified;
     private boolean twoFactorEnabled;
     private Set<String> roles;
+    private Set<String> permissions;
+    private Boolean isCustomer;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Boolean googleAuthEnabled;
     private Boolean emailEnabled;
     private Boolean backupCodesEnabled;
+    private Boolean protectedOwner;
 
     // nuevos para ocultar boton de google authS
     public Boolean getGoogleAuthEnabled() {
@@ -42,6 +46,14 @@ public class UserResponse {
 
     public void setBackupCodesEnabled(Boolean backupCodesEnabled) {
         this.backupCodesEnabled = backupCodesEnabled;
+    }
+
+    public Boolean getProtectedOwner() {
+        return protectedOwner;
+    }
+
+    public void setProtectedOwner(Boolean protectedOwner) {
+        this.protectedOwner = protectedOwner;
     }
 
     // Constructors
@@ -97,6 +109,14 @@ public class UserResponse {
         this.enabled = enabled;
     }
 
+    public boolean isEmailVerified() {
+        return emailVerified;
+    }
+
+    public void setEmailVerified(boolean emailVerified) {
+        this.emailVerified = emailVerified;
+    }
+
     public boolean isTwoFactorEnabled() {
         return twoFactorEnabled;
     }
@@ -127,5 +147,21 @@ public class UserResponse {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Set<String> getPermissions() {
+        return permissions;
+    }
+
+    public void setPermissions(Set<String> permissions) {
+        this.permissions = permissions;
+    }
+
+    public Boolean getIsCustomer() {
+        return isCustomer;
+    }
+
+    public void setIsCustomer(Boolean isCustomer) {
+        this.isCustomer = isCustomer;
     }
 }

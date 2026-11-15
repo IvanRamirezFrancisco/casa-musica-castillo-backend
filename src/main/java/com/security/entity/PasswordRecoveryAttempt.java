@@ -8,7 +8,7 @@ import java.time.LocalDateTime;
  * Implementa rate limiting y retrasos progresivos
  */
 @Entity
-@Table(name = "password_recovery_attempts")
+@Table(name = "password_recovery_attempts", schema = "security")
 public class PasswordRecoveryAttempt {
 
     @Id

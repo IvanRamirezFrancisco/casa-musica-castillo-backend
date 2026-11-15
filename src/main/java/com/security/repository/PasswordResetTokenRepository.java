@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -48,4 +49,10 @@ public interface PasswordResetTokenRepository extends JpaRepository<PasswordRese
     // Buscar por usuario y estado
     @Query("SELECT p FROM PasswordResetToken p WHERE p.user = :user AND p.used = :used")
     java.util.List<PasswordResetToken> findByUserAndUsed(@Param("user") User user, @Param("used") boolean used);
+
+    // Eliminar tokens de reset por lista de IDs de usuario (cleanup job)
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM PasswordResetToken p WHERE p.user.id IN :userIds")
+    void deleteByUserIdIn(@Param("userIds") List<Long> userIds);
 }

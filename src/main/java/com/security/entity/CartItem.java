@@ -16,7 +16,9 @@ import java.time.LocalDateTime;
  * Entidad para items individuales del carrito
  */
 @Entity
-@Table(name = "cart_items", indexes = {
+@Table(name = "cart_items", schema = "sales", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_cart_item_cart_product", columnNames = {"cart_id", "product_id"})
+}, indexes = {
         @Index(name = "idx_cartitem_cart", columnList = "cart_id"),
         @Index(name = "idx_cartitem_product", columnList = "product_id")
 })

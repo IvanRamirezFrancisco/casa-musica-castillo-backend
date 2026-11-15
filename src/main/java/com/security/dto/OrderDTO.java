@@ -66,6 +66,13 @@ public class OrderDTO {
     private PaymentMethod paymentMethod;
     private String transactionId;
 
+    // ==================== COMPROBANTE PAGO ====================
+
+    private Boolean hasPaymentProof;
+    private String paymentProofStatus;
+    private LocalDateTime paymentProofUploadedAt;
+    private String paymentProofRejectionReason;
+
     // ==================== ENVÍO ====================
 
     private String shippingAddress;
@@ -73,6 +80,24 @@ public class OrderDTO {
     private String trackingNumber;
     private LocalDateTime shippedAt;
     private LocalDateTime deliveredAt;
+
+    private String deliveryType; // "PICKUP_STORE", "LOCAL_DELIVERY", "EXTERNAL_SHIPPING_QUOTE"
+    private String shippingMethod;
+    private String shippingLabel;
+
+    // Campos de Recolección en Tienda (Pickup)
+    private String pickupStatus;
+    private String pickupCodeLast4;
+    private Boolean pickupCodeAvailable;
+    private LocalDateTime pickupReadyAt;
+    private LocalDateTime pickedUpAt;
+    private String pickedUpByName;
+    private Long pickedUpByAuthorizationId;
+    
+    // Sólo para el cliente (desencriptado, expuesto condicionalmente en un endpoint separado o si aplica)
+    private String pickupCode;
+    
+    private List<AuthorizedPersonDTO> authorizedPersons = new ArrayList<>();
 
     // ==================== ITEMS ====================
 
@@ -84,6 +109,8 @@ public class OrderDTO {
     private String notes;
     private String customerNotes;
     private String cancellationReason;
+    private Long cancelledBy;
+    private String cancelSource;
 
     // ==================== FECHAS ====================
 

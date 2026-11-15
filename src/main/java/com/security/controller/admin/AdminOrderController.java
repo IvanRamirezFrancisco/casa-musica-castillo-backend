@@ -16,8 +16,16 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import com.security.security.UserPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import com.security.dto.request.RejectPaymentProofRequest;
+import com.security.dto.PickupVerificationRequest;
+import com.security.service.OrderPickupService;
+import com.security.repository.UserRepository;
+import org.springframework.core.io.Resource;
+import jakarta.validation.Valid;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -47,7 +55,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/admin/orders")
-@PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+@PreAuthorize("hasAuthority('ORDER_READ')")
 @Slf4j
 public class AdminOrderController {
 
@@ -60,6 +68,21 @@ public class AdminOrderController {
 
     @Autowired
     private OrderService orderService;
+
+    @Autowired
+    private com.security.service.OrderTimelineEventService timelineEventService;
+    
+    @Autowired
+    private com.security.service.OrderStateTransitionService stateTransitionService;
+    
+    @Autowired
+    private com.security.service.PaymentProofService paymentProofService;
+
+    @Autowired
+    private OrderPickupService orderPickupService;
+
+    @Autowired
+    private UserRepository userRepository;
 
     // ==================== LISTAR Y BUSCAR ====================
 
@@ -191,13 +214,16 @@ public class AdminOrderController {
 
     // ==================== ACTUALIZAR ESTADOS ====================
 
+    // FASE 0 - Seguridad - 2026-05-15
     /**
      * PATCH /api/admin/orders/{id}/status
      *
      * Cambiar el estado de la orden.
      * Body: { "status": "CONFIRMED" }
+     * Requiere ORDER_UPDATE (no hereda ORDER_READ de clase).
      */
     @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE')")
     public ResponseEntity<?> updateOrderStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
@@ -223,71 +249,53 @@ public class AdminOrderController {
         } catch (IllegalArgumentException e) {
             log.warn("Estado de orden inválido para orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado inválido. Use: PENDING, CONFIRMED, PROCESSING, COMPLETED, CANCELLED"));
+                    .body(Map.of("error", "INVALID_ORDER_STATUS", "message", "Valor de estado inválido. Use: PENDING, CONFIRMED, PROCESSING, COMPLETED, CANCELLED"));
+        } catch (IllegalStateException e) {
+            log.warn("Transición de estado inválida para orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "INVALID_ORDER_STATUS_TRANSITION", "message", e.getMessage()));
         } catch (RuntimeException e) {
             log.warn("Error de negocio al actualizar estado de orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
+                    .body(Map.of("error", "BAD_REQUEST", "message", e.getMessage()));
         } catch (Exception e) {
             log.error("Error interno al actualizar estado de orden {}: {}", id, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "INTERNAL_SERVER_ERROR", "message", "Error interno del servidor"));
         }
     }
 
+    // FASE 0 - Seguridad - 2026-05-15
     /**
      * PATCH /api/admin/orders/{id}/payment-status
      *
      * Cambiar el estado de pago de la orden.
      * Body: { "paymentStatus": "PAID" }
+     * Requiere ORDER_UPDATE (no hereda ORDER_READ de clase).
      */
     @PatchMapping("/{id}/payment-status")
+    @PreAuthorize("hasAuthority('SUPER_ADMIN')") // Solo un súper admin podría forzar esto en emergencias extremas
     public ResponseEntity<?> updatePaymentStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
 
-        try {
-            String statusStr = body.get("paymentStatus");
-
-            if (statusStr == null || statusStr.trim().isEmpty()) {
-                return ResponseEntity.badRequest()
-                        .body(Map.of("error", "El campo 'paymentStatus' es requerido"));
-            }
-
-            PaymentStatus newStatus = PaymentStatus.valueOf(statusStr.trim().toUpperCase());
-
-            log.info("PATCH /api/admin/orders/{}/payment-status — nuevo estado: {}", id, newStatus);
-
-            OrderDTO updatedOrder = orderService.updatePaymentStatus(id, newStatus);
-
-            log.info("PATCH /api/admin/orders/{}/payment-status — actualizado correctamente", id);
-
-            return ResponseEntity.ok(updatedOrder);
-
-        } catch (IllegalArgumentException e) {
-            log.warn("Estado de pago inválido para orden {}: {}", id, e.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado de pago inválido. Use: PENDING, PAID, FAILED, REFUNDED, PARTIALLY_REFUNDED"));
-        } catch (RuntimeException e) {
-            log.warn("Error de negocio al actualizar estado de pago de orden {}: {}", id, e.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
-        } catch (Exception e) {
-            log.error("Error interno al actualizar estado de pago de orden {}: {}", id, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
-        }
+        return ResponseEntity.badRequest()
+                .body(Map.of(
+                        "error", "INVALID_PAYMENT_STATUS_TRANSITION",
+                        "message", "El estado de pago no se modifica manualmente. Usa aprobar comprobante, rechazar comprobante o reconsultar Mercado Pago."
+                ));
     }
 
+    // FASE 0 - Seguridad - 2026-05-15
     /**
      * PATCH /api/admin/orders/{id}/shipping-status
      *
      * Cambiar el estado de envío de la orden.
      * Body: { "shippingStatus": "SHIPPED", "trackingNumber": "TRK123456" }
+     * Requiere ORDER_UPDATE (no hereda ORDER_READ de clase).
      */
     @PatchMapping("/{id}/shipping-status")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE')")
     public ResponseEntity<?> updateShippingStatus(
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
@@ -315,29 +323,36 @@ public class AdminOrderController {
         } catch (IllegalArgumentException e) {
             log.warn("Estado de envío inválido para orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                            "Valor de estado de envío inválido. Use: PENDING, PREPARING, SHIPPED, IN_TRANSIT, DELIVERED, RETURNED"));
+                    .body(Map.of("error", "INVALID_SHIPPING_STATUS", "message", "Valor de estado de envío inválido. Use: PENDING, PREPARING, SHIPPED, IN_TRANSIT, DELIVERED, RETURNED"));
+        } catch (IllegalStateException e) {
+            log.warn("Transición de envío inválida para orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "INVALID_SHIPPING_STATUS_TRANSITION", "message", e.getMessage()));
         } catch (RuntimeException e) {
             log.warn("Error de negocio al actualizar estado de envío de orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
+                    .body(Map.of("error", "BAD_REQUEST", "message", e.getMessage()));
         } catch (Exception e) {
             log.error("Error interno al actualizar estado de envío de orden {}: {}", id, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "INTERNAL_SERVER_ERROR", "message", "Error interno del servidor"));
         }
     }
 
+    // FASE 0 - Seguridad - 2026-05-15
     /**
      * PATCH /api/admin/orders/{id}/cancel
      *
      * Cancelar una orden con un motivo obligatorio.
      * Body: { "reason": "Solicitud del cliente" }
+     * Requiere ORDER_UPDATE (no hereda ORDER_READ de clase).
      */
     @PatchMapping("/{id}/cancel")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE')")
     public ResponseEntity<?> cancelOrder(
             @PathVariable Long id,
-            @RequestBody Map<String, String> body) {
+            @RequestBody Map<String, String> body,
+            Authentication authentication) {
 
         try {
             String reason = body.get("reason");
@@ -351,23 +366,24 @@ public class AdminOrderController {
                 return ResponseEntity.badRequest()
                         .body(Map.of("error", "El motivo no puede exceder 500 caracteres"));
             }
+            
+            Long adminId = null;
+            if (authentication != null && authentication.getPrincipal() instanceof UserPrincipal principal) {
+                adminId = principal.getId();
+            }
 
-            log.info("PATCH /api/admin/orders/{}/cancel — motivo proporcionado", id);
+            log.info("PATCH /api/admin/orders/{}/cancel — motivo proporcionado, adminId={}", id, adminId);
 
-            OrderDTO updatedOrder = orderService.updateOrderStatus(id, OrderStatus.CANCELLED);
+            OrderDTO updatedOrder = orderService.cancelOrder(id, reason, "ADMIN", adminId);
 
             log.info("PATCH /api/admin/orders/{}/cancel — orden cancelada correctamente", id);
 
             return ResponseEntity.ok(updatedOrder);
 
-        } catch (RuntimeException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             log.warn("Error al cancelar orden {}: {}", id, e.getMessage());
             return ResponseEntity.badRequest()
-                    .body(Map.of("error", e.getMessage()));
-        } catch (Exception e) {
-            log.error("Error interno al cancelar orden {}: {}", id, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Error interno del servidor"));
+                    .body(Map.of("error", "Bad Request", "message", e.getMessage()));
         }
     }
 
@@ -428,5 +444,171 @@ public class AdminOrderController {
             return "\"" + value.replace("\"", "\"\"") + "\"";
         }
         return value;
+    }
+
+    // ==================== COMPROBANTES DE PAGO ====================
+
+    @GetMapping("/{id}/payment-proof")
+    public ResponseEntity<?> getPaymentProof(@PathVariable Long id) {
+        try {
+            com.security.dto.response.PaymentProofResponse response = paymentProofService.getAdminPaymentProof(id);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            log.warn("Comprobante no encontrado para orden {}: {}", id, e.getMessage());
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("/{id}/payment-proof/file")
+    public ResponseEntity<?> getPaymentProofFile(@PathVariable Long id) {
+        try {
+            com.security.dto.response.PaymentProofFileResponse response = paymentProofService.getAdminPaymentProofFile(id);
+
+            String contentType = response.contentType();
+            String ext = ".pdf";
+            if (contentType != null) {
+                if (contentType.contains("jpeg") || contentType.contains("jpg")) ext = ".jpg";
+                else if (contentType.contains("png")) ext = ".png";
+                else if (contentType.contains("webp")) ext = ".webp";
+            }
+            
+            String orderNum = response.orderNumber() != null ? response.orderNumber() : "UNKNOWN";
+            if (orderNum.startsWith("ORD-")) {
+                orderNum = orderNum.substring(4);
+            }
+            String filename = "comprobante-ORD-" + orderNum + ext;
+            org.springframework.http.ContentDisposition contentDisposition = org.springframework.http.ContentDisposition.builder("inline")
+                    .filename(filename)
+                    .build();
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(response.contentType()))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, contentDisposition.toString())
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    .header(HttpHeaders.PRAGMA, "no-cache")
+                    .header(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, "Content-Disposition, Content-Type")
+                    .body(response.resource());
+        } catch (RuntimeException e) {
+            log.warn("No se pudo descargar comprobante de orden {}: {}", id, e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(java.util.Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PatchMapping("/{id}/payment-proof/approve")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasAuthority('PAYMENT_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> approvePaymentProof(
+            @PathVariable Long id,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            log.info("Aprobando comprobante para orden {} por admin {}", id, adminId);
+            com.security.dto.response.PaymentProofResponse response = paymentProofService.approvePaymentProof(adminId, id);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn("Error aprobando comprobante orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PatchMapping("/{id}/payment-proof/reject")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasAuthority('PAYMENT_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> rejectPaymentProof(
+            @PathVariable Long id,
+            @RequestBody RejectPaymentProofRequest request,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            log.info("Rechazando comprobante para orden {} por admin {}", id, adminId);
+            com.security.dto.response.PaymentProofResponse response = paymentProofService.rejectPaymentProof(adminId, id, request.getReason());
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn("Error rechazando comprobante orden {}: {}", id, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * GET /api/admin/orders/{id}/timeline
+     * Obtener historial de eventos de una orden.
+     */
+    @GetMapping("/{id}/timeline")
+    @PreAuthorize("hasAuthority('ORDER_READ')")
+    public ResponseEntity<List<com.security.dto.response.OrderTimelineEventDTO>> getOrderTimeline(@PathVariable Long id) {
+        log.info("GET /api/admin/orders/{}/timeline", id);
+        return ResponseEntity.ok(timelineEventService.getAdminTimeline(id));
+    }
+
+    /**
+     * GET /api/admin/orders/{id}/allowed-transitions
+     * Obtener transiciones permitidas y ayuda visual para el estado de una orden.
+     */
+    @GetMapping("/{id}/allowed-transitions")
+    @PreAuthorize("hasAuthority('ORDER_READ')")
+    public ResponseEntity<com.security.dto.response.OrderTransitionsDTO> getAllowedTransitions(@PathVariable Long id) {
+        log.info("GET /api/admin/orders/{}/allowed-transitions", id);
+        
+        com.security.entity.Order order = orderService.getOrderEntityById(id);
+        
+        com.security.dto.response.OrderTransitionsDTO dto = com.security.dto.response.OrderTransitionsDTO.builder()
+                .currentOrderStatus(order.getStatus())
+                .currentPaymentStatus(order.getPaymentStatus())
+                .currentShippingStatus(order.getShippingStatus())
+                .allowedOrderStatuses(stateTransitionService.getAllowedOrderStatuses(order))
+                .allowedShippingStatuses(stateTransitionService.getAllowedShippingStatuses(order))
+                .canUpdateOrderStatus(stateTransitionService.canUpdateOrderStatus(order))
+                .canUpdateShippingStatus(stateTransitionService.canUpdateShippingStatus(order))
+                .canUpdateTrackingNumber(stateTransitionService.canUpdateTrackingNumber(order))
+                .canCancelOrder(stateTransitionService.canCancelOrder(order))
+                .requiresCancelReason(stateTransitionService.requiresCancelReason())
+                .orderStatusHelpMessage(stateTransitionService.getOrderStatusHelpMessage(order))
+                .shippingStatusHelpMessage(stateTransitionService.getShippingStatusHelpMessage(order))
+                .cancelOrderHelpMessage(stateTransitionService.getCancelOrderHelpMessage(order))
+                .build();
+                
+        return ResponseEntity.ok(dto);
+    }
+
+    @PostMapping("/{id}/pickup-ready")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> markReadyForPickup(
+            @PathVariable Long id,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            com.security.entity.User adminUser = userRepository.findById(adminId).orElse(null);
+            
+            orderPickupService.markReadyForPickup(id, adminId, adminUser);
+            
+            return ResponseEntity.ok(Map.of("message", "Orden marcada como lista para recolección"));
+        } catch (Exception e) {
+            log.error("Error al marcar orden {} como lista para recolección: {}", id, e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/pickup-verify")
+    @PreAuthorize("hasAuthority('ORDER_UPDATE') or hasAuthority('ORDER_MANAGE') or hasRole('SUPER_ADMIN')")
+    public ResponseEntity<?> verifyPickup(
+            @PathVariable Long id,
+            @Valid @RequestBody PickupVerificationRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest,
+            Authentication authentication) {
+        try {
+            Long adminId = ((UserPrincipal) authentication.getPrincipal()).getId();
+            com.security.entity.User adminUser = userRepository.findById(adminId).orElse(null);
+            
+            String ipAddress = httpRequest.getRemoteAddr();
+            String userAgent = httpRequest.getHeader("User-Agent");
+            
+            orderPickupService.verifyAndReleasePickup(id, request.getCode(), request.getPickupAuthorizationId(), request.getNotes(), adminId, adminUser, ipAddress, userAgent);
+            
+            return ResponseEntity.ok(Map.of("message", "Código verificado correctamente. Pedido entregado."));
+        } catch (Exception e) {
+            log.error("Error al verificar código de recolección para orden {}: {}", id, e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 }

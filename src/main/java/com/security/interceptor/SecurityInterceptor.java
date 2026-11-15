@@ -32,7 +32,7 @@ public class SecurityInterceptor implements HandlerInterceptor {
         // Log básico para auditoría (solo en DEBUG)
         if (logger.isLoggable(java.util.logging.Level.FINE)) {
             logger.fine(String.format("Request - Method: %s, URI: %s, IP: %s",
-                    method, requestURI, remoteAddr));
+                    method, (requestURI.startsWith("/api/auth/") || requestURI.startsWith("/api/2fa/")) ? "[auth]" : requestURI, remoteAddr));
         }
 
         // Saltar validaciones para OPTIONS (preflight CORS)
@@ -146,8 +146,8 @@ public class SecurityInterceptor implements HandlerInterceptor {
             Object handler, Exception ex) throws Exception {
 
         if (ex != null) {
-            logger.severe("Request completed with exception: " + ex.getMessage() +
-                    " for URI: " + request.getRequestURI() +
+            logger.severe("Request completed with exception: " + ex.getClass().getSimpleName() +
+                    " for request method: " + request.getMethod() +
                     " from IP: " + getClientIpAddress(request));
         }
     }

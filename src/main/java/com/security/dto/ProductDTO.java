@@ -51,7 +51,8 @@ public class ProductDTO {
      */
     private String detailedDescription;
 
-    @NotBlank(message = "El SKU es obligatorio")
+    // SKU es autogenerado por el backend cuando no viene en el request.
+    // Solo el CSV import lo envía explícitamente.
     private String sku;
 
     @NotNull(message = "La categoría es obligatoria")

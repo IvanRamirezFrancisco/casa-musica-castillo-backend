@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -23,12 +24,14 @@ import java.nio.file.StandardCopyOption;
 import java.util.*;
 
 /**
- * Controller para manejar la subida de archivos de imágenes
+ * Controller para manejar la subida de archivos de imágenes.
+ * Requiere permisos de gestión de productos para subir/eliminar imágenes.
+ * @deprecated Use AdminProductImageController and AdminBrandController instead.
  */
+@Deprecated
 @RestController
 @RequestMapping("/api/upload")
-@CrossOrigin(origins = { "http://localhost:4200", "http://127.0.0.1:4200" }, allowedHeaders = "*", methods = {
-        RequestMethod.GET, RequestMethod.POST, RequestMethod.DELETE, RequestMethod.OPTIONS }, maxAge = 3600)
+@PreAuthorize("hasAuthority('PRODUCT_CREATE') or hasAuthority('PRODUCT_UPDATE') or hasAuthority('BRAND_MANAGE') or hasAuthority('CATEGORY_MANAGE')")
 public class FileUploadController {
 
     private static final Logger logger = LoggerFactory.getLogger(FileUploadController.class);

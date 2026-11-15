@@ -18,7 +18,7 @@ import java.util.List;
  * Soporta usuarios autenticados y sesiones anónimas
  */
 @Entity
-@Table(name = "shopping_carts", indexes = {
+@Table(name = "shopping_carts", schema = "sales", indexes = {
         @Index(name = "idx_cart_user", columnList = "user_id"),
         @Index(name = "idx_cart_status", columnList = "status")
 })

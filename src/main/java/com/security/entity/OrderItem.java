@@ -4,7 +4,8 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -15,8 +16,9 @@ import java.time.LocalDateTime;
  * Entidad para items de una orden
  */
 @Entity
-@Table(name = "order_items")
-@Data
+@Table(name = "order_items", schema = "sales")
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
 public class OrderItem {
@@ -78,5 +80,9 @@ public class OrderItem {
             calculateSubtotal();
         }
         return subtotal;
+    }
+
+    public void setOrder(Order order) {
+        this.order = order;
     }
 }

@@ -1,11 +1,15 @@
 package com.security.service.admin;
 
 import com.security.dto.admin.*;
+import com.security.entity.PasswordRecoveryAttempt;
 import com.security.entity.Role;
 import com.security.entity.User;
 import com.security.exception.ResourceNotFoundException;
 import com.security.exception.SecurityViolationException;
+import com.security.exception.SecurityHierarchyException;
+import com.security.repository.PasswordRecoveryAttemptRepository;
 import com.security.repository.RoleRepository;
+
 import com.security.repository.UserRepository;
 import com.security.service.AuditLogService;
 import com.security.util.LogSanitizer;
@@ -24,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -48,17 +53,34 @@ public class AdminUserService {
     @Autowired
     private AuditLogService auditLogService;
 
+    @Autowired
+    private PasswordRecoveryAttemptRepository passwordRecoveryAttemptRepository;
+
+    @Autowired
+    private com.security.service.AdminHierarchyService adminHierarchyService;
+
+    @Autowired
+    private com.security.service.RolePolicyService rolePolicyService;
+
     /**
      * Obtener todos los usuarios Staff con paginación
      */
     @Transactional(readOnly = true)
     public Page<AdminUserListDTO> getAllStaff(int page, int size, String sortBy, String sortDir) {
+        User actor = getCurrentUserEntity();
+        boolean isStoreManagerOnly = actor != null && rolePolicyService.isStoreManager(actor) && !rolePolicyService.isTechnicalUser(actor) && !rolePolicyService.isProtectedOwner(actor);
+
         Sort sort = sortDir.equalsIgnoreCase("asc") ? Sort.by(sortBy).ascending() : Sort.by(sortBy).descending();
         Pageable pageable = PageRequest.of(page, size, sort);
 
-        Page<User> usersPage = userRepository.findAllStaff(pageable);
+        Page<User> usersPage;
+        if (isStoreManagerOnly) {
+            usersPage = userRepository.findOperationalStaff(pageable);
+        } else {
+            usersPage = userRepository.findAllStaff(pageable);
+        }
 
-        return usersPage.map(this::convertToListDTO);
+        return usersPage.map(u -> convertToListDTO(u, actor));
     }
 
     /**
@@ -67,28 +89,44 @@ public class AdminUserService {
     @Transactional(readOnly = true)
     public Page<AdminUserListDTO> searchStaff(String searchTerm, Boolean enabled, Boolean accountNonLocked,
             int page, int size) {
+        User actor = getCurrentUserEntity();
+        boolean isStoreManagerOnly = actor != null && rolePolicyService.isStoreManager(actor) && !rolePolicyService.isTechnicalUser(actor) && !rolePolicyService.isProtectedOwner(actor);
+
         Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
 
         String search = (searchTerm != null && !searchTerm.trim().isEmpty()) ? searchTerm.trim() : "";
 
-        Page<User> usersPage = userRepository.findStaffWithFilters(search, enabled, accountNonLocked, pageable);
+        Page<User> usersPage;
+        if (isStoreManagerOnly) {
+            usersPage = userRepository.findOperationalStaffWithFilters(search, enabled, accountNonLocked, pageable);
+        } else {
+            usersPage = userRepository.findStaffWithFilters(search, enabled, accountNonLocked, pageable);
+        }
 
-        return usersPage.map(this::convertToListDTO);
+        return usersPage.map(u -> convertToListDTO(u, actor));
     }
+
 
     /**
      * Obtener un usuario Staff por ID con detalles completos
      */
     @Transactional(readOnly = true)
     public AdminUserResponseDTO getStaffById(Long id) {
-        User user = userRepository.findById(id)
+        User actor = getCurrentUserEntity();
+        // Validacion dinamica delegada a canViewUserTechnical (que ahora permite operativos si es manager)
+
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
             throw new SecurityViolationException("El usuario solicitado no es Staff");
         }
 
-        return convertToResponseDTO(user);
+        if (!rolePolicyService.canViewUserTechnical(actor, user)) {
+            throw new SecurityHierarchyException("No tienes permiso para ver a este usuario.");
+        }
+
+        return convertToResponseDTO(user, actor);
     }
 
     /**
@@ -165,6 +203,12 @@ public class AdminUserService {
                 throw new SecurityViolationException(
                         "No tienes permisos para asignar el rol SUPER_ADMIN");
             }
+
+            // SECURITY: Hierarchy — no se puede asignar roles de nivel ≥ al propio
+            assertCanAssignRoles(roles, newUser);
+
+            // Validar consistencia de roles (ROLE_USER no puede coexistir con ADMIN)
+            validateRoleAssignment(roles);
         } else {
             // Por defecto asignar ROLE_USER
             Role defaultRole = roleRepository.findByName("ROLE_USER")
@@ -220,7 +264,7 @@ public class AdminUserService {
      */
     @Transactional
     public AdminUserResponseDTO updateStaffUser(Long id, AdminUserUpdateDTO dto) {
-        User user = userRepository.findById(id)
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
@@ -233,6 +277,11 @@ public class AdminUserService {
 
         // Validar que no se esté modificando a sí mismo
         boolean isSelfUpdate = user.getId().equals(currentAdminId);
+
+        // SECURITY: Hierarchy — no se puede modificar usuarios de nivel ≥ al propio
+        if (!isSelfUpdate) {
+            assertCanActOn(user);
+        }
 
         // Actualizar campos básicos
         if (dto.getFirstName() != null && !dto.getFirstName().equals(user.getFirstName())) {
@@ -248,6 +297,12 @@ public class AdminUserService {
         }
 
         if (dto.getEmail() != null && !dto.getEmail().equalsIgnoreCase(user.getEmail())) {
+            // CRITICAL: El email del Protected Owner no puede cambiarse desde administración
+            if (adminHierarchyService.isProtectedOwner(user) && !isSelfUpdate) {
+                User actorUser = userRepository.findByEmail(currentAdmin)
+                        .orElseThrow(() -> new SecurityViolationException("Actor no encontrado"));
+                adminHierarchyService.assertCanChangeEmailAdmin(actorUser, user);
+            }
             // Validar que el nuevo email no exista
             if (userRepository.existsByEmail(dto.getEmail())) {
                 throw new IllegalArgumentException("Ya existe un usuario con el email: " + dto.getEmail());
@@ -326,6 +381,14 @@ public class AdminUserService {
                         "No tienes permisos para asignar el rol SUPER_ADMIN");
             }
 
+            // SECURITY: Hierarchy — no se puede asignar roles de nivel ≥ al propio
+            if (!isSelfUpdate) {
+                assertCanAssignRoles(newRoles, user);
+            }
+
+            // Validar consistencia de roles (ROLE_USER no puede coexistir con ADMIN)
+            validateRoleAssignment(newRoles);
+
             // VALIDACION CRITICA: No permitir que un admin se quite el rol ROLE_ADMIN a si
             // mismo
             if (isSelfUpdate) {
@@ -336,6 +399,15 @@ public class AdminUserService {
 
                 if (hadAdminRole && !hasAdminRoleInNew) {
                     throw new SecurityViolationException("No puedes quitarte el rol de ADMIN a ti mismo");
+                }
+                
+                // PROTECCION DEL PROTECTED_OWNER: No puede quitarse ROLE_SUPER_ADMIN
+                if (adminHierarchyService.isProtectedOwner(user)) {
+                    boolean hadSuperAdmin = currentRoles.stream().anyMatch(r -> "ROLE_SUPER_ADMIN".equals(r.getName()));
+                    boolean hasSuperAdminInNew = newRoles.stream().anyMatch(r -> "ROLE_SUPER_ADMIN".equals(r.getName()));
+                    if (hadSuperAdmin && !hasSuperAdminInNew) {
+                        throw new SecurityViolationException("El Propietario Técnico no puede quitarse el rol de SUPER_ADMIN a sí mismo.");
+                    }
                 }
             }
 
@@ -370,7 +442,7 @@ public class AdminUserService {
      */
     @Transactional
     public AdminUserResponseDTO toggleEnabledStatus(Long id) {
-        User user = userRepository.findById(id)
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
@@ -383,6 +455,17 @@ public class AdminUserService {
         // VALIDACIÓN CRÍTICA: No permitir desactivarse a sí mismo
         if (user.getId().equals(currentAdminId) && user.getEnabled()) {
             throw new SecurityViolationException("❌ No puedes desactivar tu propia cuenta");
+        }
+
+        // SECURITY: Hierarchy — no se puede modificar usuarios de nivel ≥ al propio
+        // Usamos assertCanDisableUser que incluye la protección del Protected Owner.
+        if (!user.getId().equals(currentAdminId)) {
+            User actor = userRepository.findByEmail(currentAdmin)
+                    .orElseThrow(() -> new SecurityViolationException("Actor no encontrado"));
+            adminHierarchyService.assertCanDisableUser(actor, user);
+        } else if (adminHierarchyService.isProtectedOwner(user)) {
+            // Protected Owner no puede autodeshabilitarse
+            throw new SecurityViolationException("La cuenta del propietario del sistema no puede ser deshabilitada.");
         }
 
         // Toggle del estado
@@ -411,7 +494,7 @@ public class AdminUserService {
      */
     @Transactional
     public AdminUserResponseDTO toggleLockedStatus(Long id) {
-        User user = userRepository.findById(id)
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
@@ -424,6 +507,11 @@ public class AdminUserService {
         // VALIDACIÓN CRÍTICA: No permitir bloquearse a sí mismo
         if (user.getId().equals(currentAdminId) && user.getAccountNonLocked()) {
             throw new SecurityViolationException("❌ No puedes bloquear tu propia cuenta");
+        }
+
+        // SECURITY: Hierarchy — no se puede modificar usuarios de nivel ≥ al propio
+        if (!user.getId().equals(currentAdminId)) {
+            assertCanActOn(user);
         }
 
         // Toggle del estado
@@ -452,7 +540,7 @@ public class AdminUserService {
      */
     @Transactional
     public void deleteStaffUser(Long id) {
-        User user = userRepository.findById(id)
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
@@ -466,6 +554,12 @@ public class AdminUserService {
         if (user.getId().equals(currentAdminId)) {
             throw new SecurityViolationException("❌ No puedes eliminar tu propia cuenta");
         }
+
+        // SECURITY: Hierarchy — no se puede eliminar usuarios de nivel ≥ al propio.
+        // Usamos assertCanDeleteUser que incluye la protección del Protected Owner.
+        User actor = userRepository.findByEmail(currentAdmin)
+                .orElseThrow(() -> new SecurityViolationException("Actor no encontrado"));
+        adminHierarchyService.assertCanDeleteUser(actor, user);
 
         String userEmail = user.getEmail();
         Long userId = user.getId();
@@ -487,12 +581,15 @@ public class AdminUserService {
      */
     @Transactional
     public AdminUserResponseDTO resetFailedLoginAttempts(Long id) {
-        User user = userRepository.findById(id)
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
 
         if (user.getIsCustomer()) {
             throw new SecurityViolationException("No se puede modificar un usuario Customer desde este endpoint");
         }
+
+        // SECURITY: Hierarchy — no se puede actuar sobre usuarios de nivel ≥ al propio
+        assertCanActOn(user);
 
         // Desbloquear la cuenta si estaba bloqueada por intentos fallidos
         user.setAccountNonLocked(true);
@@ -511,6 +608,62 @@ public class AdminUserService {
                 LogSanitizer.maskEmail(updatedUser.getEmail()),
                 updatedUser.getId(), LogSanitizer.sanitize(currentAdmin));
         return convertToResponseDTO(updatedUser);
+    }
+
+    /**
+     * Resetear el bloqueo de recuperacion de contrasena de un usuario Staff.
+     * Elimina todos los registros de password_recovery_attempts asociados
+     * al email del usuario.
+     *
+     * @param id ID del usuario Staff
+     * @return DTO actualizado del usuario
+     * @throws SecurityViolationException si intenta resetear su propia cuenta
+     */
+    @Transactional
+    public AdminUserResponseDTO resetPasswordRecoveryBlock(Long id) {
+        User user = userRepository.findByIdWithRolesAndPermissions(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + id));
+
+        if (user.getIsCustomer()) {
+            throw new SecurityViolationException("No se puede modificar un usuario Customer desde este endpoint");
+        }
+
+        String currentAdmin = getCurrentUsername();
+        Long currentAdminId = getCurrentUserId();
+
+        // Anti-self-harm: no puede resetear su propio bloqueo de recuperacion
+        if (user.getId().equals(currentAdminId)) {
+            throw new SecurityViolationException("No puedes resetear tu propio bloqueo de recuperacion de contrasena");
+        }
+
+        // SECURITY: Hierarchy — no se puede actuar sobre usuarios de nivel ≥ al propio
+        assertCanActOn(user);
+
+        List<PasswordRecoveryAttempt> attempts = passwordRecoveryAttemptRepository
+                .findAllByEmail(user.getEmail());
+
+        if (!attempts.isEmpty()) {
+            for (PasswordRecoveryAttempt attempt : attempts) {
+                attempt.resetByAdmin();
+            }
+            passwordRecoveryAttemptRepository.saveAll(attempts);
+            logger.info("Bloqueo de recuperacion reseteado para Staff: {} (ID: {}) por admin: {} - {} registros",
+                    user.getEmail(), user.getId(), currentAdmin, attempts.size());
+        } else {
+            logger.info("No se encontraron registros de bloqueo para Staff: {} (ID: {})",
+                    user.getEmail(), user.getId());
+        }
+
+        try {
+            auditLogService.logAction("RESET_STAFF_RECOVERY_BLOCK", "USER", user.getId(),
+                    String.format("Bloqueo de recuperacion reseteado para '%s' por '%s'",
+                            user.getEmail(), currentAdmin));
+        } catch (Exception auditEx) {
+            logger.warn("No se pudo registrar audit log de reset recovery para {}: {}",
+                    user.getEmail(), auditEx.getMessage());
+        }
+
+        return convertToResponseDTO(user);
     }
 
     /**
@@ -555,12 +708,232 @@ public class AdminUserService {
         return value;
     }
 
+    // ==================== Métodos de Jerarquía y Seguridad ====================
+
+    /**
+     * Obtiene el nivel jerárquico de un usuario basándose en sus roles.
+     * ROLE_SUPER_ADMIN = 100, ROLE_ADMIN = 50, roles custom = 10, ROLE_USER = 0.
+     * Se usa el máximo nivel encontrado entre todos los roles del usuario.
+     */
+    private int getHierarchyLevel(User user) {
+        if (user == null || user.getRoles() == null || user.getRoles().isEmpty()) {
+            return 0;
+        }
+        return user.getRoles().stream()
+                .mapToInt(role -> {
+                    if (role.getName() == null)
+                        return 0;
+                    return switch (role.getName()) {
+                        case "ROLE_SUPER_ADMIN" -> 100;
+                        case "ROLE_ADMIN" -> 50;
+                        case "ROLE_USER" -> 0;
+                        default -> 10; // Roles custom (ROLE_MANAGER, ROLE_STAFF, etc.)
+                    };
+                })
+                .max()
+                .orElse(0);
+    }
+
+    /**
+     * Obtiene el nivel jerárquico del usuario autenticado actual.
+     * Carga el usuario completo con roles para calcular su nivel.
+     */
+    private int getCurrentUserHierarchyLevel() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null)
+            return 0;
+        String email = auth.getName();
+        User currentUser = userRepository.findByEmail(email).orElse(null);
+        return currentUser != null ? getHierarchyLevel(currentUser) : 0;
+    }
+
+    /**
+     * Valida que el actor actual pueda modificar al target user.
+     * @throws SecurityViolationException si el nivel jerárquico actual es ≤ al
+     *                                    objetivo o es protected owner
+     */
+    private void assertCanActOn(User targetUser) {
+        String currentAdmin = getCurrentUsername();
+        if (currentAdmin == null || "SYSTEM".equals(currentAdmin)) return;
+        
+        User actor = userRepository.findByEmail(currentAdmin)
+                .orElseThrow(() -> new SecurityViolationException("Actor not found"));
+
+        adminHierarchyService.assertCanManageUser(actor, targetUser);
+    }
+
+    /**
+     * Valida que los roles que se intentan asignar no excedan el nivel
+     * jerárquico del usuario actual. No se puede asignar roles de nivel
+     * igual o superior al propio.
+     *
+     * @param rolesToAssign roles que se pretenden asignar
+     * @throws SecurityViolationException si se intenta asignar un rol ≥ al nivel
+     *                                    actual
+     */
+    private void assertCanAssignRoles(Set<Role> rolesToAssign, User targetUser) {
+        String currentAdmin = getCurrentUsername();
+        if (currentAdmin == null || "SYSTEM".equals(currentAdmin)) return;
+        
+        User actor = userRepository.findByEmail(currentAdmin)
+                .orElseThrow(() -> new SecurityViolationException("Actor not found"));
+
+        for (Role role : rolesToAssign) {
+            adminHierarchyService.assertCanAssignRole(actor, targetUser, role);
+        }
+    }
+
+    /**
+     * Obtiene los roles asignables para el actor actual (Contexto Técnico)
+     */
+    @Transactional(readOnly = true)
+    public List<AssignableRoleDTO> getAssignableRoles() {
+        User actor = getCurrentUserEntity();
+        if (actor != null && rolePolicyService.isStoreManager(actor) && !rolePolicyService.isTechnicalUser(actor) && !rolePolicyService.isProtectedOwner(actor)) {
+            return getAssignableOperationalRoles();
+        }
+
+        List<Role> allRoles = roleRepository.findAll();
+        List<Role> assignableRoles = rolePolicyService.getAssignableTechnicalRoles(actor, allRoles);
+
+        return assignableRoles.stream().map(role -> {
+            AssignableRoleDTO dto = new AssignableRoleDTO();
+            dto.setId(role.getId());
+            dto.setName(role.getName());
+            dto.setDescription(role.getDescription());
+            dto.setSystemRole(role.getIsSystemRole());
+            dto.setAssignable(true);
+            dto.setLevel(adminHierarchyService.getRoleLevel(role));
+            dto.setScope(rolePolicyService.getRoleScope(role.getName()).name());
+            
+            // Generate user-friendly display name
+            String displayName = role.getName();
+            if (displayName.startsWith("ROLE_")) {
+                displayName = displayName.substring(5).replace("_", " ");
+                displayName = displayName.substring(0, 1).toUpperCase() + displayName.substring(1).toLowerCase();
+            }
+            dto.setDisplayName(displayName);
+            
+            return dto;
+        }).collect(Collectors.toList());
+    }
+
+    /**
+     * Obtiene los roles asignables para el actor actual (Contexto Operativo)
+     */
+    @Transactional(readOnly = true)
+    public List<AssignableRoleDTO> getAssignableOperationalRoles() {
+        User actor = getCurrentUserEntity();
+        if (actor == null) throw new SecurityHierarchyException("No autenticado");
+
+        List<Role> allRoles = roleRepository.findAll();
+        List<Role> assignableRoles = rolePolicyService.getAssignableOperationalRoles(actor, allRoles);
+
+        return assignableRoles.stream().map(role -> {
+            AssignableRoleDTO dto = new AssignableRoleDTO();
+            dto.setId(role.getId());
+            dto.setName(role.getName());
+            dto.setDescription(role.getDescription());
+            dto.setSystemRole(role.getIsSystemRole());
+            dto.setAssignable(true);
+            dto.setLevel(adminHierarchyService.getRoleLevel(role));
+            dto.setScope(rolePolicyService.getRoleScope(role.getName()).name());
+            
+            String displayName = role.getName();
+            if (displayName.startsWith("ROLE_")) {
+                displayName = displayName.substring(5).replace("_", " ");
+                displayName = displayName.substring(0, 1).toUpperCase() + displayName.substring(1).toLowerCase();
+            }
+            dto.setDisplayName(displayName);
+            
+            return dto;
+        }).collect(Collectors.toList());
+    }
+
     // ==================== Métodos Helper ====================
+
+    /**
+     * Enmascarar el correo (ej. 20221087@uthh.edu.mx -> 2022****@uthh.edu.mx)
+     */
+    private String maskEmail(String email) {
+        if (email == null || !email.contains("@")) return email;
+        String[] parts = email.split("@");
+        String local = parts[0];
+        String domain = parts[1];
+        if (local.length() <= 4) {
+            local = local.substring(0, Math.min(2, local.length())) + "****";
+        } else {
+            local = local.substring(0, 4) + "****";
+        }
+        return local + "@" + domain;
+    }
+
+    private void fillSecurityFlags(User user, User actor, AdminUserListDTO dto) {
+        boolean isProtected = rolePolicyService.isProtectedOwner(user);
+        boolean isCurrent = adminHierarchyService.isSameUser(actor, user);
+        
+        dto.setProtectedOwner(isProtected);
+        dto.setCurrentUser(isCurrent);
+        dto.setHighestRoleLevel(rolePolicyService.getHighestRoleLevel(user));
+        dto.setTechnicalUser(rolePolicyService.isTechnicalUser(user));
+        dto.setOperationalUser(rolePolicyService.isOperationalUser(user));
+        dto.setStoreManager(rolePolicyService.isStoreManager(user));
+        
+        dto.setCanManage(rolePolicyService.canManageUser(actor, user));
+        dto.setCanEdit(dto.getCanManage());
+        dto.setCanDelete(dto.getCanManage() && !isProtected && !isCurrent);
+        dto.setCanDisable(dto.getCanManage() && !isProtected && !isCurrent);
+        dto.setCanChangeRoles(dto.getCanManage());
+        dto.setCanResetTwoFactor(dto.getCanManage() && (!isProtected || isCurrent));
+        dto.setCanChangePasswordAdmin(dto.getCanManage() && (!isProtected || isCurrent));
+        
+        dto.setCanViewSensitiveFields(isCurrent || !isProtected);
+        
+        if (dto.getCanViewSensitiveFields()) {
+            dto.setDisplayEmail(user.getEmail());
+            dto.setMaskedEmail(user.getEmail());
+        } else {
+            String masked = maskEmail(user.getEmail());
+            dto.setDisplayEmail(masked);
+            dto.setMaskedEmail(masked);
+        }
+    }
+
+    private void fillSecurityFlagsResponse(User user, User actor, AdminUserResponseDTO dto) {
+        boolean isProtected = rolePolicyService.isProtectedOwner(user);
+        boolean isCurrent = adminHierarchyService.isSameUser(actor, user);
+        
+        dto.setProtectedOwner(isProtected);
+        dto.setCurrentUser(isCurrent);
+        dto.setHighestRoleLevel(rolePolicyService.getHighestRoleLevel(user));
+        dto.setTechnicalUser(rolePolicyService.isTechnicalUser(user));
+        dto.setOperationalUser(rolePolicyService.isOperationalUser(user));
+        dto.setStoreManager(rolePolicyService.isStoreManager(user));
+        
+        dto.setCanManage(rolePolicyService.canManageUser(actor, user));
+        dto.setCanEdit(dto.getCanManage());
+        dto.setCanDelete(dto.getCanManage() && !isProtected && !isCurrent);
+        dto.setCanDisable(dto.getCanManage() && !isProtected && !isCurrent);
+        dto.setCanChangeRoles(dto.getCanManage());
+        dto.setCanResetTwoFactor(dto.getCanManage() && (!isProtected || isCurrent));
+        dto.setCanChangePasswordAdmin(dto.getCanManage() && (!isProtected || isCurrent));
+        
+        dto.setCanViewSensitiveFields(isCurrent || !isProtected);
+        
+        if (dto.getCanViewSensitiveFields()) {
+            dto.setDisplayEmail(user.getEmail());
+            dto.setMaskedEmail(user.getEmail());
+        } else {
+            String masked = maskEmail(user.getEmail());
+            dto.setDisplayEmail(masked);
+            dto.setMaskedEmail(masked);
+        }
+    }
 
     /**
      * Convertir User a AdminUserListDTO (para listados paginados)
      */
-    private AdminUserListDTO convertToListDTO(User user) {
+    private AdminUserListDTO convertToListDTO(User user, User actor) {
         AdminUserListDTO dto = new AdminUserListDTO();
         dto.setId(user.getId());
         dto.setFirstName(user.getFirstName());
@@ -576,14 +949,27 @@ public class AdminUserService {
                 .map(r -> r.getName())
                 .collect(Collectors.joining(", "));
         dto.setRoles(rolesStr);
+        
+        fillSecurityFlags(user, actor, dto);
+
+        // Si no tiene permiso de verlo en listado técnico, se oculta o se marca vacío
+        if (actor != null && !rolePolicyService.canViewUserTechnical(actor, user)) {
+            dto.setFirstName("Usuario");
+            dto.setLastName("Oculto");
+            dto.setRoles("PROTECTED");
+        }
 
         return dto;
+    }
+
+    private AdminUserListDTO convertToListDTO(User user) {
+        return convertToListDTO(user, getCurrentUserEntity());
     }
 
     /**
      * Convertir User a AdminUserResponseDTO (para detalles completos)
      */
-    private AdminUserResponseDTO convertToResponseDTO(User user) {
+    private AdminUserResponseDTO convertToResponseDTO(User user, User actor) {
         AdminUserResponseDTO dto = new AdminUserResponseDTO();
         dto.setId(user.getId());
         dto.setFirstName(user.getFirstName());
@@ -617,8 +1003,14 @@ public class AdminUserService {
                 })
                 .collect(Collectors.toSet());
         dto.setRolesDetail(rolesDetail);
+        
+        fillSecurityFlagsResponse(user, actor, dto);
 
         return dto;
+    }
+
+    private AdminUserResponseDTO convertToResponseDTO(User user) {
+        return convertToResponseDTO(user, getCurrentUserEntity());
     }
 
     /**
@@ -643,6 +1035,15 @@ public class AdminUserService {
         return null;
     }
 
+    private User getCurrentUserEntity() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof org.springframework.security.core.userdetails.UserDetails) {
+            String email = auth.getName();
+            return userRepository.findByEmail(email).orElse(null);
+        }
+        return null;
+    }
+
     /**
      * Verifica si el usuario autenticado actual tiene el rol indicado
      */
@@ -652,5 +1053,26 @@ public class AdminUserService {
             return false;
         return auth.getAuthorities().stream()
                 .anyMatch(a -> roleName.equals(a.getAuthority()));
+    }
+
+    /**
+     * Valida la consistencia de roles asignados.
+     * Regla: ROLE_USER es exclusivo para clientes y no puede coexistir con
+     * ROLE_ADMIN o ROLE_SUPER_ADMIN en el mismo usuario Staff.
+     *
+     * @param roles Set de roles a validar
+     * @throws IllegalArgumentException si la combinacion de roles es invalida
+     */
+    private void validateRoleAssignment(Set<Role> roles) {
+        boolean hasUserRole = roles.stream()
+                .anyMatch(r -> "ROLE_USER".equals(r.getName()));
+        boolean hasAdminRole = roles.stream()
+                .anyMatch(r -> "ROLE_ADMIN".equals(r.getName()) || "ROLE_SUPER_ADMIN".equals(r.getName()));
+
+        if (hasUserRole && hasAdminRole) {
+            throw new IllegalArgumentException(
+                    "ROLE_USER no puede coexistir con ROLE_ADMIN o ROLE_SUPER_ADMIN. "
+                            + "ROLE_USER es exclusivo para clientes registrados.");
+        }
     }
 }

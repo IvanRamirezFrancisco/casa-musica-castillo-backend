@@ -25,6 +25,12 @@ application-secret.yml
 .env
 .env.local
 .env.production
+render-backend.env.local
+backend-repomix.xml
+repomix-*.xml
+output*.json
+view_*.sql
+npx
 
 # Archivos de propiedades con credenciales
 *.properties
@@ -167,3 +173,13 @@ replay_pid*
 # 3. Railway leerá application.yml y aplicará las variables
 # 4. Los secrets se configuran en el dashboard de Railway
 # ==================================================
+
+# ===== ARCHIVOS SUBIDOS (UPLOADS) =====
+uploads/products/
+uploads/brands/
+uploads/payment-proofs/view_def.txt
+
+# Archivos locales generados
+/view_def.txt
+/uploads/payment-proofs/
+/uploads/payment-proofs/**

@@ -23,6 +23,8 @@ public class CategoryDTO {
     private String name;
     private String description;
     private String imageUrl;
+    private String imagePublicId;
+    private String imageProvider;
     private Boolean active;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -31,6 +33,9 @@ public class CategoryDTO {
     private Long parentId;
     private String parentName;
     private Integer subcategoryCount;
+    private Boolean hasChildren;
+    private Integer level;
+    private String hierarchyPath;
 
     // Contador de productos
     private Integer productCount;
@@ -64,17 +69,28 @@ public class CategoryDTO {
         // calculado como subquery SQL sin necesidad de cargar la colección LAZY.
         Integer productCount = category.getProductCount();
 
+        // Determinar level y hierarchyPath iterando hacia arriba si es posible
+        // Como el parent puede estar lazy, esto se limitará al padre inmediato si no se hace en un join fetch más grande.
+        // Pero para el DTO simple, podemos establecer nivel 0 o 1.
+        Integer level = parentId == null ? 0 : 1;
+        String hierarchyPath = parentId == null ? category.getName() : parentName + " > " + category.getName();
+
         return CategoryDTO.builder()
                 .id(category.getId())
                 .name(category.getName())
                 .description(category.getDescription())
                 .imageUrl(category.getImageUrl())
+                .imagePublicId(category.getImagePublicId())
+                .imageProvider(category.getImageProvider())
                 .active(category.getActive())
                 .createdAt(category.getCreatedAt())
                 .updatedAt(category.getUpdatedAt())
                 .parentId(parentId)
                 .parentName(parentName)
                 .subcategoryCount(subcategoryCount)
+                .hasChildren(subcategoryCount > 0)
+                .level(level)
+                .hierarchyPath(hierarchyPath)
                 .productCount(productCount)
                 .build();
     }

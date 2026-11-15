@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.0</version>
+        <version>4.0.9</version>
         <relativePath/>
     </parent>
     
@@ -18,15 +18,46 @@
     <description>Sistema de autenticación completo con 2FA</description>
     
     <properties>
-        <java.version>17</java.version>
+        <java.version>21</java.version>
+        <!-- Compatible security fixes published after the Spring Boot 3.5.16 BOM. -->
+        <jackson-2-bom.version>2.21.8</jackson-2-bom.version>
+        <postgresql.version>42.7.14</postgresql.version>
+        <httpclient5.version>5.6.4</httpclient5.version>
+        <httpcore5.version>5.4.3</httpcore5.version>
+        <netty.version>4.1.139.Final</netty.version>
+        <log4j2.version>2.25.5</log4j2.version>
+        <commons-lang3.version>3.21.0</commons-lang3.version>
         <sonar.organization>ivanramirezfrancisco-2</sonar.organization>
+        <sonar.coverage.jacoco.xmlReportPaths>${project.reporting.outputDirectory}/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+        <sonar.javascript.lcov.reportPaths>${project.build.directory}/sonar-ci/lcov.info</sonar.javascript.lcov.reportPaths>
     </properties>
     
+    <dependencyManagement>
+        <dependencies>
+            <!-- googleauth still resolves HttpClient 4.5.12 (CVE-2020-13956). -->
+            <dependency>
+                <groupId>org.apache.httpcomponents</groupId>
+                <artifactId>httpclient</artifactId>
+                <version>4.5.14</version>
+            </dependency>
+            <!-- Mercado Pago's Velocity Tools still resolves BeanUtils 1.9.4. -->
+            <dependency>
+                <groupId>commons-beanutils</groupId>
+                <artifactId>commons-beanutils</artifactId>
+                <version>1.11.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- Spring Boot Starters -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-restclient</artifactId>
         </dependency>
         
         <dependency>
@@ -56,15 +87,18 @@
 
         <!-- Flyway para migraciones de base de datos -->
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         
         <!-- Database -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.3</version>
         </dependency>
         
         <!-- JWT -->
@@ -85,14 +119,6 @@
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
             <version>0.11.5</version>
-        </dependency>
-        
-        <!-- SendGrid -->
-        <dependency>
-            <groupId>com.sendgrid</groupId>
-            <artifactId>sendgrid-java</artifactId>
-            <version>4.9.3</version>
-            <scope>runtime</scope>
         </dependency>
         
         <!-- Google Authenticator & QR Code -->
@@ -140,15 +166,23 @@
             <optional>true</optional>
         </dependency>
         
-        <!-- DevTools -->
+        <!-- Preserve the existing JSON contract and Jackson 2 integrations. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-devtools</artifactId>
-            <scope>runtime</scope>
-            <optional>true</optional>
+            <artifactId>spring-boot-jackson2</artifactId>
         </dependency>
-        
+
         <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -156,8 +190,8 @@
         </dependency>
         
         <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-test</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -167,14 +201,8 @@
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.2.1</version>
         </dependency>
         
-        <!-- WebFlux — WebClient para llamadas HTTP reactivas (Supabase Storage API) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
 
         <!-- JSON Processing -->
         <dependency>
@@ -186,47 +214,73 @@
         <dependency>
             <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
             <artifactId>owasp-java-html-sanitizer</artifactId>
-            <version>20220608.1</version>
+            <version>20261011.1</version>
         </dependency>
-        
-        <!-- OWASP ESAPI para sanitización adicional -->
-        <dependency>
-            <groupId>org.owasp.esapi</groupId>
-            <artifactId>esapi</artifactId>
-            <version>2.5.1.0</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>commons-configuration</groupId>
-                    <artifactId>commons-configuration</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        
+
         <!-- Passay para validación de contraseñas -->
         <dependency>
             <groupId>org.passay</groupId>
             <artifactId>passay</artifactId>
             <version>1.6.2</version>
         </dependency>
-    </dependencies>    <build>
+
+        <!-- Caffeine — caché en memoria con TTL para proteger consultas frecuentes -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
+        <!-- Cloudinary -->
+        <dependency>
+            <groupId>com.cloudinary</groupId>
+            <artifactId>cloudinary-http44</artifactId>
+            <version>1.36.0</version>
+        </dependency>
+        
+        <!-- Mercado Pago SDK Oficial -->
+        <dependency>
+            <groupId>com.mercadopago</groupId>
+            <artifactId>sdk-java</artifactId>
+            <version>3.2.0</version>
+        </dependency>
+    </dependencies>
+    
+    <build>
         <plugins>
-            <!-- Compilador con soporte explícito para Lombok (Java 21) -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.16</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
                 <configuration>
-                    <source>21</source>
-                    <target>21</target>
+                    <release>${java.version}</release>
+                    <compilerArgs>
+                        <arg>-parameters</arg>
+                    </compilerArgs>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>1.18.30</version>
+                            <version>${lombok.version}</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
-
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
@@ -244,8 +298,14 @@
             <plugin>
                 <groupId>org.owasp</groupId>
                 <artifactId>dependency-check-maven</artifactId>
-                <version>9.0.7</version>
+                <version>13.0.0</version>
                 <configuration>
+                    <!-- Use public NVD feeds for a credential-free CI scan. -->
+                    <nvdDatafeedUrl>https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz</nvdDatafeedUrl>
+                    <connectionTimeout>20000</connectionTimeout>
+                    <readTimeout>120000</readTimeout>
+                    <nvdMaxRetryCount>3</nvdMaxRetryCount>
+                    <failOnError>true</failOnError>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
                     <suppressionFile>owasp-suppressions.xml</suppressionFile>
                     <formats>

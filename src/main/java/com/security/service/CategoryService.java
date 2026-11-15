@@ -7,6 +7,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.security.dto.StorageUploadResult;
+import com.security.util.SlugUtils;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.IOException;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -19,6 +24,7 @@ import java.util.Optional;
 public class CategoryService {
 
     private final CategoryRepository categoryRepository;
+    private final StorageService storageService;
 
     /**
      * Obtener todas las categorías activas
@@ -86,8 +92,21 @@ public class CategoryService {
 
         // Actualizar relación de categoría padre
         if (newParentId != null) {
+            if (newParentId.equals(id)) {
+                throw new IllegalArgumentException("Una categoría no puede ser padre de sí misma.");
+            }
             Category newParent = categoryRepository.findById(newParentId)
                     .orElseThrow(() -> new RuntimeException("Categoría padre no encontrada con ID: " + newParentId));
+            
+            // Validar que el nuevo padre no sea un descendiente de esta categoría
+            Category tempParent = newParent;
+            while (tempParent != null) {
+                if (tempParent.getId().equals(id)) {
+                     throw new IllegalArgumentException("No se puede asignar como padre a una categoría que es descendiente de la actual.");
+                }
+                tempParent = tempParent.getParent();
+            }
+
             category.setParent(newParent);
         } else {
             category.setParent(null);
@@ -126,10 +145,62 @@ public class CategoryService {
                             " producto(s) asociado(s). Muévelos o elimínalos primero.");
         }
 
+        // Si tiene imagen asociada en storage, eliminarla
+        if (category.getImagePublicId() != null) {
+            try {
+                storageService.delete(category.getImagePublicId());
+                log.info("🖼️ Imagen de categoría eliminada del almacenamiento: {}", category.getImagePublicId());
+            } catch (Exception e) {
+                log.warn("⚠️ No se pudo eliminar la imagen de la categoría del almacenamiento: {}", e.getMessage());
+            }
+        }
+
         // ✅ CATEGORÍA VACÍA: Borrado físico permitido
         log.info("🗑️ HARD DELETE: Eliminando permanentemente categoría '{}' (ID: {})",
                 category.getName(), id);
         categoryRepository.deleteById(id);
         log.info("✅ Categoría eliminada permanentemente de la base de datos");
+    }
+
+    /**
+     * Subir imagen de categoría
+     */
+    @Transactional
+    public StorageUploadResult uploadImage(Long categoryId, MultipartFile file) throws IOException {
+        Category category = categoryRepository.findById(categoryId)
+                .orElseThrow(() -> new RuntimeException("Categoría no encontrada con ID: " + categoryId));
+
+        if (category.getImagePublicId() != null) {
+            storageService.delete(category.getImagePublicId());
+        }
+
+        String folderPath = SlugUtils.buildCategoryFolder(category.getId(), category.getName());
+        StorageUploadResult result = storageService.uploadBrandImage(file, categoryId, folderPath);
+        
+        category.setImageUrl(result.getSecureUrl());
+        category.setImagePublicId(result.getPublicId());
+        category.setImageProvider(result.getProvider());
+        
+        categoryRepository.save(category);
+        return result;
+    }
+
+    /**
+     * Eliminar imagen de categoría
+     */
+    @Transactional
+    public void deleteImage(Long categoryId) throws IOException {
+        Category category = categoryRepository.findById(categoryId)
+                .orElseThrow(() -> new RuntimeException("Categoría no encontrada con ID: " + categoryId));
+
+        if (category.getImagePublicId() != null) {
+            storageService.delete(category.getImagePublicId());
+        }
+        
+        category.setImageUrl(null);
+        category.setImagePublicId(null);
+        category.setImageProvider(null);
+        
+        categoryRepository.save(category);
     }
 }

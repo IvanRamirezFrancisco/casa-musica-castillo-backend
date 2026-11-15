@@ -6,13 +6,17 @@ server:
     include-exception: false
 
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: auth-system
 
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:security_db}}
     username: ${PGUSER:spring_app}
-    password: ${PGPASSWORD:SpringSeguro2026!}
+    # Sin default: la contraseña debe venir del entorno (PGPASSWORD).
+    password: ${PGPASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 5
@@ -20,6 +24,7 @@ spring:
       idle-timeout: 300000
       connection-timeout: 30000
       max-lifetime: 1200000
+      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics
 
   jpa:
     hibernate:
@@ -30,24 +35,27 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: false
+        default_schema: public
 
   flyway:
     enabled: true
     baseline-on-migrate: true
+    default-schema: public
+    schemas: public,auth,security,catalog,sales,customer,ops,analytics
 
   mail:
-    host: ${MAIL_HOST:smtp-relay.brevo.com}
-    port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME::9a5a33001@smtp-brevo.com}
-    password: ${MAIL_PASSWORD:m9srNnc8DV12O4wh}
+    host: ${SPRING_MAIL_HOST:${MAIL_HOST:smtp-relay.brevo.com}}
+    port: ${SPRING_MAIL_PORT:${MAIL_PORT:587}}
+    username: ${SPRING_MAIL_USERNAME:${MAIL_USERNAME:}}
+    password: ${SPRING_MAIL_PASSWORD:${MAIL_PASSWORD:}}
     properties:
       mail:
         smtp:
-          auth: true
+          auth: ${SPRING_MAIL_SMTP_AUTH:${MAIL_SMTP_AUTH:true}}
           ssl:
             enable: false
           starttls:
-            enable: true
+            enable: ${SPRING_MAIL_STARTTLS_ENABLE:${MAIL_STARTTLS_ENABLE:true}}
           connectiontimeout: 10000
           timeout: 10000
           writetimeout: 10000
@@ -55,11 +63,14 @@ spring:
 
 app:
   security:
+    # Propietario Técnico (Protección Absoluta)
+    protected-owner-emails:
+      - "20221087@uthh.edu.mx"
+
     # JWT seguro mejorado
     jwt:
-      secret: ${JWT_SECRET:casa-musica-castillo-super-secret-key-2024-production-secure}
-      access-token-expiration: 900000      # 15 minutos
-      refresh-token-expiration: 86400000   # 24 horas
+      secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
+      expiration: 86400000                # TTL oficial HS512: 24 horas
       issuer: casa-musica-castillo
 
     # Autenticación de dos factores
@@ -128,34 +139,49 @@ app:
       suspicious-threshold: 5
       alert-cooldown-minutes: 15
 
+    # Moderacion de Resenas (Product Reviews)
+    reviews:
+      moderation:
+        enabled: true
+        max-links: 2
+        repeated-char-threshold: 5
+        suspicious-to-pending: true
+
   # ============================================================
   # BACKUP DE BASE DE DATOS
   # ============================================================
   backup:
     pg-dump-path: ${PG_DUMP_PATH:pg_dump}
+    pg-restore-path: ${PG_RESTORE_PATH:pg_restore}
     temp-dir: ${BACKUP_TEMP_DIR:/tmp/casamusica-backups}
 
-  base-url: ${FRONTEND_URL:http://localhost:4200}
+  base-url: ${APP_BASE_URL:${FRONTEND_URL:http://localhost:4200}}
   
-  # Configuración OAuth2.0
-  oauth2:
-    authorization-code-expiration: 600      # 10 minutos
-    access-token-expiration: 3600           # 1 hora
-    refresh-token-expiration: 2592000       # 30 días
-    redirect-uri-validation: true
-
-  # Configuración CORS
+  # ============================================================
+  # MERCADO PAGO CHECKOUT PRO
+  # ============================================================
+  mercadopago:
+    enabled: ${MERCADO_PAGO_ENABLED:true}
+    environment: ${MERCADO_PAGO_ENVIRONMENT:TEST}
+    access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
+    public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
+    webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
+    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL:http://localhost:4200}
+    backend-base-url: ${BACKEND_PUBLIC_BASE_URL:http://localhost:8080}
+  
+  
+  # Configuración CORS (legado: solo AdvancedSecurityConfig, perfil deshabilitado)
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200,https://casamusica.com}
   
   # Configuraciones de proveedores de email alternativos
   email:
-    sender-name: ${EMAIL_SENDER_NAME:AuthSystem}
-    sender-address: ${EMAIL_SENDER_ADDRESS:${MAIL_USERNAME:noreply@authsystem.com}}
+    sender-name: ${EMAIL_FROM_NAME:${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}}
+    sender-address: ${EMAIL_FROM:${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}}
     brevo:
-      api-key: ${BREVO_API_KEY:#{null}}
+      api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:
-      api-key: ${RESEND_API_KEY:#{null}}
+      api-key: ${APP_EMAIL_RESEND_API_KEY:${RESEND_API_KEY:}}
     mailgun:
       api-key: ${MAILGUN_API_KEY:#{null}}
       domain: ${MAILGUN_DOMAIN:#{null}}
@@ -163,17 +189,37 @@ app:
   notification:
     sms:
       provider: sinch
-      project-id: ${SINCH_PROJECT_ID:4696842a27654b618a9609091afdb8d9}
-      access-key-id: ${SINCH_ACCESS_KEY_ID:ea55ba6d-0381-4df8-b66b-4afff2ffbeab}
-      secret-key: ${SINCH_SECRET_KEY:39cb2c4b8b87402ba17fb4bbf0fbac45}
+      project-id: ${SINCH_PROJECT_ID:}
+      access-key-id: ${SINCH_ACCESS_KEY_ID:}
+      secret-key: ${SINCH_SECRET_KEY:}
       from-number: ${SINCH_FROM_NUMBER:+447418630656}
       dev-mode: false
+
+# ── CORS (fuente única: SecurityConfig.corsConfigurationSource) ─────────────
+# Lista explícita separada por comas. En producción application-production.yml
+# la hace obligatoria (CORS_ORIGINS, sin default). El default localhost aplica
+# solo a perfiles de desarrollo/test.
+cors:
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,http://localhost:4300,https://localhost}
+
+# ── Clave AES de códigos de recogida (obligatoria, sin default; 16/24/32 bytes) ──
+pickup:
+  code:
+    encryption:
+      key: ${PICKUP_CODE_ENCRYPTION_KEY}
 
 # ── Supabase Storage (off-site backup vault) ────────────────────────────────
 supabase:
   url: ${SUPABASE_URL:https://dwdteqmfhclrtlknkwcd.supabase.co}
   service-key: ${SUPABASE_SERVICE_KEY:}
   bucket-name: ${SUPABASE_BUCKET:casamusica-backups}
+
+# ── Storage (Cloudinary / Local) ────────────────────────────────────────────
+storage:
+  provider: ${STORAGE_PROVIDER:CLOUDINARY}
+  local:
+    products-path: uploads/products
+    brands-path: uploads/brands
 
 logging:
   level:

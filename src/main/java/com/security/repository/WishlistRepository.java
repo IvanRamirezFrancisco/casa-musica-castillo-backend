@@ -4,6 +4,7 @@ import com.security.entity.Wishlist;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -122,4 +123,13 @@ public interface WishlistRepository extends JpaRepository<Wishlist, Long> {
      * Elimina items de wishlist de un producto
      */
     void deleteByProductId(Long productId);
+
+    // FASE 2 — Toggle optimizado desde product-card
+    /**
+     * Elimina el item de wishlist de un usuario por productId.
+     * Permite el toggle sin necesitar conocer el wishlistId de antemano.
+     */
+    @Modifying
+    @Query("DELETE FROM Wishlist w WHERE w.user.id = :userId AND w.product.id = :productId")
+    void deleteByUserIdAndProductId(@Param("userId") Long userId, @Param("productId") Long productId);
 }

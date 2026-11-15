@@ -31,7 +31,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/api/admin/inventory")
-@PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+@PreAuthorize("hasAuthority('REPORT_VIEW')")
 public class AdminInventoryPredictionController {
 
     private static final Logger log = LoggerFactory.getLogger(AdminInventoryPredictionController.class);

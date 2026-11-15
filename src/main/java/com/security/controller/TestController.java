@@ -1,6 +1,8 @@
 package com.security.controller;
 
 import com.security.dto.response.ApiResponse;
+// FASE 0 - Seguridad - 2026-05-15
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -9,6 +11,10 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
+// FASE 0 - Seguridad - 2026-05-15
+// @Profile restringe el registro del controller a perfiles local/dev.
+// En producción, Spring no crea el bean y los endpoints /api/test/** no existen.
+@Profile({"local", "dev"})
 @RestController
 @RequestMapping("/api/test")
 public class TestController {
@@ -32,14 +38,14 @@ public class TestController {
     }
 
     @GetMapping("/protected")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<?> protectedEndpoint() {
         return ResponseEntity.ok(new ApiResponse(true,
                 "This is a protected endpoint - authentication required", null));
     }
 
     @GetMapping("/admin")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('DASHBOARD_VIEW')")
     public ResponseEntity<?> adminEndpoint() {
         return ResponseEntity.ok(new ApiResponse(true,
                 "This is an admin endpoint - admin role required", null));
@@ -78,21 +84,21 @@ public class TestController {
      * Endpoint para probar RBAC (Control de Acceso Basado en Roles)
      */
     @GetMapping("/rbac-user")
-    @PreAuthorize("hasRole('USER')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<?> testRBACUser() {
         return ResponseEntity.ok(new ApiResponse(true, "Acceso USER concedido",
                 Map.of("role", "USER", "message", "Solo usuarios autenticados pueden ver esto")));
     }
 
     @GetMapping("/rbac-admin")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('DASHBOARD_VIEW')")
     public ResponseEntity<?> testRBACAdmin() {
         return ResponseEntity.ok(new ApiResponse(true, "Acceso ADMIN concedido",
                 Map.of("role", "ADMIN", "message", "Solo administradores pueden ver esto")));
     }
 
     @GetMapping("/rbac-super-admin")
-    @PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('SYSTEM_SETTINGS')")
     public ResponseEntity<?> testRBACSuperAdmin() {
         return ResponseEntity.ok(new ApiResponse(true, "Acceso SUPER_ADMIN concedido",
                 Map.of("role", "SUPER_ADMIN", "message", "Solo super administradores pueden ver esto")));

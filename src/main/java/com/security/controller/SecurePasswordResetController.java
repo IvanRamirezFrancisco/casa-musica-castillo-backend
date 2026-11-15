@@ -4,6 +4,7 @@ import com.security.service.SecurePasswordResetService;
 import com.security.dto.request.PasswordResetRequest;
 import com.security.dto.request.ResetPasswordRequest;
 import com.security.dto.response.ApiResponse;
+import com.security.exception.AuthFlowException;
 import com.security.util.LogSanitizer;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -13,13 +14,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-/**
- * Controlador REST para la recuperación segura de contraseñas
- * Implementa rate limiting y protección contra enumeración de usuarios
- */
 @RestController
 @RequestMapping("/api/auth")
-// CORS se maneja globalmente en SecurityConfig
 public class SecurePasswordResetController {
 
     private static final Logger logger = LoggerFactory.getLogger(SecurePasswordResetController.class);
@@ -27,10 +23,6 @@ public class SecurePasswordResetController {
     @Autowired
     private SecurePasswordResetService passwordResetService;
 
-    /**
-     * Solicita un enlace de recuperación de contraseña
-     * Implementa rate limiting y no revela si el email existe
-     */
     @PostMapping("/password-reset/request")
     public ResponseEntity<ApiResponse> requestPasswordReset(
             @Valid @RequestBody PasswordResetRequest request,
@@ -48,28 +40,29 @@ public class SecurePasswordResetController {
                     clientIp,
                     userAgent);
 
-            // Siempre devolvemos el mismo mensaje para no revelar si el email existe
             return ResponseEntity.ok(new ApiResponse(
                     true,
                     "Si tu email está registrado, recibirás un enlace de recuperación dentro de unos minutos."));
 
+        } catch (AuthFlowException e) {
+            return ResponseEntity.status(e.getStatus()).body(new ApiResponse(
+                    false,
+                    e.getMessage()));
+
         } catch (SecurityException e) {
-            logger.warn("Security restriction for password reset: {}", e.getMessage());
+            logger.warn("Security restriction for password reset: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(429).body(new ApiResponse(
                     false,
                     "Has excedido el límite de intentos de recuperación. Inténtalo más tarde."));
 
         } catch (Exception e) {
-            logger.error("Error processing password reset request: {}", e.getMessage());
+            logger.error("Error processing password reset request: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor. Inténtalo más tarde."));
         }
     }
 
-    /**
-     * Verifica si un token de recuperación es válido
-     */
     @GetMapping("/password-reset/verify/{token}")
     public ResponseEntity<ApiResponse> verifyResetToken(@PathVariable String token) {
         try {
@@ -86,16 +79,13 @@ public class SecurePasswordResetController {
             }
 
         } catch (Exception e) {
-            logger.error("Error verifying reset token: {}", e.getMessage());
+            logger.error("Error verifying reset token: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor."));
         }
     }
 
-    /**
-     * Restablece la contraseña usando un token válido
-     */
     @PostMapping("/password-reset/confirm")
     public ResponseEntity<ApiResponse> resetPassword(
             @Valid @RequestBody ResetPasswordRequest request,
@@ -105,8 +95,7 @@ public class SecurePasswordResetController {
             String clientIp = getClientIpAddress(httpRequest);
             String userAgent = httpRequest.getHeader("User-Agent");
 
-            logger.info("Password reset confirmation from IP: {} with token: {}",
-                    LogSanitizer.sanitize(clientIp), LogSanitizer.maskToken(request.getToken()));
+            logger.info("Password reset confirmation from IP: {}", LogSanitizer.sanitize(clientIp));
 
             boolean result = passwordResetService.resetPasswordFromController(
                     request.getToken(),
@@ -125,22 +114,19 @@ public class SecurePasswordResetController {
             }
 
         } catch (SecurityException e) {
-            logger.warn("Security restriction for password reset confirmation: {}", e.getMessage());
+            logger.warn("Security restriction for password reset confirmation: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(429).body(new ApiResponse(
                     false,
                     "Demasiados intentos de restablecimiento. Inténtalo más tarde."));
 
         } catch (Exception e) {
-            logger.error("Error confirming password reset: {}", e.getMessage());
+            logger.error("Error confirming password reset: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(new ApiResponse(
                     false,
                     "Error interno del servidor. Inténtalo más tarde."));
         }
     }
 
-    /**
-     * Obtiene la dirección IP real del cliente considerando proxies
-     */
     private String getClientIpAddress(HttpServletRequest request) {
         String xForwardedFor = request.getHeader("X-Forwarded-For");
         String xRealIp = request.getHeader("X-Real-IP");
@@ -148,51 +134,25 @@ public class SecurePasswordResetController {
         String cfConnectingIp = request.getHeader("CF-Connecting-IP");
 
         if (isValidIp(cfConnectingIp)) {
-            return cfConnectingIp; // Cloudflare
+            return cfConnectingIp;
         }
-
         if (isValidIp(xForwardedFor)) {
-            return xForwardedFor.split(",")[0].trim(); // Primer IP en la cadena
+            return xForwardedFor.split(",")[0].trim();
         }
-
         if (isValidIp(xRealIp)) {
             return xRealIp;
         }
-
         if (isValidIp(xClientIp)) {
             return xClientIp;
         }
-
         return request.getRemoteAddr();
     }
 
-    /**
-     * Valida si una IP es válida y no es privada
-     */
     private boolean isValidIp(String ip) {
         if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
             return false;
         }
-
-        // Básica validación de formato IP
         return ip.matches("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$") ||
                 ip.matches("^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$");
-    }
-
-    /**
-     * Enmascara un email para logging seguro
-     */
-    private String maskEmailForLogging(String email) {
-        if (email == null || !email.contains("@")) {
-            return "***";
-        }
-
-        String[] parts = email.split("@");
-        String localPart = parts[0];
-        String domain = parts[1];
-
-        String maskedLocal = localPart.length() > 2 ? localPart.substring(0, 2) + "***" : "***";
-
-        return maskedLocal + "@" + domain;
     }
 }

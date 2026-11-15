@@ -15,7 +15,7 @@ import java.util.Set;
  * Ejemplo: CREATE_USER, DELETE_PRODUCT, VIEW_REPORTS, MANAGE_ORDERS, etc.
  */
 @Entity
-@Table(name = "permissions")
+@Table(name = "permissions", schema = "auth")
 public class Permission {
 
     @Id

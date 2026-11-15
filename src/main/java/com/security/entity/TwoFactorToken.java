@@ -6,7 +6,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "two_factor_tokens")
+@Table(name = "two_factor_tokens", schema = "auth")
 public class TwoFactorToken {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

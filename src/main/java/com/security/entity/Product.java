@@ -17,7 +17,7 @@ import java.util.Set;
  * Entidad para productos musicales
  */
 @Entity
-@Table(name = "products")
+@Table(name = "products", schema = "catalog")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -166,6 +166,7 @@ public class Product {
      */
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
+    @org.hibernate.annotations.BatchSize(size = 50)
     private Set<ProductImage> images = new LinkedHashSet<>();
 
     /**
@@ -178,6 +179,7 @@ public class Product {
      */
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("displayOrder ASC")
+    @org.hibernate.annotations.BatchSize(size = 50)
     private Set<ProductAttribute> customAttributes = new LinkedHashSet<>();
 
     /**
@@ -193,4 +195,21 @@ public class Product {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    // ============ MÉTODOS HELPER (BIDIRECCIONAL) ============
+
+    public void addImage(ProductImage image) {
+        if (this.images == null) {
+            this.images = new LinkedHashSet<>();
+        }
+        this.images.add(image);
+        image.setProduct(this);
+    }
+
+    public void removeImage(ProductImage image) {
+        if (this.images != null) {
+            this.images.remove(image);
+        }
+        image.setProduct(null);
+    }
 }

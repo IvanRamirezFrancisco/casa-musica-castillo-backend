@@ -46,6 +46,8 @@ public class BrandDTO {
         private String name;
         private String description;
         private String logoUrl;
+        private String logoProvider;
+        private String logoPublicId;
         private String websiteUrl;
         private String countryOrigin;
         private Boolean active;
@@ -65,6 +67,7 @@ public class BrandDTO {
         private Long id;
         private String name;
         private String logoUrl;
+        private String logoProvider;
         private Boolean active;
     }
 

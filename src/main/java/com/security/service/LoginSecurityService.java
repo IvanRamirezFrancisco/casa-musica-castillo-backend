@@ -141,7 +141,7 @@ public class LoginSecurityService {
                     loginAttempt.setAttemptTime(LocalDateTime.now());
                     loginAttemptRepository.save(loginAttempt);
                 } catch (Exception dbError) {
-                    logger.warn("Could not persist login attempt to DB: {}", dbError.getMessage());
+                    logger.warn("Could not persist login attempt to DB: {}", dbError.getClass().getSimpleName());
                 }
             }
 
@@ -154,7 +154,7 @@ public class LoginSecurityService {
             }
 
         } catch (Exception e) {
-            logger.error("Error recording failed attempt: {}", e.getMessage());
+            logger.error("Error recording failed attempt: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -179,7 +179,7 @@ public class LoginSecurityService {
 
             logger.info("✅ Successful login for: {}", LogSanitizer.maskEmail(email));
         } catch (Exception e) {
-            logger.warn("Could not persist successful login attempt: {}", e.getMessage());
+            logger.warn("Could not persist successful login attempt: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -210,11 +210,11 @@ public class LoginSecurityService {
                                 "lockDurationMinutes", lockDuration),
                         "WARNING", true);
             } catch (Exception auditEx) {
-                logger.warn("No se pudo registrar audit log para bloqueo de cuenta: {}", auditEx.getMessage());
+                logger.warn("No se pudo registrar audit log para bloqueo de cuenta: {}", auditEx.getClass().getSimpleName());
             }
 
         } catch (Exception e) {
-            logger.error("Error locking account: {}", e.getMessage());
+            logger.error("Error locking account: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -257,7 +257,7 @@ public class LoginSecurityService {
             return isLocked;
 
         } catch (Exception e) {
-            logger.error("Error checking account lock status: {}", e.getMessage());
+            logger.error("Error checking account lock status: {}", e.getClass().getSimpleName());
             return false;
         }
     }
@@ -277,7 +277,7 @@ public class LoginSecurityService {
             return ChronoUnit.MINUTES.between(LocalDateTime.now(), lock.lockedUntil);
 
         } catch (Exception e) {
-            logger.error("Error getting lockout remaining time: {}", e.getMessage());
+            logger.error("Error getting lockout remaining time: {}", e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -298,7 +298,7 @@ public class LoginSecurityService {
             return Math.max(0, seconds); // No devolver números negativos
 
         } catch (Exception e) {
-            logger.error("Error getting lockout remaining seconds: {}", e.getMessage());
+            logger.error("Error getting lockout remaining seconds: {}", e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -312,8 +312,14 @@ public class LoginSecurityService {
             failedAttempts.remove(key);
 
         } catch (Exception e) {
-            logger.error("Error clearing failed attempts: {}", e.getMessage());
+            logger.error("Error clearing failed attempts: {}", e.getClass().getSimpleName());
         }
+    }
+
+    /** Clear failed-attempt counters only after the complete login, including 2FA. */
+    public void clearAfterSuccessfulLogin(String email) {
+        clearFailedAttempts(email);
+        clearFailedAttempts(resolveCurrentIp());
     }
 
     /**
@@ -331,7 +337,7 @@ public class LoginSecurityService {
             activeSessions.put(userId, session);
 
         } catch (Exception e) {
-            logger.error("Error recording session activity: {}", e.getMessage());
+            logger.error("Error recording session activity: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -356,7 +362,7 @@ public class LoginSecurityService {
             return isActive;
 
         } catch (Exception e) {
-            logger.error("Error checking session activity: {}", e.getMessage());
+            logger.error("Error checking session activity: {}", e.getClass().getSimpleName());
             return false;
         }
     }
@@ -370,7 +376,7 @@ public class LoginSecurityService {
             logger.info("Session invalidated for user: {}", userId);
 
         } catch (Exception e) {
-            logger.error("Error invalidating session: {}", e.getMessage());
+            logger.error("Error invalidating session: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -389,7 +395,7 @@ public class LoginSecurityService {
             logger.info("All sessions invalidated for user: {}", userId);
 
         } catch (Exception e) {
-            logger.error("Error invalidating all user sessions: {}", e.getMessage());
+            logger.error("Error invalidating all user sessions: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -407,7 +413,7 @@ public class LoginSecurityService {
             return tokenIssuedAt.isBefore(invalidationTime);
 
         } catch (Exception e) {
-            logger.error("Error checking global token invalidation: {}", e.getMessage());
+            logger.error("Error checking global token invalidation: {}", e.getClass().getSimpleName());
             return false;
         }
     }
@@ -422,7 +428,7 @@ public class LoginSecurityService {
             return record == null ? 0 : record.count;
 
         } catch (Exception e) {
-            logger.error("Error getting failed attempts: {}", e.getMessage());
+            logger.error("Error getting failed attempts: {}", e.getClass().getSimpleName());
             return 0;
         }
     }
@@ -462,7 +468,7 @@ public class LoginSecurityService {
             }
 
         } catch (Exception e) {
-            logger.error("Error during cleanup: {}", e.getMessage());
+            logger.error("Error during cleanup: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -488,7 +494,7 @@ public class LoginSecurityService {
             }
             return getClientIpAddress(attrs.getRequest());
         } catch (Exception e) {
-            logger.warn("No se pudo resolver la IP del request actual: {}", e.getMessage());
+            logger.warn("No se pudo resolver la IP del request actual: {}", e.getClass().getSimpleName());
             return "UNKNOWN";
         }
     }

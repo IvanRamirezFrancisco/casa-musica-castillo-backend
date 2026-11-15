@@ -6,7 +6,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "backup_codes", indexes = {
+@Table(name = "backup_codes", schema = "auth", indexes = {
         @Index(name = "idx_user_id", columnList = "user_id"),
         @Index(name = "idx_code_hash", columnList = "code_hash"),
         @Index(name = "idx_used", columnList = "used"),

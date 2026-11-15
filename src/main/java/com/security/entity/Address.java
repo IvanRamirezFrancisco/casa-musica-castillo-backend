@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
  * Tabla: addresses
  */
 @Entity
-@Table(name = "addresses", indexes = {
+@Table(name = "addresses", schema = "customer", indexes = {
         @Index(name = "idx_addresses_user", columnList = "user_id, active"),
         @Index(name = "idx_addresses_default", columnList = "user_id, is_default")
 })

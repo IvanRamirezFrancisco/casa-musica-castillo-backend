@@ -34,6 +34,7 @@ public class WishlistService {
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
     private final EntityManager entityManager;
+    private final ShoppingCartService shoppingCartService;
 
     /**
      * Agrega un producto a la wishlist
@@ -195,18 +196,19 @@ public class WishlistService {
             throw new UnauthorizedException("No tienes permiso para mover este item");
         }
 
-        try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_move_wishlist_to_cart");
-            query.registerStoredProcedureParameter("p_wishlist_id", Long.class, ParameterMode.IN);
-            query.setParameter("p_wishlist_id", wishlistId);
-
-            query.execute();
-
-            log.info("Item {} movido a carrito", wishlistId);
-        } catch (Exception e) {
-            log.error("Error al mover item a carrito: {}", e.getMessage());
-            throw new RuntimeException("Error al mover item a carrito: " + e.getMessage());
+        Product product = item.getProduct();
+        
+        if (product == null || !Boolean.TRUE.equals(product.getActive()) || product.getStock() == null || product.getStock() <= 0) {
+            throw new IllegalStateException("El producto no está disponible para mover al carrito");
         }
+
+        // Agregar al carrito usando ShoppingCartService
+        shoppingCartService.addItemToUserCart(userId, product.getId(), 1);
+
+        // Eliminar de wishlist
+        wishlistRepository.delete(item);
+        
+        log.info("Item {} movido a carrito y eliminado de wishlist", wishlistId);
     }
 
     /**
@@ -217,7 +219,7 @@ public class WishlistService {
         log.info("Verificando descuentos en wishlist del usuario {}", userId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_check_wishlist_discounts");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_check_wishlist_discounts");
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);
 
@@ -256,7 +258,8 @@ public class WishlistService {
         log.info("Verificando productos en stock en wishlist del usuario {}", userId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_check_wishlist_back_in_stock");
+            StoredProcedureQuery query = entityManager
+                    .createStoredProcedureQuery("sales.sp_check_wishlist_back_in_stock");
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);
 
@@ -338,6 +341,15 @@ public class WishlistService {
             default -> "MEDIUM";
         };
 
+        boolean isAvailable = product != null && Boolean.TRUE.equals(product.getActive()) 
+                              && product.getStock() != null && product.getStock() > 0;
+        String availabilityStatus = "AVAILABLE";
+        if (product == null || !Boolean.TRUE.equals(product.getActive())) {
+            availabilityStatus = "INACTIVE";
+        } else if (product.getStock() == null || product.getStock() == 0) {
+            availabilityStatus = "OUT_OF_STOCK";
+        }
+
         return WishlistDTO.WishlistItemResponse.builder()
                 .wishlistId(item.getId())
                 .productId(product.getId())
@@ -351,6 +363,9 @@ public class WishlistService {
                 .priceDropped(item.isPriceDropped())
                 .availableStock(product.getStock())
                 .inStock(product.getStock() > 0)
+                .available(isAvailable)
+                .availabilityStatus(availabilityStatus)
+                .canMoveToCart(isAvailable)
                 .priority(item.getPriority())
                 .priorityLabel(priorityLabel)
                 .notes(item.getNotes())
@@ -359,5 +374,44 @@ public class WishlistService {
                 .addedAt(item.getAddedAt())
                 .updatedAt(item.getUpdatedAt())
                 .build();
+    }
+
+    // ── FASE 2: métodos para el toggle del botón corazón ──────────────────────
+
+    /**
+     * Verifica si un producto está en la wishlist del usuario.
+     * Devuelve respuesta ligera con el wishlistId para que el frontend
+     * pueda realizar el DELETE directamente sin cargar la lista completa.
+     */
+    @Transactional(readOnly = true)
+    public WishlistDTO.CheckResponse checkProductInWishlist(Long userId, Long productId) {
+        return wishlistRepository.findByUserIdAndProductId(userId, productId)
+                .map(item -> WishlistDTO.CheckResponse.builder()
+                        .inWishlist(true)
+                        .wishlistId(item.getId())
+                        .build())
+                .orElseGet(() -> WishlistDTO.CheckResponse.builder()
+                        .inWishlist(false)
+                        .wishlistId(null)
+                        .build());
+    }
+
+    /**
+     * Elimina un item de la wishlist por productId, sin necesitar el wishlistId.
+     * Valida que el item pertenezca al usuario antes de borrar.
+     *
+     * @throws ResourceNotFoundException si el producto no está en la wishlist del usuario.
+     */
+    @Transactional
+    public void removeByProductId(Long userId, Long productId) {
+        log.info("Usuario {} eliminando producto {} de wishlist por productId", userId, productId);
+
+        // Primero verificamos que el item existe y pertenece al usuario
+        wishlistRepository.findByUserIdAndProductId(userId, productId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "El producto no está en tu wishlist"));
+
+        wishlistRepository.deleteByUserIdAndProductId(userId, productId);
+        log.info("Producto {} eliminado de wishlist del usuario {}", productId, userId);
     }
 }

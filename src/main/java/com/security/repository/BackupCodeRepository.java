@@ -15,6 +15,7 @@ public interface BackupCodeRepository extends JpaRepository<BackupCode, Long> {
     /**
      * Encuentra todos los códigos de backup no utilizados para un usuario
      */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     List<BackupCode> findByUserIdAndUsedFalse(Long userId);
 
     /**

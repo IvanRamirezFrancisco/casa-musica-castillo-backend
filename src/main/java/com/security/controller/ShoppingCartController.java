@@ -33,7 +33,7 @@ public class ShoppingCartController {
      * GET /api/cart
      */
     @GetMapping
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> getCart(Authentication authentication) {
         Long userId = extractUserId(authentication);
         if (userId == null) {
@@ -62,25 +62,29 @@ public class ShoppingCartController {
     }
 
     /**
-     * Obtiene resumen del carrito
-     * GET /api/cart/{cartId}/summary
+     * Obtiene resumen del carrito del usuario autenticado
+     * GET /api/cart/summary
      */
-    @GetMapping("/{cartId}/summary")
-    public ResponseEntity<CartDTO.CartSummaryResponse> getCartSummary(@PathVariable Long cartId) {
-        log.info("Obteniendo resumen del carrito: {}", cartId);
+    @GetMapping("/summary")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<CartDTO.CartSummaryResponse> getCartSummary(Authentication authentication) {
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("Obteniendo resumen del carrito del usuario: {}", userId);
 
-        var summary = cartService.getCartSummary(cartId);
+        var summary = cartService.getCartSummaryForUser(userId);
         return ResponseEntity.ok(summary);
     }
 
     /**
-     * Agrega un producto al carrito
-     * POST /api/cart/{cartId}/items
+     * Agrega un producto al carrito del usuario autenticado
+     * POST /api/cart/items
      */
-    @PostMapping("/{cartId}/items")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PostMapping("/items")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> addItem(
-            @PathVariable Long cartId,
             @Valid @RequestBody CartDTO.AddItemRequest request,
             Authentication authentication) {
 
@@ -88,18 +92,18 @@ public class ShoppingCartController {
         if (userId == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        log.info("Agregando producto {} al carrito {} (usuario {})", request.getProductId(), cartId, userId);
+        log.info("Agregando producto {} al carrito del usuario {}", request.getProductId(), userId);
 
-        var response = cartService.addItemToCart(cartId, request.getProductId(), request.getQuantity());
+        var response = cartService.addItemToUserCart(userId, request.getProductId(), request.getQuantity());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     /**
-     * Actualiza la cantidad de un item
+     * Actualiza la cantidad de un item (validando ownership)
      * PUT /api/cart/items/{itemId}
      */
     @PutMapping("/items/{itemId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> updateItemQuantity(
             @PathVariable Long itemId,
             @Valid @RequestBody CartDTO.UpdateItemRequest request,
@@ -111,16 +115,36 @@ public class ShoppingCartController {
         }
         log.info("Actualizando item {} a cantidad {} (usuario {})", itemId, request.getQuantity(), userId);
 
-        var response = cartService.updateItemQuantity(request.getItemId(), request.getQuantity());
+        var response = cartService.updateItemQuantityForUser(userId, itemId, request.getQuantity());
         return ResponseEntity.ok(response);
     }
 
     /**
-     * Elimina un item del carrito
+     * Mueve un item del carrito a la wishlist (validando ownership)
+     * POST /api/cart/items/{itemId}/move-to-wishlist
+     */
+    @PostMapping("/items/{itemId}/move-to-wishlist")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<CartDTO.CartResponse> moveItemToWishlist(
+            @PathVariable Long itemId,
+            Authentication authentication) {
+
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("Moviendo item {} a wishlist (usuario {})", itemId, userId);
+
+        var response = cartService.moveItemToWishlistForUser(userId, itemId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Elimina un item del carrito (validando ownership)
      * DELETE /api/cart/items/{itemId}
      */
     @DeleteMapping("/items/{itemId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> removeItem(
             @PathVariable Long itemId,
             Authentication authentication) {
@@ -131,72 +155,80 @@ public class ShoppingCartController {
         }
         log.info("Eliminando item {} (usuario {})", itemId, userId);
 
-        var response = cartService.removeItem(itemId);
+        var response = cartService.removeItemForUser(userId, itemId);
         return ResponseEntity.ok(response);
     }
 
     /**
-     * Aplica un cupón al carrito
-     * POST /api/cart/{cartId}/coupon
+     * Aplica un cupón al carrito del usuario autenticado
+     * POST /api/cart/coupon
      */
-    @PostMapping("/{cartId}/coupon")
+    @PostMapping("/coupon")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CouponAppliedResponse> applyCoupon(
-            @PathVariable Long cartId,
-            @Valid @RequestBody CartDTO.ApplyCouponRequest request) {
-
-        log.info("Aplicando cupón {} al carrito {}", request.getCouponCode(), cartId);
-
-        var response = cartService.applyCoupon(cartId, request.getCouponCode());
-        return ResponseEntity.ok(response);
-    }
-
-    /**
-     * Remueve el cupón del carrito
-     * DELETE /api/cart/{cartId}/coupon
-     */
-    @DeleteMapping("/{cartId}/coupon")
-    public ResponseEntity<CartDTO.CartResponse> removeCoupon(@PathVariable Long cartId) {
-        log.info("Removiendo cupón del carrito {}", cartId);
-
-        var response = cartService.removeCoupon(cartId);
-        return ResponseEntity.ok(response);
-    }
-
-    /**
-     * Vacía el carrito
-     * DELETE /api/cart/{cartId}
-     */
-    @DeleteMapping("/{cartId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<Map<String, String>> clearCart(
-            @PathVariable Long cartId,
+            @Valid @RequestBody CartDTO.ApplyCouponRequest request,
             Authentication authentication) {
 
         Long userId = extractUserId(authentication);
         if (userId == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        log.info("Vaciando carrito {} (usuario {})", cartId, userId);
+        log.info("Aplicando cupón {} al carrito del usuario {}", request.getCouponCode(), userId);
 
-        cartService.clearCart(cartId);
+        var response = cartService.applyCouponForUser(userId, request.getCouponCode());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Remueve el cupón del carrito del usuario autenticado
+     * DELETE /api/cart/coupon
+     */
+    @DeleteMapping("/coupon")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<CartDTO.CartResponse> removeCoupon(Authentication authentication) {
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("Removiendo cupón del carrito del usuario {}", userId);
+
+        var response = cartService.removeCouponForUser(userId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Vacía el carrito del usuario autenticado
+     * DELETE /api/cart
+     */
+    @DeleteMapping
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Map<String, String>> clearCart(Authentication authentication) {
+
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("Vaciando carrito del usuario {}", userId);
+
+        cartService.clearCartForUser(userId);
         return ResponseEntity.ok(Map.of("message", "Carrito vaciado exitosamente"));
     }
 
     /**
-     * Valida el carrito antes de checkout
-     * GET /api/cart/{cartId}/validate
+     * Valida el carrito del usuario autenticado antes de checkout
+     * GET /api/cart/validate
      */
-    @GetMapping("/{cartId}/validate")
-    public ResponseEntity<Map<String, Object>> validateCart(@PathVariable Long cartId) {
-        log.info("Validando carrito {}", cartId);
+    @GetMapping("/validate")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<CartDTO.CartValidationResponse> validateCart(Authentication authentication) {
+        Long userId = extractUserId(authentication);
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        log.info("Validando carrito del usuario {}", userId);
 
-        List<String> errors = cartService.validateCartForCheckout(cartId);
-        boolean isValid = errors.isEmpty();
-
-        return ResponseEntity.ok(Map.of(
-                "valid", isValid,
-                "errors", errors,
-                "message", isValid ? "Carrito válido para checkout" : "El carrito tiene errores"));
+        var response = cartService.validateCartForUser(userId);
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -204,7 +236,7 @@ public class ShoppingCartController {
      * POST /api/cart/transfer
      */
     @PostMapping("/transfer")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> transferCart(
             @RequestParam String sessionId,
             Authentication authentication) {
@@ -226,7 +258,7 @@ public class ShoppingCartController {
      * POST /api/cart
      */
     @PostMapping
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<CartDTO.CartResponse> createOrGetCart(Authentication authentication) {
         Long userId = extractUserId(authentication);
         if (userId == null) {

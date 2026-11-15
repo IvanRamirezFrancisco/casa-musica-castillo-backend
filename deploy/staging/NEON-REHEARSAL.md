@@ -1,0 +1,74 @@
+# Ensayo Neon V50→V52
+
+Ejecutar en Windows PowerShell interactivo sin transcripción, desde el worktree backend. En Neon Console cotejar los ID de rama y los ID de cómputo en **Branches → Connect**, con pooling desactivado en staging. Usar un rol administrador creado exclusivamente en `staging-auth-mfa-v52` y contraseñas nuevas e independientes generadas con un gestor para ese rol y el migrador. Si existe una credencial expuesta o compartida, usar un rol de staging distinto. No se necesita restablecer ninguna credencial productiva. No guardar contraseñas en variables de usuario, archivos ni argumentos.
+
+```powershell
+$primary = Read-Host 'Hostname directo de production confirmado en Neon Console'
+$stage = Read-Host 'Hostname directo de staging-auth-mfa-v52 confirmado en Neon Console'
+$endpoint = Read-Host 'Endpoint ID de staging-auth-mfa-v52 confirmado en Neon Console'
+$caBundle = Join-Path $env:LOCALAPPDATA 'CasaMusicaCastillo/certs/cacert.pem'
+$common = @('-PrimaryHost', $primary, '-StagingHost', $stage, '-ExpectedStagingEndpointId', $endpoint, '-Database', 'castillo_staging', '-CaBundlePath', $caBundle)
+$launcher = (Resolve-Path 'scripts/start-neon-staging.ps1').Path
+powershell -NoProfile -File $launcher @common -ValidateEndpointsOnly
+```
+
+El aprovisionamiento inspecciona el rol y la base antes de escribir. Con `-CreateMigrator`, crea el rol únicamente si falta. Conserva un migrador limitado o una base con el propietario esperado de un intento anterior. Detiene el flujo si encuentra privilegios o un propietario inesperados.
+
+```powershell
+$admin = Read-Host 'Rol administrador del endpoint de staging'
+powershell -NoProfile -File $launcher @common -ProvisionDatabaseAs $admin -CreateMigrator
+```
+
+El lanzador pide la contraseña del administrador y solicita la del migrador solo cuando va a crear el rol. Usa una contraseña aleatoria de caracteres ASCII para el migrador, compatible con la página de códigos de libpq en Windows. Ambos prompts están enmascarados. El SQL con la contraseña nueva se envía por entrada estándar a `psql`, en una sesión TLS con `verify-full`. El administrador necesita `CREATEDB` y, para crear el rol, `CREATEROLE`. Antes de continuar se comprueban los privilegios del migrador, su ausencia de membresía en `neon_superuser` y el propietario de la base.
+
+El lanzador valida el archivo PEM antes de solicitar la contraseña. `psql`, `createdb` y `pg_restore` reciben la ruta absoluta mediante `PGSSLROOTCERT`. Spring y Flyway usan pgJDBC, que recibe la ruta codificada en `sslrootcert` y la lee mediante `LibPQFactory`. Ambos clientes verifican la CA y el hostname con `verify-full`.
+
+Restaurar desde la ruta `dumpPath` registrada en el informe `v50-backup.json`. Abrir una sesión privada nueva con el migrador y guardar solo la salida saneada.
+
+```powershell
+$dump = Read-Host 'Ruta local al dump sintético V50 verificado'
+$evidence = (New-Item -ItemType Directory -Force -Path 'target/neon-cloud-evidence').FullName
+powershell -NoProfile -File $launcher @common -RestoreBaseline $dump |
+    Tee-Object -FilePath (Join-Path $evidence 'baseline-v50.txt')
+```
+
+Sembrar la cuenta sintética TOTP en V50. El lanzador genera el secreto y una contraseña aleatoria dentro de PostgreSQL. La evidencia contiene únicamente una huella de la fila para cotejarla tras V52.
+
+```powershell
+powershell -NoProfile -File $launcher @common -SeedLegacyMfa |
+    Tee-Object -FilePath (Join-Path $evidence 'fixture-v50.txt')
+```
+
+Con Mailpit en `127.0.0.1:11025` y su interfaz en `127.0.0.1:18025`, iniciar el JAR exacto V52 preservado en `target/neon-v52`. Para el ensayo local de clientes, la web y el gateway usan el mismo origen HTTPS configurado en la variable siguiente. Mantener la sesión activa durante la prueba.
+
+El arranque lee Flyway en modo de solo lectura y comprueba los checksums y la estructura. Usa `-ExpectedLegacyMfaFixtureSha256` con la huella remota registrada en V50 para impedir el arranque si cambió el fixture TOTP. Con V50 íntegra aplica V51 y V52. Con V51 íntegra aplica V52. Con V52 íntegra Flyway valida el esquema. El lanzador conserva la configuración base del JAR en una copia temporal sin el SQL de inicialización de Hikari y carga solo esa copia y el perfil staging. pgJDBC configura el orden de esquemas mediante `currentSchema` y `lock_timeout=5s` mediante `options`.
+
+```powershell
+$webOrigin = 'https://localhost:18443'
+powershell -NoProfile -File $launcher @common -WebOrigin $webOrigin -StartBackend
+```
+
+Desde otra terminal, con los parámetros comunes, ejecutar la inspección de solo lectura después de que Spring esté saludable. El historial esperado termina con V51 `-1106382170` y V52 `1411222195` y conserva el digest del historial V50. Comparar también `legacyMfaFixtureSha256` con `fixture-v50.txt`. La comprobación sin `-StartBackend` no migra ni restaura.
+
+```powershell
+powershell -NoProfile -File $launcher @common |
+    Tee-Object -FilePath (Join-Path $evidence 'flyway-v52.txt')
+```
+
+La huella acredita preservación de la fila sintética. Para probar login TOTP y rechazo de reutilización, enrolar otra cuenta sintética a través de la API y completar el desafío. La suite local `Schema50UpgradeTest` comprueba además la preservación de un enrolamiento previo en PostgreSQL aislado.
+
+Cargar catálogo después de V52 con `-SeedCommerceFixtures`. Tras registrar una cuenta de prueba usando el generador existente (usuario `stg-<sufijo>` y correo sintético `castillo.lab.<sufijo>@gmail.com`), repetir con `-FixtureUsername` para generar un pedido propio de prueba. Mailpit debe seguir siendo el único receptor del ensayo. No usar checkout para preparar pedidos de aceptación.
+
+```powershell
+powershell -NoProfile -File $launcher @common -SeedCommerceFixtures
+```
+
+## Segundo ensayo V52→V53
+
+Conservar primero la evidencia V52 y ejecutar el recorrido funcional V52. Detener solo el proceso local V52 mediante Ctrl+C. El ensayo V53 usa la misma base sintética autorizada y el JAR verificado de `6cfb36c` en `target/neon-v53`. Flyway valida V1 sintética y el historial V52 antes de aplicar V53. No se aplica V53 con el comando predeterminado.
+
+```powershell
+powershell -NoProfile -File $launcher @common -WebOrigin $webOrigin -StartBackend -FlywayTarget 53
+```
+
+Ejecutar la inspección de solo lectura en otra PowerShell para comprobar V53 con checksum `-774895556`, dos columnas nuevas y la misma huella del fixture TOTP. Usar de nuevo Mailpit y dos cuentas sintéticas para validar que una cuenta habilitada sin verificación registrada sigue habilitada, que la confirmación actualiza el estado de correo, y que la autenticación TOTP sigue funcionando. Las sesiones de ensayo se autentican nuevamente después de reiniciar Spring. El proceso local usa una clave JWT efímera por arranque.

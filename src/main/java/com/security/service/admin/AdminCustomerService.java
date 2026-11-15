@@ -107,6 +107,20 @@ public class AdminCustomerService {
     // ==================== Operaciones de Estado ====================
 
     /**
+     * Obtener un cliente por ID con sus datos completos.
+     *
+     * @param customerId ID del cliente
+     * @return CustomerListDTO con los datos del cliente
+     * @throws ResourceNotFoundException  si el cliente no existe
+     * @throws SecurityViolationException si el usuario no es un cliente
+     */
+    @Transactional(readOnly = true)
+    public CustomerListDTO getCustomerById(Long customerId) {
+        User customer = findAndValidateCustomer(customerId);
+        return convertToListDTO(customer);
+    }
+
+    /**
      * Activar o desactivar la cuenta de un cliente (toggle).
      * CRÍTICO: Solo opera sobre clientes (is_customer = true).
      *

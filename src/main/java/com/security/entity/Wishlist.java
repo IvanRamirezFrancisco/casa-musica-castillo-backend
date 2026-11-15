@@ -16,7 +16,7 @@ import java.time.LocalDateTime;
  * Entidad para wishlist (lista de deseos)
  */
 @Entity
-@Table(name = "wishlists", uniqueConstraints = {
+@Table(name = "wishlists", schema = "sales", uniqueConstraints = {
         @UniqueConstraint(name = "uk_wishlist_user_product", columnNames = { "user_id", "product_id" })
 }, indexes = {
         @Index(name = "idx_wishlist_user", columnList = "user_id"),

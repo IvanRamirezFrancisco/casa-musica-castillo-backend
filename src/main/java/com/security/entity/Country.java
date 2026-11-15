@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
  * Tabla: countries
  */
 @Entity
-@Table(name = "countries")
+@Table(name = "countries", schema = "security")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

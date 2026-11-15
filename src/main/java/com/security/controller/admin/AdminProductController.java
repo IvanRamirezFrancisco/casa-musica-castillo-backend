@@ -22,7 +22,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/admin/products")
-@PreAuthorize("hasRole('ADMIN')")
 public class AdminProductController {
 
     @Autowired
@@ -34,6 +33,7 @@ public class AdminProductController {
      * /api/admin/products?page=0&size=20&search=guitarra&brandId=1&categoryId=2&active=true&sortBy=name&sortDir=ASC
      */
     @GetMapping
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<Page<ProductDTO>> getAllProductsWithFilters(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -57,12 +57,14 @@ public class AdminProductController {
      * 📋 Obtener todos los productos sin paginación (para exportar/backup)
      */
     @GetMapping("/all")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<List<ProductDTO>> getAllProductsNoPagination() {
         List<ProductDTO> products = productService.getAllProducts();
         return ResponseEntity.ok(products);
     }
 
     @GetMapping("/{id}")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<ProductDTO> getProductById(@PathVariable Long id) {
         try {
             ProductDTO product = productService.getProductById(id);
@@ -73,6 +75,7 @@ public class AdminProductController {
     }
 
     @PostMapping
+    @PreAuthorize("hasAuthority('PRODUCT_CREATE')")
     public ResponseEntity<?> createProduct(@Valid @RequestBody ProductDTO productDTO) {
         try {
             ProductDTO createdProduct = productService.createProduct(productDTO);
@@ -85,6 +88,7 @@ public class AdminProductController {
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<?> updateProduct(@PathVariable Long id, @Valid @RequestBody ProductDTO productDTO) {
         try {
             ProductDTO updatedProduct = productService.updateProduct(id, productDTO);
@@ -97,6 +101,7 @@ public class AdminProductController {
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('PRODUCT_DELETE')")
     public ResponseEntity<?> deleteProduct(@PathVariable Long id) {
         try {
             productService.deleteProduct(id);
@@ -111,6 +116,7 @@ public class AdminProductController {
     }
 
     @PatchMapping("/{id}/toggle-status")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<ProductDTO> toggleProductStatus(@PathVariable Long id) {
         try {
             ProductDTO product = productService.toggleProductStatus(id);
@@ -121,15 +127,18 @@ public class AdminProductController {
     }
 
     @GetMapping("/search")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<List<ProductDTO>> searchProducts(@RequestParam String keyword) {
         List<ProductDTO> products = productService.searchProducts(keyword);
         return ResponseEntity.ok(products);
     }
 
     @GetMapping("/count")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<Map<String, Long>> getProductsCount() {
         Map<String, Long> response = new HashMap<>();
         response.put("count", productService.getTotalProductsCount());
         return ResponseEntity.ok(response);
     }
+
 }

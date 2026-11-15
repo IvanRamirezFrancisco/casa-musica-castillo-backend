@@ -13,13 +13,12 @@ import org.slf4j.LoggerFactory;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 
 @Service
 @Transactional
 public class BackupCodeService {
-    private static final Logger logger = LoggerFactory.getLogger(BackupCodeService.class);
+    private static final Logger log = LoggerFactory.getLogger(BackupCodeService.class);
 
     @Autowired
     private BackupCodeRepository backupCodeRepository;
@@ -42,9 +41,7 @@ public class BackupCodeService {
     public List<String> generateBackupCodes(Long userId) {
         User user = userService.getUserById(userId);
 
-        System.out.println("🔐 === GENERANDO BACKUP CODES ===");
-        System.out.println("  - Usuario ID: " + userId);
-        System.out.println("  - Email: " + user.getEmail());
+        log.debug("Generando backup codes para usuario ID {}", userId);
 
         // Validar que el usuario tenga Google Auth activado
         if (user.getGoogleAuthEnabled() == null || !user.getGoogleAuthEnabled()) {
@@ -55,7 +52,7 @@ public class BackupCodeService {
         try {
             // PASO 1: Eliminar códigos de backup anteriores
             deleteExistingBackupCodes(userId);
-            System.out.println("  ✅ Códigos anteriores eliminados");
+            log.debug("Códigos de backup anteriores eliminados para usuario ID {}", userId);
 
             // PASO 2: Generar 10 códigos nuevos
             List<String> plainCodes = new ArrayList<>();
@@ -73,19 +70,18 @@ public class BackupCodeService {
 
             // PASO 3: Guardar en base de datos
             backupCodeRepository.saveAll(backupCodes);
-            System.out.println("  ✅ " + BACKUP_CODE_COUNT + " códigos guardados en BD");
+            log.debug("{} backup codes guardados en BD para usuario ID {}", BACKUP_CODE_COUNT, userId);
 
             // PASO 4: Activar backup codes para el usuario
             user.setBackupCodesEnabled(true);
             userService.save(user);
-            System.out.println("  ✅ Backup codes activados para el usuario");
+            log.info("Backup codes generados y activados para usuario ID {}", userId);
 
-            System.out.println("  🎉 Generación completa exitosa");
             return plainCodes;
 
         } catch (Exception e) {
-            logger.error("❌ Error generando backup codes: " + e.getMessage());
-            throw new RuntimeException("Error generating backup codes: " + e.getMessage(), e);
+            log.error("Error generando backup codes para usuario ID {}: {}", userId, e.getClass().getSimpleName());
+            throw new RuntimeException("Error generating backup codes: " + e.getClass().getSimpleName(), e);
         }
     }
 
@@ -94,14 +90,12 @@ public class BackupCodeService {
      */
     public boolean verifyBackupCode(Long userId, String code) {
         try {
-            System.out.println("🔍 === VERIFICANDO BACKUP CODE ===");
-            System.out.println("  - Usuario ID: " + userId);
-            System.out.println("  - Código ingresado: " + maskCode(code));
+            log.debug("Verificando backup code para usuario ID {}", userId);
 
             User user = userService.getUserById(userId);
 
             if (user.getBackupCodesEnabled() == null || !user.getBackupCodesEnabled()) {
-                System.out.println("  ❌ Backup codes no están activados");
+                log.warn("Backup codes no activos para usuario ID {}", userId);
                 return false;
             }
 
@@ -118,25 +112,22 @@ public class BackupCodeService {
                     bc.markAsUsed();
                     backupCodeRepository.save(bc);
 
-                    System.out.println("  ✅ Código válido y marcado como usado");
-
                     long remainingCodes = backupCodeRepository.countByUserIdAndUsedFalse(userId);
-                    System.out.println("  📊 Códigos restantes: " + remainingCodes);
+                    log.info("Backup code válido para usuario ID {}. Restantes: {}", userId, remainingCodes);
 
                     if (remainingCodes == 0) {
-                        System.out.println(
-                                "  ⚠️  ¡ADVERTENCIA! No quedan códigos de backup. Se recomienda generar nuevos.");
+                        log.warn("Usuario ID {} ya no tiene backup codes disponibles", userId);
                     }
 
                     return true;
                 }
             }
 
-            System.out.println("  ❌ Código inválido o ya utilizado");
+            log.warn("Backup code inválido o ya utilizado para usuario ID {}", userId);
             return false;
 
         } catch (Exception e) {
-            logger.error("❌ Error verificando backup code: " + e.getMessage());
+            log.error("Error verificando backup code para usuario ID {}: {}", userId, e.getClass().getSimpleName());
             return false;
         }
     }
@@ -186,7 +177,7 @@ public class BackupCodeService {
         user.setBackupCodesEnabled(false);
         userService.save(user);
 
-        System.out.println("🔒 Backup codes desactivados para usuario " + userId);
+        log.info("Backup codes desactivados para usuario ID {}", userId);
     }
 
     /**

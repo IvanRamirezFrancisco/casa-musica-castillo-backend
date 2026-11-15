@@ -4,6 +4,7 @@ import com.security.dto.request.RegisterRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -11,8 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Set;
 
 /**
- * Endpoint de prueba para verificar validaciones
+ * Endpoint de prueba para verificar validaciones.
+ * Solo activo en perfiles local/dev. En producción Spring no crea el bean.
  */
+@Profile({"local", "dev"})
 @RestController
 @RequestMapping("/api/test")
 public class ValidationTestController {

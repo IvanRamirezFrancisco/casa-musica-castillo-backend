@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  * Entidad para registro de uso de cupones
  */
 @Entity
-@Table(name = "coupon_usage", indexes = {
+@Table(name = "coupon_usage", schema = "sales", indexes = {
         @Index(name = "idx_usage_coupon", columnList = "coupon_id"),
         @Index(name = "idx_usage_user", columnList = "user_id"),
         @Index(name = "idx_usage_order", columnList = "order_id")

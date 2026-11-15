@@ -110,7 +110,7 @@ public class RBACService {
             String clientIp = getCurrentClientIp(); // Implementar según contexto
 
             // Verificar si el usuario está activo
-            Optional<User> userOpt = userRepository.findById(Long.valueOf(userId));
+            Optional<User> userOpt = userRepository.findByIdWithRoles(Long.valueOf(userId));
             if (userOpt.isEmpty() || !userOpt.get().isEnabled()) {
                 logAccessDenied(userId, resource, action, "User inactive or not found");
                 return false;
@@ -293,7 +293,7 @@ public class RBACService {
                 return false;
             }
 
-            Optional<User> userOpt = userRepository.findById(targetUserId);
+            Optional<User> userOpt = userRepository.findByIdWithRoles(targetUserId);
             if (userOpt.isEmpty()) {
                 return false;
             }

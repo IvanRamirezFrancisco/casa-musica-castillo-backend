@@ -82,6 +82,9 @@ public class CartDTO {
         private BigDecimal unitPrice;
         private BigDecimal subtotal;
         private Integer availableStock;
+        private Boolean available;
+        private String availabilityStatus;
+        private String warningMessage;
         private LocalDateTime addedAt;
     }
 
@@ -105,6 +108,9 @@ public class CartDTO {
         private BigDecimal total;
         private String couponCode;
         private String status;
+        private Boolean canCheckout;
+        private String warningMessage;
+        private BigDecimal unavailableItemsTotal;
         private LocalDateTime expiresAt;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
@@ -132,6 +138,9 @@ public class CartDTO {
         private BigDecimal subtotal;
         private BigDecimal total;
         private String status;
+        private Boolean canCheckout;
+        private Integer unavailableItemsCount;
+        private String warningMessage;
     }
 
     /**
@@ -148,5 +157,33 @@ public class CartDTO {
         private BigDecimal discountApplied;
         private BigDecimal newTotal;
         private String message;
+    }
+
+    /**
+     * Response para validación del carrito
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CartValidationResponse {
+        private boolean valid;
+        private boolean canCheckout;
+        private List<String> globalErrors;
+        private List<CartItemValidation> itemWarnings;
+    }
+
+    /**
+     * Warning específico para un item en validación
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CartItemValidation {
+        private Long itemId;
+        private Long productId;
+        private String availabilityStatus;
+        private String warningMessage;
     }
 }

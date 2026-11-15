@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
  * Entidad para votos de utilidad en reseñas
  */
 @Entity
-@Table(name = "review_helpfulness", uniqueConstraints = {
+@Table(name = "review_helpfulness", schema = "catalog", uniqueConstraints = {
                 @UniqueConstraint(name = "uk_review_user", columnNames = { "review_id", "user_id" })
 }, indexes = {
                 @Index(name = "idx_helpfulness_review", columnList = "review_id"),

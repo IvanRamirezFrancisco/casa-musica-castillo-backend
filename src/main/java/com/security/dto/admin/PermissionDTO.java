@@ -14,6 +14,11 @@ public class PermissionDTO {
     private String description;
     private String category;
     private LocalDateTime createdAt;
+    
+    // UI Metadata
+    private Boolean assignable;
+    private Boolean critical;
+    private Boolean ownerOnly;
 
     // ==================== Constructors ====================
 
@@ -73,5 +78,29 @@ public class PermissionDTO {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public Boolean getAssignable() {
+        return assignable;
+    }
+
+    public void setAssignable(Boolean assignable) {
+        this.assignable = assignable;
+    }
+
+    public Boolean getCritical() {
+        return critical;
+    }
+
+    public void setCritical(Boolean critical) {
+        this.critical = critical;
+    }
+
+    public Boolean getOwnerOnly() {
+        return ownerOnly;
+    }
+
+    public void setOwnerOnly(Boolean ownerOnly) {
+        this.ownerOnly = ownerOnly;
     }
 }

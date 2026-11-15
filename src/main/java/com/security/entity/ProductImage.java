@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
 import java.util.Objects;
 
 @Entity
-@Table(name = "product_images")
+@Table(name = "product_images", schema = "catalog")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -39,6 +39,28 @@ public class ProductImage {
     @Min(value = 1, message = "El orden debe ser al menos 1")
     @Column(name = "display_order", nullable = false)
     private Integer displayOrder = 1;
+
+    @Column(name = "public_id", length = 255)
+    private String publicId;
+
+    @Column(name = "stored_filename", length = 255)
+    private String storedFilename;
+
+    @Column(name = "content_type", length = 100)
+    private String contentType;
+
+    @Column(name = "file_size_bytes")
+    private Long fileSizeBytes;
+
+    @Column(name = "is_primary", nullable = false)
+    private Boolean isPrimary = false;
+
+    @Column(name = "provider", length = 50, nullable = false)
+    private String provider = "LOCAL";
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "uploaded_by_id")
+    private User uploadedBy;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

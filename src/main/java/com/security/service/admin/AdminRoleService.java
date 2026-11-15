@@ -49,6 +49,23 @@ public class AdminRoleService {
                         "ROLE_ADMIN",
                         "ROLE_USER");
 
+        /**
+         * Permisos sensibles que solo pueden ser asignados por SUPER_ADMIN.
+         * Si un usuario con rol ADMIN u otro intenta crear/actualizar un rol
+         * incluyendo alguno de estos permisos, se lanzará una excepción.
+         */
+        private static final Set<String> ADMIN_ONLY_PERMISSIONS = Set.of(
+                        "ROLE_CREATE", "ROLE_UPDATE", "ROLE_DELETE",
+                        "PERMISSION_ASSIGN",
+                        "USER_DELETE", "USER_MANAGE_ROLES",
+                        "DATABASE_BACKUP", "DATABASE_MAINTAIN", "DATABASE_AUTOMATE",
+                        "SYSTEM_SETTINGS");
+
+        private static final Set<String> RESERVED_ROLE_NAMES = Set.of(
+                        "ROLE_SUPER_ADMIN", "ROLE_ADMIN", "ROLE_USER",
+                        "ROLE_SYSTEM_OWNER", "ROLE_PROTECTED_OWNER", "ROLE_ROOT",
+                        "ROLE_OWNER", "ROLE_MASTER_ADMIN", "ROLE_FULL_ACCESS");
+
         private static final Logger logger = LoggerFactory.getLogger(AdminRoleService.class);
 
         @Autowired
@@ -62,6 +79,23 @@ public class AdminRoleService {
 
         @Autowired
         private AuditLogService auditLogService;
+
+        @Autowired
+        private com.security.service.AdminHierarchyService adminHierarchyService;
+
+        @Autowired
+        private com.security.service.RolePolicyService rolePolicyService;
+
+        /**
+         * Helper para obtener el actor actual.
+         */
+        private User getCurrentActor() {
+                String currentAdmin = getCurrentUsername();
+                if (currentAdmin != null && !"SYSTEM".equals(currentAdmin)) {
+                        return userRepository.findByEmail(currentAdmin).orElse(null);
+                }
+                return null;
+        }
 
         /**
          * Obtener todos los roles del sistema
@@ -112,6 +146,33 @@ public class AdminRoleService {
         }
 
         /**
+         * Obtener permisos asignables agrupados por categoría, filtrando los no permitidos.
+         */
+        @Transactional(readOnly = true)
+        public java.util.Map<String, List<PermissionDTO>> getAssignablePermissionsByCategory() {
+                User actor = getCurrentActor();
+                boolean isProtectedOwner = actor != null && rolePolicyService.isProtectedOwner(actor);
+
+                List<Permission> permissions = permissionRepository.findAllOrderedByCategoryAndName();
+
+                return permissions.stream()
+                                .filter(p -> {
+                                        if (!isProtectedOwner) {
+                                                return !rolePolicyService.isOwnerOnlyPermission(p.getName()) &&
+                                                       !rolePolicyService.isCriticalPermission(p.getName());
+                                        }
+                                        return true;
+                                })
+                                .collect(Collectors.groupingBy(
+                                                p -> p.getCategory() != null ? p.getCategory() : "UNCATEGORIZED",
+                                                Collectors.mapping(p -> {
+                                                        PermissionDTO dto = convertToPermissionDTO(p);
+                                                        dto.setAssignable(true);
+                                                        return dto;
+                                                }, Collectors.toList())));
+        }
+
+        /**
          * Crear un nuevo rol con permisos asignados.
          * No se permite crear roles cuyo nombre coincida con los roles inmutables del
          * sistema.
@@ -121,10 +182,10 @@ public class AdminRoleService {
                 String normalizedName = dto.getName().trim().toUpperCase();
 
                 // Regla de oro 1: no se pueden crear roles con nombres reservados
-                if (IMMUTABLE_ROLES.contains(normalizedName)) {
+                if (RESERVED_ROLE_NAMES.contains(normalizedName)) {
                         throw new IllegalArgumentException(
                                         "El nombre '" + normalizedName
-                                                        + "' está reservado para un rol del sistema y no puede ser utilizado.");
+                                                        + "' está reservado y no puede ser utilizado.");
                 }
 
                 // Validar unicidad del nombre
@@ -141,6 +202,15 @@ public class AdminRoleService {
 
                 if (permissions.isEmpty()) {
                         throw new IllegalArgumentException("Debe asignar al menos un permiso al rol.");
+                }
+
+                // Regla de seguridad: permisos sensibles solo pueden ser asignados por
+                // SUPER_ADMIN
+                validateAdminOnlyPermissions(permissions);
+                
+                User actor = getCurrentActor();
+                if (actor != null) {
+                        rolePolicyService.assertCanAssignPermissions(actor, permissions.stream().map(Permission::getName).collect(Collectors.toSet()));
                 }
 
                 // Crear y persistir el nuevo rol
@@ -186,6 +256,16 @@ public class AdminRoleService {
                                                         + "' es un rol base del sistema y sus permisos no pueden modificarse.");
                 }
 
+                // SECURITY: Usar AdminHierarchyService para proteger roles marcados como is_system_role
+                String currentAdmin = getCurrentUsername();
+                User actor = null;
+                if (currentAdmin != null && !"SYSTEM".equals(currentAdmin)) {
+                        actor = userRepository.findByEmail(currentAdmin).orElse(null);
+                        if (actor != null) {
+                                adminHierarchyService.assertCanModifyRole(actor, role);
+                        }
+                }
+
                 // Obtener nuevos permisos
                 Set<Permission> newPermissions = dto.getPermissionIds().stream()
                                 .map(permId -> permissionRepository.findById(permId)
@@ -197,6 +277,18 @@ public class AdminRoleService {
                         throw new IllegalArgumentException("Debe asignar al menos un permiso al rol.");
                 }
 
+                // Regla de seguridad: permisos sensibles solo pueden ser asignados por
+                // SUPER_ADMIN
+                validateAdminOnlyPermissions(newPermissions);
+                
+                if (actor != null) {
+                        rolePolicyService.assertCanAssignPermissions(actor, newPermissions.stream().map(Permission::getName).collect(Collectors.toSet()));
+                        
+                        Set<Permission> permissionsToRemove = new java.util.HashSet<>(role.getPermissions());
+                        permissionsToRemove.removeAll(newPermissions);
+                        rolePolicyService.assertCanAssignPermissions(actor, permissionsToRemove.stream().map(Permission::getName).collect(Collectors.toSet()));
+                }
+
                 String oldPermissions = role.getPermissions().stream()
                                 .map(Permission::getName)
                                 .collect(Collectors.joining(", "));
@@ -205,7 +297,7 @@ public class AdminRoleService {
                 role.setPermissions(newPermissions);
                 Role updatedRole = roleRepository.save(role);
 
-                String currentAdmin = getCurrentUsername();
+                // String currentAdmin = getCurrentUsername(); Ya fue definido arriba
                 String newPermissionsStr = newPermissions.stream()
                                 .map(Permission::getName)
                                 .collect(Collectors.joining(", "));
@@ -236,16 +328,34 @@ public class AdminRoleService {
                                                         + "' es un rol base del sistema y no puede ser modificado.");
                 }
 
+                // SECURITY: Usar AdminHierarchyService para proteger roles marcados como is_system_role
+                String currentAdmin = getCurrentUsername();
+                User actor = null;
+                if (currentAdmin != null && !"SYSTEM".equals(currentAdmin)) {
+                        actor = userRepository.findByEmail(currentAdmin).orElse(null);
+                        if (actor != null) {
+                                adminHierarchyService.assertCanModifyRole(actor, role);
+                        }
+                }
+
                 Set<Permission> permissionsToAdd = permissionIds.stream()
                                 .map(permId -> permissionRepository.findById(permId)
                                                 .orElseThrow(() -> new ResourceNotFoundException(
                                                                 "Permiso no encontrado con ID: " + permId)))
                                 .collect(Collectors.toSet());
 
+                // Regla de seguridad: permisos sensibles solo pueden ser asignados por
+                // SUPER_ADMIN
+                validateAdminOnlyPermissions(permissionsToAdd);
+                
+                if (actor != null) {
+                        rolePolicyService.assertCanAssignPermissions(actor, permissionsToAdd.stream().map(Permission::getName).collect(Collectors.toSet()));
+                }
+
                 permissionsToAdd.forEach(role::addPermission);
                 Role updatedRole = roleRepository.save(role);
 
-                String currentAdmin = getCurrentUsername();
+                // String currentAdmin = getCurrentUsername(); Ya fue definido arriba
                 String addedPermissions = permissionsToAdd.stream()
                                 .map(Permission::getName)
                                 .collect(Collectors.joining(", "));
@@ -277,11 +387,25 @@ public class AdminRoleService {
                                                         + "' es un rol base del sistema y no puede ser modificado.");
                 }
 
+                // SECURITY: Usar AdminHierarchyService para proteger roles marcados como is_system_role
+                String currentAdmin = getCurrentUsername();
+                User actor = null;
+                if (currentAdmin != null && !"SYSTEM".equals(currentAdmin)) {
+                        actor = userRepository.findByEmail(currentAdmin).orElse(null);
+                        if (actor != null) {
+                                adminHierarchyService.assertCanModifyRole(actor, role);
+                        }
+                }
+
                 Set<Permission> permissionsToRemove = permissionIds.stream()
                                 .map(permId -> permissionRepository.findById(permId)
                                                 .orElseThrow(() -> new ResourceNotFoundException(
                                                                 "Permiso no encontrado con ID: " + permId)))
                                 .collect(Collectors.toSet());
+
+                if (actor != null) {
+                        rolePolicyService.assertCanAssignPermissions(actor, permissionsToRemove.stream().map(Permission::getName).collect(Collectors.toSet()));
+                }
 
                 if (role.getPermissions().size() <= permissionsToRemove.size()) {
                         throw new IllegalArgumentException(
@@ -291,7 +415,7 @@ public class AdminRoleService {
                 permissionsToRemove.forEach(role::removePermission);
                 Role updatedRole = roleRepository.save(role);
 
-                String currentAdmin = getCurrentUsername();
+                // String currentAdmin = getCurrentUsername(); Ya fue definido arriba
                 String removedPermissions = permissionsToRemove.stream()
                                 .map(Permission::getName)
                                 .collect(Collectors.joining(", "));
@@ -329,8 +453,18 @@ public class AdminRoleService {
                                                         + "' es un rol base del sistema y no puede ser eliminado.");
                 }
 
+                // SECURITY: Usar AdminHierarchyService para proteger roles marcados como is_system_role
+                String currentAdmin = getCurrentUsername();
+                User actor = null;
+                if (currentAdmin != null && !"SYSTEM".equals(currentAdmin)) {
+                        actor = userRepository.findByEmail(currentAdmin).orElse(null);
+                        if (actor != null) {
+                                adminHierarchyService.assertCanDeleteRole(actor, role);
+                        }
+                }
+
                 // Regla de oro 2: safe-delete
-                long usersCount = (long) role.getUsers().size();
+                long usersCount = roleRepository.countUsersByRoleId(roleId);
                 if (usersCount > 0) {
                         throw new IllegalStateException(
                                         "No se puede eliminar el rol '" + role.getName() + "' porque tiene "
@@ -338,7 +472,7 @@ public class AdminRoleService {
                                                         + "Primero reasigna o elimina esos usuarios.");
                 }
 
-                String currentAdmin = getCurrentUsername();
+                // String currentAdmin = getCurrentUsername(); Ya fue definido arriba
                 String roleName = role.getName();
                 Long id = role.getId();
 
@@ -356,11 +490,11 @@ public class AdminRoleService {
          */
         @Transactional(readOnly = true)
         public Long countUsersWithRole(Long roleId) {
-                Role role = roleRepository.findById(roleId)
+                roleRepository.findById(roleId)
                                 .orElseThrow(() -> new ResourceNotFoundException(
                                                 "Rol no encontrado con ID: " + roleId));
 
-                return (long) role.getUsers().size();
+                return roleRepository.countUsersByRoleId(roleId);
         }
 
         /**
@@ -428,7 +562,7 @@ public class AdminRoleService {
                                 .collect(Collectors.toSet());
                 dto.setPermissions(permissionsDTO);
 
-                dto.setUserCount((long) role.getUsers().size());
+                dto.setUserCount(roleRepository.countUsersByRoleId(role.getId()));
 
                 return dto;
         }
@@ -443,6 +577,10 @@ public class AdminRoleService {
                 dto.setDescription(permission.getDescription());
                 dto.setCategory(permission.getCategory());
                 dto.setCreatedAt(permission.getCreatedAt());
+                if (rolePolicyService != null) {
+                        dto.setOwnerOnly(rolePolicyService.isOwnerOnlyPermission(permission.getName()));
+                        dto.setCritical(rolePolicyService.isCriticalPermission(permission.getName()));
+                }
                 return dto;
         }
 
@@ -452,5 +590,41 @@ public class AdminRoleService {
         private String getCurrentUsername() {
                 Authentication auth = SecurityContextHolder.getContext().getAuthentication();
                 return auth != null ? auth.getName() : "SYSTEM";
+        }
+
+        /**
+         * Verifica si el usuario autenticado actual tiene el rol SUPER_ADMIN.
+         */
+        private boolean isCurrentUserSuperAdmin() {
+                Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                if (auth == null)
+                        return false;
+                return auth.getAuthorities().stream()
+                                .anyMatch(a -> "ROLE_SUPER_ADMIN".equals(a.getAuthority()));
+        }
+
+        /**
+         * Valida que los permisos solicitados no incluyan permisos sensibles
+         * (ADMIN_ONLY_PERMISSIONS) a menos que el usuario actual sea SUPER_ADMIN.
+         * 
+         * @param permissions conjunto de permisos a validar
+         * @throws IllegalArgumentException si un no-SUPER_ADMIN intenta asignar
+         *                                  permisos sensibles
+         */
+        private void validateAdminOnlyPermissions(Set<Permission> permissions) {
+                if (isCurrentUserSuperAdmin()) {
+                        return; // SUPER_ADMIN puede asignar cualquier permiso
+                }
+
+                Set<String> restrictedFound = permissions.stream()
+                                .map(Permission::getName)
+                                .filter(ADMIN_ONLY_PERMISSIONS::contains)
+                                .collect(Collectors.toSet());
+
+                if (!restrictedFound.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                        "Los siguientes permisos solo pueden ser asignados por un SUPER_ADMIN: "
+                                                        + String.join(", ", restrictedFound));
+                }
         }
 }

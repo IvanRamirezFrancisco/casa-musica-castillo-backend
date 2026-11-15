@@ -24,7 +24,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/admin/dashboard")
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasAuthority('DASHBOARD_VIEW')")
 public class AdminDashboardController {
 
     @Autowired

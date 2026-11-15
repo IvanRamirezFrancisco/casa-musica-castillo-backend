@@ -4,6 +4,7 @@ import com.security.dto.admin.AdminUserCreateDTO;
 import com.security.dto.admin.AdminUserListDTO;
 import com.security.dto.admin.AdminUserResponseDTO;
 import com.security.dto.admin.AdminUserUpdateDTO;
+import com.security.repository.UserRepository;
 import com.security.service.admin.AdminUserService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,18 +25,39 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/admin/staff")
-@CrossOrigin(origins = { "http://localhost:4200", "https://login.up.railway.app" }, allowCredentials = "true")
 public class AdminUserController {
 
     @Autowired
     private AdminUserService adminUserService;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    /**
+     * GET /api/admin/staff/check-email?email=...
+     * Verifica si un email ya está registrado en el sistema.
+     * Requiere: USER_CREATE
+     */
+    @GetMapping("/check-email")
+    @PreAuthorize("hasAuthority('USER_CREATE')")
+    public ResponseEntity<Map<String, Boolean>> checkEmail(@RequestParam String email) {
+        String normalized = email.toLowerCase().trim();
+
+        // Validación básica de formato
+        if (!normalized.contains("@") || normalized.length() > 100) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        boolean available = !userRepository.existsByEmail(normalized);
+        return ResponseEntity.ok(Map.of("available", available));
+    }
 
     /**
      * GET /api/admin/staff - Listar todos los usuarios Staff (paginado)
      * Requiere: ROLE_ADMIN o ROLE_SUPER_ADMIN
      */
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_READ')")
     public ResponseEntity<Map<String, Object>> getAllStaff(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size,
@@ -57,7 +79,7 @@ public class AdminUserController {
      * Requiere: ROLE_ADMIN o ROLE_SUPER_ADMIN
      */
     @GetMapping("/search")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_READ')")
     public ResponseEntity<Map<String, Object>> searchStaff(
             @RequestParam(required = false) String searchTerm,
             @RequestParam(required = false) Boolean enabled,
@@ -81,7 +103,7 @@ public class AdminUserController {
      * Requiere: ROLE_ADMIN o ROLE_SUPER_ADMIN
      */
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_READ')")
     public ResponseEntity<AdminUserResponseDTO> getStaffById(@PathVariable Long id) {
         AdminUserResponseDTO staff = adminUserService.getStaffById(id);
         return ResponseEntity.ok(staff);
@@ -93,7 +115,7 @@ public class AdminUserController {
      * CRITICAL: Fuerza is_customer = false y encripta el password
      */
     @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_CREATE')")
     public ResponseEntity<Map<String, Object>> createStaffUser(@Valid @RequestBody AdminUserCreateDTO dto) {
         AdminUserResponseDTO createdUser = adminUserService.createStaffUser(dto);
 
@@ -111,7 +133,7 @@ public class AdminUserController {
      * ROLE_ADMIN
      */
     @PutMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<Map<String, Object>> updateStaffUser(
             @PathVariable Long id,
             @Valid @RequestBody AdminUserUpdateDTO dto) {
@@ -131,7 +153,7 @@ public class AdminUserController {
      * CRITICAL: No permite desactivarse a sí mismo
      */
     @PatchMapping("/{id}/toggle-enabled")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<Map<String, Object>> toggleEnabledStatus(@PathVariable Long id) {
         AdminUserResponseDTO updatedUser = adminUserService.toggleEnabledStatus(id);
 
@@ -150,7 +172,7 @@ public class AdminUserController {
      * CRITICAL: No permite bloquearse a sí mismo
      */
     @PatchMapping("/{id}/toggle-locked")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<Map<String, Object>> toggleLockedStatus(@PathVariable Long id) {
         AdminUserResponseDTO updatedUser = adminUserService.toggleLockedStatus(id);
 
@@ -169,7 +191,7 @@ public class AdminUserController {
      * CRITICAL: No permite eliminarse a sí mismo
      */
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_DELETE')")
     public ResponseEntity<Map<String, Object>> deleteStaffUser(@PathVariable Long id) {
         adminUserService.deleteStaffUser(id);
 
@@ -185,7 +207,7 @@ public class AdminUserController {
      * Requiere: ROLE_ADMIN o ROLE_SUPER_ADMIN
      */
     @PatchMapping("/{id}/reset-failed-attempts")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
     public ResponseEntity<Map<String, Object>> resetFailedAttempts(@PathVariable Long id) {
         AdminUserResponseDTO updatedUser = adminUserService.resetFailedLoginAttempts(id);
 
@@ -197,11 +219,29 @@ public class AdminUserController {
     }
 
     /**
+     * PATCH /api/admin/staff/{id}/reset-recovery-block - Resetear bloqueo de
+     * recuperacion de contrasena
+     * Requiere: USER_UPDATE
+     * CRITICAL: No permite resetear su propio bloqueo
+     */
+    @PatchMapping("/{id}/reset-recovery-block")
+    @PreAuthorize("hasAuthority('USER_UPDATE')")
+    public ResponseEntity<Map<String, Object>> resetRecoveryBlock(@PathVariable Long id) {
+        AdminUserResponseDTO updatedUser = adminUserService.resetPasswordRecoveryBlock(id);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("message", "Bloqueo de recuperacion de contrasena reseteado exitosamente");
+        response.put("user", updatedUser);
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * GET /api/admin/staff/export/csv - Exportar lista de Staff a CSV
      * Requiere: ROLE_ADMIN o ROLE_SUPER_ADMIN
      */
     @GetMapping("/export/csv")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('REPORT_EXPORT')")
     public ResponseEntity<byte[]> exportToCsv(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Long roleId) {
@@ -213,5 +253,15 @@ public class AdminUserController {
                 "staff-" + java.time.LocalDate.now() + ".csv");
 
         return new ResponseEntity<>(csv, headers, HttpStatus.OK);
+    }
+
+    /**
+     * GET /api/admin/staff/assignable-roles
+     * Obtiene los roles que el usuario autenticado puede asignar en el contexto técnico.
+     */
+    @GetMapping("/assignable-roles")
+    @PreAuthorize("hasAuthority('USER_READ')")
+    public ResponseEntity<java.util.List<com.security.dto.admin.AssignableRoleDTO>> getAssignableRoles() {
+        return ResponseEntity.ok(adminUserService.getAssignableRoles());
     }
 }

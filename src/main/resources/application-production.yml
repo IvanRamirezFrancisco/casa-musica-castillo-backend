@@ -1,5 +1,9 @@
 server:
   port: ${PORT:8080}
+  tomcat:
+    threads:
+      min-spare: ${TOMCAT_MIN_SPARE_THREADS:2}
+      max: ${TOMCAT_MAX_THREADS:24}
   ssl:
     enabled: false  # Render maneja SSL en el borde
 
@@ -7,18 +11,21 @@ spring:
   application:
     name: auth-system
 
-  # Configuración de base de datos PostgreSQL (Railway / variables de entorno)
+  # Base de datos PostgreSQL (Neon). Primario: SPRING_DATASOURCE_*; fallback: DATABASE_URL/PGUSER/PGPASSWORD.
+  # Sin default a localhost: si falta la configuración, el arranque falla con
+  # "Could not resolve placeholder 'DATABASE_URL'" en lugar de conectar a una BD equivocada.
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:security_db}}
-    username: ${PGUSER:${SPRING_DATASOURCE_USERNAME:postgres}}
-    password: ${PGPASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+    url: ${SPRING_DATASOURCE_URL:${DATABASE_URL}}
+    username: ${SPRING_DATASOURCE_USERNAME:${PGUSER}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${PGPASSWORD}}
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:4}
+      minimum-idle: ${HIKARI_MIN_IDLE:1}
       connection-timeout: 20000
       idle-timeout: 300000
       max-lifetime: 1200000
+      connection-init-sql: SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics
 
   jpa:
     hibernate:
@@ -28,10 +35,13 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: false
+        default_schema: public
 
   flyway:
     enabled: true
     baseline-on-migrate: true
+    default-schema: public
+    schemas: public,auth,security,catalog,sales,customer,ops,analytics
 
   # Límite de subida de archivos (CSV import — máximo lógico 5 MB en CsvController)
   servlet:
@@ -42,18 +52,18 @@ spring:
 
   # Configuración de email para producción (Brevo/Sendinblue)
   mail:
-    host: ${SPRING_MAIL_HOST}
-    port: ${SPRING_MAIL_PORT}
-    username: ${SPRING_MAIL_USERNAME}
-    password: ${SPRING_MAIL_PASSWORD}
+    host: ${SPRING_MAIL_HOST:${MAIL_HOST:smtp-relay.brevo.com}}
+    port: ${SPRING_MAIL_PORT:${MAIL_PORT:587}}
+    username: ${SPRING_MAIL_USERNAME:${MAIL_USERNAME:}}
+    password: ${SPRING_MAIL_PASSWORD:${MAIL_PASSWORD:}}
     properties:
       mail:
         smtp:
-          auth: true
+          auth: ${SPRING_MAIL_SMTP_AUTH:${MAIL_SMTP_AUTH:true}}
           ssl:
             enable: false
           starttls:
-            enable: true
+            enable: ${SPRING_MAIL_STARTTLS_ENABLE:${MAIL_STARTTLS_ENABLE:true}}
           connectiontimeout: 10000
           timeout: 10000
           writetimeout: 10000
@@ -66,7 +76,7 @@ app:
       force: true
       
     jwt:
-      secret: ${APP_SECURITY_JWT_SECRET}
+      secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
       expiration: 86400000  # 24 horas
       refresh-expiration: 604800000  # 7 días
 
@@ -100,16 +110,26 @@ app:
       max-delay-minutes: 240
 
   # URL base del frontend en producción
-  base-url: ${APP_BASE_URL}
+  base-url: ${APP_BASE_URL:${FRONTEND_URL:${FRONTEND_PUBLIC_BASE_URL:https://casa-musica-castillo.vercel.app}}}
+
+  legal:
+    deletion-intake-enabled: ${APP_LEGAL_DELETION_INTAKE_ENABLED:true}
+    automatic-deletion-enabled: ${APP_LEGAL_AUTOMATIC_DELETION_ENABLED:true}
+
+  jobs:
+    backup-database:
+      enabled: ${APP_JOBS_BACKUP_DATABASE_ENABLED:false}
+    inventory-audit:
+      enabled: ${APP_JOBS_INVENTORY_AUDIT_ENABLED:false}
   
   # Configuraciones de proveedores de email
   email:
+    sender-name: ${EMAIL_FROM_NAME:${EMAIL_SENDER_NAME:${APP_EMAIL_SENDER_NAME:Casa de Música Castillo}}}
+    sender-address: ${EMAIL_FROM:${EMAIL_SENDER_ADDRESS:${APP_EMAIL_SENDER_ADDRESS:${MAIL_SENDER_ADDRESS:${SPRING_MAIL_USERNAME:${MAIL_USERNAME:noreply@casamusicacastillo.com}}}}}}
     brevo:
-      api-key: ${APP_EMAIL_BREVO_API_KEY}
+      api-key: ${APP_EMAIL_BREVO_API_KEY:${BREVO_API_KEY:}}
     resend:
-      api-key: ${RESEND_API_KEY}
-    sendgrid:
-      api-key: ${SENDGRID_API_KEY:}
+      api-key: ${APP_EMAIL_RESEND_API_KEY:${RESEND_API_KEY:}}
     mailgun:
       api-key: ${MAILGUN_API_KEY:}
       domain: ${MAILGUN_DOMAIN:}
@@ -117,13 +137,25 @@ app:
   notification:
     sms:
       provider: ${SMS_PROVIDER:sinch}
-      project-id: ${APP_NOTIFICATION_SMS_PROJECT_ID}
-      access-key-id: ${APP_NOTIFICATION_SMS_ACCESS_KEY_ID}
-      secret-key: ${APP_NOTIFICATION_SMS_SECRET_KEY}
+      project-id: ${APP_NOTIFICATION_SMS_PROJECT_ID:}
+      access-key-id: ${APP_NOTIFICATION_SMS_ACCESS_KEY_ID:}
+      secret-key: ${APP_NOTIFICATION_SMS_SECRET_KEY:}
+
+  # Mercado Pago Checkout Pro
+  mercadopago:
+    enabled: ${MERCADO_PAGO_ENABLED:false}
+    environment: ${MERCADO_PAGO_ENVIRONMENT:production}
+    access-token: ${MERCADO_PAGO_ACCESS_TOKEN:}
+    public-key: ${MERCADO_PAGO_PUBLIC_KEY:}
+    frontend-base-url: ${FRONTEND_PUBLIC_BASE_URL:${FRONTEND_URL:${APP_BASE_URL:https://casa-musica-castillo.vercel.app}}}
+    backend-base-url: ${BACKEND_PUBLIC_BASE_URL:https://casa-musica-castillo-backend-production.up.railway.app}
+    webhook-secret: ${MERCADO_PAGO_WEBHOOK_SECRET:}
+    reconciliation:
+      enabled: ${APP_MERCADOPAGO_RECONCILIATION_ENABLED:true}
 
 # Configuración de CORS para producción
 cors:
-  allowed-origins: ${CORS_ORIGINS}
+  allowed-origins: ${CORS_ORIGINS:https://casa-musica-castillo.vercel.app,https://localhost,capacitor://localhost,http://localhost:8100}
   allowed-methods: GET,POST,PUT,DELETE,PATCH,OPTIONS
   allowed-headers: "*"
   allow-credentials: true
@@ -135,13 +167,15 @@ management:
     web:
       exposure:
         include: health,info
-      base-path: /api/actuator
+      base-path: /actuator
   endpoint:
     health:
       show-details: when-authorized
   health:
     db:
       enabled: true
+    mail:
+      enabled: false
 
 # Logging para producción
 logging:
@@ -152,3 +186,22 @@ logging:
     org.hibernate: WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# ============================================================
+# CLOUDINARY - PRODUCCIÓN
+# ============================================================
+storage:
+  provider: CLOUDINARY
+
+# ============================================================
+# CONFIGURACION DE LA TIENDA (API Alexa y Públicos)
+# ============================================================
+store:
+  name: ${STORE_NAME:Casa de Música Castillo}
+  address: ${STORE_ADDRESS:C. Morelos 18, Centro, 43000 Huejutla de Reyes, Hgo.}
+  phone: ${STORE_PHONE:771 125 8792}
+  whatsapp: ${STORE_WHATSAPP:+527711258792}
+  facebook: ${STORE_FACEBOOK:https://www.facebook.com/100094724658538}
+  hours: ${STORE_HOURS:Lunes a sábado de 9:00 a.m. a 7:00 p.m.; domingo de 10:00 a.m. a 3:00 p.m.}
+  paymentMethods: ${STORE_PAYMENT_METHODS:Efectivo, tarjeta, transferencia y Mercado Pago}
+  warrantyInfo: ${STORE_WARRANTY_INFO:La garantía depende del producto, marca y condiciones del proveedor.}

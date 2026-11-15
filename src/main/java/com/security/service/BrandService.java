@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
+import com.security.util.SlugUtils;
 
 /**
  * Servicio para gestión de marcas
@@ -29,6 +30,7 @@ public class BrandService {
 
     private final BrandRepository brandRepository;
     private final ProductRepository productRepository;
+    private final StorageService storageService;
 
     /**
      * Obtener todas las marcas con paginación
@@ -201,6 +203,46 @@ public class BrandService {
         brandRepository.save(brand);
     }
 
+    /**
+     * Subir logo de marca
+     */
+    public com.security.dto.StorageUploadResult uploadLogo(Long brandId, org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+        Brand brand = brandRepository.findById(brandId)
+                .orElseThrow(() -> new ResourceNotFoundException("Marca no encontrada con ID: " + brandId));
+
+        if (brand.getLogoPublicId() != null) {
+            storageService.delete(brand.getLogoPublicId());
+        }
+
+        String folderPath = SlugUtils.buildBrandFolder(brand.getId(), brand.getName());
+        com.security.dto.StorageUploadResult result = storageService.uploadBrandImage(file, brandId, folderPath);
+        
+        brand.setLogoUrl(result.getSecureUrl());
+        brand.setLogoPublicId(result.getPublicId());
+        brand.setLogoProvider(result.getProvider());
+        
+        brandRepository.save(brand);
+        return result;
+    }
+
+    /**
+     * Eliminar logo de marca
+     */
+    public void deleteLogo(Long brandId) throws java.io.IOException {
+        Brand brand = brandRepository.findById(brandId)
+                .orElseThrow(() -> new ResourceNotFoundException("Marca no encontrada con ID: " + brandId));
+
+        if (brand.getLogoPublicId() != null) {
+            storageService.delete(brand.getLogoPublicId());
+        }
+        
+        brand.setLogoUrl(null);
+        brand.setLogoPublicId(null);
+        brand.setLogoProvider(null);
+        
+        brandRepository.save(brand);
+    }
+
     // ==================== CONVERSORES ====================
 
     private BrandDTO.BrandResponse convertToResponse(Brand brand) {
@@ -209,6 +251,8 @@ public class BrandService {
                 .name(brand.getName())
                 .description(brand.getDescription())
                 .logoUrl(brand.getLogoUrl())
+                .logoProvider(brand.getLogoProvider())
+                .logoPublicId(brand.getLogoPublicId())
                 .websiteUrl(brand.getWebsiteUrl())
                 .countryOrigin(brand.getCountryOrigin())
                 .active(brand.getActive())
@@ -223,6 +267,7 @@ public class BrandService {
                 .id(brand.getId())
                 .name(brand.getName())
                 .logoUrl(brand.getLogoUrl())
+                .logoProvider(brand.getLogoProvider())
                 .active(brand.getActive())
                 .build();
     }

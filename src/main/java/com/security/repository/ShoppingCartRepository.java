@@ -18,10 +18,58 @@ import java.util.Optional;
 public interface ShoppingCartRepository extends JpaRepository<ShoppingCart, Long> {
 
     /**
-     * Encuentra el carrito activo de un usuario
+     * Encuentra el carrito activo de un usuario.
+     * ⚠️ ATENCIÓN: Si existen carritos ACTIVE duplicados para el mismo usuario,
+     * esta query lanza NonUniqueResultException. Usar findAllActiveCartsByUserId
+     * en la lógica de negocio para ser tolerante a duplicados.
      */
     @Query("SELECT c FROM ShoppingCart c WHERE c.user.id = :userId AND c.status = 'ACTIVE' AND c.expiresAt > :now")
     Optional<ShoppingCart> findActiveCartByUserId(@Param("userId") Long userId, @Param("now") LocalDateTime now);
+
+    // FASE 1.1 - Carrito duplicado - 2026-05-15
+    /**
+     * Devuelve TODOS los carritos ACTIVE de un usuario ordenados del más reciente al más antiguo.
+     * Orden: updatedAt DESC NULLS LAST, createdAt DESC NULLS LAST, id DESC.
+     *
+     * Usar este método en getOrCreateCartForUser para ser tolerante a duplicados:
+     * si la lista tiene >1 elemento, el servicio conserva el primero (más reciente)
+     * y cierra los demás como ABANDONED.
+     */
+    @Query("""
+            SELECT c FROM ShoppingCart c
+            WHERE c.user.id = :userId
+              AND c.status = 'ACTIVE'
+              AND c.expiresAt > :now
+            ORDER BY
+                CASE WHEN c.updatedAt IS NULL THEN 1 ELSE 0 END,
+                c.updatedAt DESC,
+                CASE WHEN c.createdAt IS NULL THEN 1 ELSE 0 END,
+                c.createdAt DESC,
+                c.id DESC
+            """)
+    List<ShoppingCart> findAllActiveCartsByUserId(@Param("userId") Long userId, @Param("now") LocalDateTime now);
+
+    // FASE 1.2 - Fix bug: carrito ACTIVE con expiresAt vencido causa DataIntegrityViolationException
+    /**
+     * Devuelve TODOS los carritos con status = 'ACTIVE' para un usuario,
+     * SIN filtrar por expiresAt. Permite detectar carritos cuya fecha ya
+     * venció antes de intentar un INSERT que violaría el constraint único
+     * ux_shopping_carts_one_active_per_user.
+     *
+     * Orden: updatedAt DESC NULLS LAST, createdAt DESC NULLS LAST, id DESC.
+     */
+    @Query("""
+            SELECT c FROM ShoppingCart c
+            WHERE c.user.id = :userId
+              AND c.status = 'ACTIVE'
+            ORDER BY
+                CASE WHEN c.updatedAt IS NULL THEN 1 ELSE 0 END,
+                c.updatedAt DESC,
+                CASE WHEN c.createdAt IS NULL THEN 1 ELSE 0 END,
+                c.createdAt DESC,
+                c.id DESC
+            """)
+    List<ShoppingCart> findAllActiveCartsByUserIdIgnoringExpiry(@Param("userId") Long userId);
 
     /**
      * Encuentra el carrito activo por ID de sesión

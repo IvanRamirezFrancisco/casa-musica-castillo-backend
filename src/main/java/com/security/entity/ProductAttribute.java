@@ -11,7 +11,7 @@ import lombok.ToString;
 import java.util.Objects;
 
 @Entity
-@Table(name = "product_attributes", indexes = {
+@Table(name = "product_attributes", schema = "catalog", indexes = {
         @Index(name = "idx_product_attrs_name", columnList = "attribute_name")
 })
 @Getter

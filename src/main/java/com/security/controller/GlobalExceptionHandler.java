@@ -15,10 +15,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import org.springframework.transaction.TransactionException;
+import java.sql.SQLException;
+import org.springframework.dao.DataAccessException;
 
 /**
  * Manejador global de excepciones para toda la aplicación
@@ -27,6 +33,38 @@ import java.util.Map;
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+        @ExceptionHandler(AuthFlowException.class)
+        public ResponseEntity<com.security.dto.response.ApiResponse> handleAuthFlow(AuthFlowException ex) {
+                return ResponseEntity.status(ex.getStatus()).body(new com.security.dto.response.ApiResponse(false, ex.getMessage()));
+        }
+
+        /**
+         * Maneja BadRequestException (solicitudes inválidas).
+         * HTTP 400 - BAD REQUEST
+         *
+         * <p>
+         * Usada por el módulo de analytics de clustering y otros servicios
+         * para rechazar parámetros de entrada inválidos (cluster negativo,
+         * paginación fuera de rango, etc.).
+         * </p>
+         */
+        @ExceptionHandler(BadRequestException.class)
+        public ResponseEntity<ErrorResponse> handleBadRequestException(
+                        BadRequestException ex, WebRequest request) {
+
+                log.warn("Solicitud inválida: {}", ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.BAD_REQUEST.value())
+                                .error("Bad Request")
+                                .message(ex.getMessage())
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+        }
 
         /**
          * Maneja excepciones de carrito no encontrado
@@ -191,6 +229,28 @@ public class GlobalExceptionHandler {
         }
 
         /**
+         * Maneja excepciones de violación de jerarquía de roles o del Protected Owner.
+         * HTTP 403 - FORBIDDEN
+         */
+        @ExceptionHandler(com.security.exception.SecurityHierarchyException.class)
+        public ResponseEntity<ErrorResponse> handleSecurityHierarchyException(
+                        com.security.exception.SecurityHierarchyException ex, WebRequest request) {
+
+                log.warn("🛡️ Jerarquía de seguridad violada: {}", ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.FORBIDDEN.value())
+                                .error("Hierarchy Violation")
+                                .message(ex.getMessage())
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .details(Map.of("type", "SECURITY_HIERARCHY_VIOLATION"))
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.FORBIDDEN);
+        }
+
+        /**
          * Maneja errores de validación de datos (jakarta.validation)
          * HTTP 400 - BAD REQUEST
          */
@@ -198,12 +258,12 @@ public class GlobalExceptionHandler {
         public ResponseEntity<ErrorResponse> handleValidationException(
                         MethodArgumentNotValidException ex, WebRequest request) {
 
-                log.error("Error de validación: {}", ex.getMessage());
+                log.warn("Validación rechazada: {} campos", ex.getBindingResult().getErrorCount());
 
                 Map<String, String> validationErrors = new HashMap<>();
                 ex.getBindingResult().getAllErrors().forEach(error -> {
-                        String fieldName = ((FieldError) error).getField();
-                        String errorMessage = error.getDefaultMessage();
+                        String fieldName = error instanceof FieldError field ? field.getField() : "request";
+                        String errorMessage = "Valor inválido";
                         validationErrors.put(fieldName, errorMessage);
                 });
 
@@ -244,6 +304,27 @@ public class GlobalExceptionHandler {
         }
 
         /**
+         * Maneja excepciones de estado ilegal
+         * HTTP 400 - BAD REQUEST
+         */
+        @ExceptionHandler(IllegalStateException.class)
+        public ResponseEntity<ErrorResponse> handleIllegalStateException(
+                        IllegalStateException ex, WebRequest request) {
+
+                log.error("Estado ilegal: {}", ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.BAD_REQUEST.value())
+                                .error("Bad Request")
+                                .message(ex.getMessage())
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+        }
+
+        /**
          * Maneja excepciones de autenticación (credenciales incorrectas)
          * HTTP 401 - UNAUTHORIZED
          */
@@ -267,12 +348,15 @@ public class GlobalExceptionHandler {
         /**
          * Maneja excepciones de acceso denegado (sin permisos)
          * HTTP 403 - FORBIDDEN
+         * Hermético: no expone la razón exacta de la denegación
          */
         @ExceptionHandler(AccessDeniedException.class)
         public ResponseEntity<ErrorResponse> handleAccessDeniedException(
                         AccessDeniedException ex, WebRequest request) {
 
-                log.error("Acceso denegado: {}", ex.getMessage());
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Acceso denegado: {} | path: {}", errorId, ex.getMessage(),
+                                request.getDescription(false));
 
                 ErrorResponse error = ErrorResponse.builder()
                                 .timestamp(LocalDateTime.now())
@@ -280,6 +364,7 @@ public class GlobalExceptionHandler {
                                 .error("Forbidden")
                                 .message("No tienes permisos para acceder a este recurso")
                                 .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
                                 .build();
 
                 return new ResponseEntity<>(error, HttpStatus.FORBIDDEN);
@@ -329,24 +414,21 @@ public class GlobalExceptionHandler {
 
         /**
          * Maneja violaciones de restricciones de BD (campos únicos, NOT NULL, etc.)
-         * HTTP 409 - CONFLICT (en vez de 500)
+         * HTTP 409 - CONFLICT
+         * Hermético: NO expone detalles de la causa de BD; se loguea server-side con
+         * errorId
          */
         @ExceptionHandler(DataIntegrityViolationException.class)
         public ResponseEntity<ErrorResponse> handleDataIntegrityViolation(
                         DataIntegrityViolationException ex, WebRequest request) {
 
+                String errorId = UUID.randomUUID().toString();
                 String cause = ex.getMostSpecificCause().getMessage();
-                log.error("Violación de integridad de datos: {}", cause);
+                log.error("[errorId={}] Violación de integridad de datos: {}", errorId, cause);
 
-                String userMessage = "Conflicto de datos en la base de datos.";
-                if (cause != null) {
-                        if (cause.contains("username"))
-                                userMessage = "Ya existe un usuario con ese nombre de usuario.";
-                        else if (cause.contains("email"))
-                                userMessage = "Ya existe un usuario con ese correo electrónico.";
-                        else if (cause.contains("cannot be null"))
-                                userMessage = "Hay un campo obligatorio sin valor: " + cause;
-                }
+                // Mensaje genérico — no filtramos por contenido para evitar fugas
+                String userMessage = "Conflicto de datos. Si el problema persiste, contacta al soporte con el código: "
+                                + errorId;
 
                 ErrorResponse error = ErrorResponse.builder()
                                 .timestamp(LocalDateTime.now())
@@ -354,30 +436,124 @@ public class GlobalExceptionHandler {
                                 .error("Conflict")
                                 .message(userMessage)
                                 .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
                                 .build();
 
                 return new ResponseEntity<>(error, HttpStatus.CONFLICT);
         }
 
         /**
+         * Maneja rutas no encontradas (404)
+         * Evita que se dispare el manejador global de Exception (500)
+         */
+        @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+        public ResponseEntity<ErrorResponse> handleNotFound(
+                        Exception ex, WebRequest request) {
+
+                String errorId = UUID.randomUUID().toString();
+                log.warn("[errorId={}] Recurso no encontrado en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.NOT_FOUND.value())
+                                .error("Not Found")
+                                .message("Recurso no encontrado")
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.NOT_FOUND);
+        }
+
+        /**
+         * Maneja excepciones de Base de Datos genéricas para evitar fugas de SQL
+         */
+        @ExceptionHandler({SQLException.class, DataAccessException.class})
+        public ResponseEntity<ErrorResponse> handleDatabaseExceptions(
+                        Exception ex, WebRequest request) {
+
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Error de Base de Datos en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                                .error("Database Error")
+                                .message("Ocurrió un error en la base de datos. Inténtalo nuevamente. Código: " + errorId)
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
+         * Maneja excepciones de Transacciones (e.g. TransactionSystemException, RollbackException)
+         */
+        @ExceptionHandler(TransactionException.class)
+        public ResponseEntity<ErrorResponse> handleTransactionSystemException(
+                        TransactionException ex, WebRequest request) {
+
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Error de Transacción en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage());
+
+                ErrorResponse error = ErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                                .error("Transaction Error")
+                                .message("No se pudo completar la operación transaccional. Inténtalo nuevamente. Código: " + errorId)
+                                .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
+                                .build();
+
+                return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
          * Maneja todas las excepciones no específicas
          * HTTP 500 - INTERNAL SERVER ERROR
+         * Hermético: loguea stack trace completo server-side con errorId, devuelve
+         * solo mensaje genérico + errorId al cliente.
          */
         @ExceptionHandler(Exception.class)
         public ResponseEntity<ErrorResponse> handleGlobalException(
                         Exception ex, WebRequest request) {
 
-                log.error("Error interno del servidor", ex);
+                String errorId = UUID.randomUUID().toString();
+                log.error("[errorId={}] Error interno del servidor en path={}: {}",
+                                errorId, request.getDescription(false), ex.getMessage(), ex);
 
                 ErrorResponse error = ErrorResponse.builder()
                                 .timestamp(LocalDateTime.now())
                                 .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
                                 .error("Internal Server Error")
-                                .message("Ha ocurrido un error inesperado. Por favor, contacta al soporte.")
+                                .message("Ha ocurrido un error inesperado. Código de referencia: " + errorId)
                                 .path(request.getDescription(false).replace("uri=", ""))
+                                .errorId(errorId)
                                 .build();
 
                 return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        /**
+         * Maneja validaciones fallidas de Pickup
+         * HTTP 400 - BAD REQUEST
+         */
+        @ExceptionHandler(PickupValidationException.class)
+        public ResponseEntity<Map<String, Object>> handlePickupValidationException(
+                        PickupValidationException ex, WebRequest request) {
+                
+                log.warn("Error de validación pickup: {}", ex.getMessage());
+                
+                Map<String, Object> response = new HashMap<>();
+                response.put("error", "INVALID_PICKUP_AUTHORIZATIONS");
+                response.put("message", ex.getMessage());
+                response.put("details", ex.getDetails());
+                
+                return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
         }
 
         /**
@@ -393,6 +569,7 @@ public class GlobalExceptionHandler {
                 private String error;
                 private String message;
                 private String path;
+                private String errorId;
                 private Map<String, Object> details;
         }
 }

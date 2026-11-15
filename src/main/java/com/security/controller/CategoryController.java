@@ -15,6 +15,8 @@ import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.security.dto.StorageUploadResult;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
  * Controlador REST para gestión de categorías de productos
@@ -105,7 +107,7 @@ public class CategoryController {
      * Solo ADMIN
      */
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('CATEGORY_MANAGE')")
     public ResponseEntity<?> createCategory(@Valid @RequestBody CategoryRequest request) {
         try {
             log.info("➕ Creando nueva categoría: {} (parentId: {})", request.getName(), request.getParentId());
@@ -139,7 +141,7 @@ public class CategoryController {
      * Solo ADMIN
      */
     @PutMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('CATEGORY_MANAGE')")
     public ResponseEntity<?> updateCategory(
             @PathVariable Long id,
             @Valid @RequestBody CategoryRequest request) {
@@ -182,7 +184,7 @@ public class CategoryController {
      * - Si está vacía → ÉXITO (borrado físico de la base de datos)
      */
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('CATEGORY_MANAGE')")
     public ResponseEntity<?> deleteCategory(@PathVariable Long id) {
         try {
             log.info("🗑️ Intentando eliminar permanentemente categoría con ID: {}", id);
@@ -204,6 +206,52 @@ public class CategoryController {
                     .body(Map.of(
                             "error", "Error al eliminar categoría",
                             "message", e.getMessage()));
+        }
+    }
+
+    /**
+     * Subir imagen de categoría
+     * POST /api/categories/{id}/image
+     */
+    @PostMapping("/{id}/image")
+    @PreAuthorize("hasAuthority('CATEGORY_MANAGE')")
+    public ResponseEntity<?> uploadImage(
+            @PathVariable Long id,
+            @RequestParam("file") MultipartFile file) {
+        log.info("Subiendo imagen para la categoría ID: {}", id);
+        try {
+            StorageUploadResult result = categoryService.uploadImage(id, file);
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Imagen subida exitosamente",
+                    "data", result
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error al subir imagen de categoría: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error al procesar la imagen: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Eliminar imagen de categoría
+     * DELETE /api/categories/{id}/image
+     */
+    @DeleteMapping("/{id}/image")
+    @PreAuthorize("hasAuthority('CATEGORY_MANAGE')")
+    public ResponseEntity<?> deleteImage(@PathVariable Long id) {
+        log.info("Eliminando imagen para la categoría ID: {}", id);
+        try {
+            categoryService.deleteImage(id);
+            return ResponseEntity.ok(Map.of("success", true, "message", "Imagen eliminada exitosamente"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error al eliminar imagen de categoría: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error al eliminar la imagen: " + e.getMessage()));
         }
     }
 }

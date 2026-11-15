@@ -19,6 +19,25 @@ public class AdminUserListDTO {
     private LocalDateTime createdAt;
     private LocalDateTime lastLogin; // Fecha del último login exitoso
 
+    // --- Security Flags ---
+    private Boolean protectedOwner;
+    private Boolean currentUser;
+    private Integer highestRoleLevel;
+    private Boolean technicalUser;
+    private Boolean operationalUser;
+    private Boolean storeManager;
+
+    private Boolean canManage;
+    private Boolean canEdit;
+    private Boolean canDelete;
+    private Boolean canDisable;
+    private Boolean canChangeRoles;
+    private Boolean canResetTwoFactor;
+    private Boolean canChangePasswordAdmin;
+    private Boolean canViewSensitiveFields;
+
+    private String displayEmail;
+    private String maskedEmail;
     // ==================== Constructors ====================
 
     public AdminUserListDTO() {
@@ -127,4 +146,54 @@ public class AdminUserListDTO {
     public String getFullName() {
         return firstName + " " + lastName;
     }
+
+    // ==================== Security Flags Getters and Setters ====================
+
+    public Boolean getProtectedOwner() { return protectedOwner; }
+    public void setProtectedOwner(Boolean protectedOwner) { this.protectedOwner = protectedOwner; }
+
+    public Boolean getCurrentUser() { return currentUser; }
+    public void setCurrentUser(Boolean currentUser) { this.currentUser = currentUser; }
+
+    public Integer getHighestRoleLevel() { return highestRoleLevel; }
+    public void setHighestRoleLevel(Integer highestRoleLevel) { this.highestRoleLevel = highestRoleLevel; }
+
+    public Boolean getTechnicalUser() { return technicalUser; }
+    public void setTechnicalUser(Boolean technicalUser) { this.technicalUser = technicalUser; }
+
+    public Boolean getOperationalUser() { return operationalUser; }
+    public void setOperationalUser(Boolean operationalUser) { this.operationalUser = operationalUser; }
+
+    public Boolean getStoreManager() { return storeManager; }
+    public void setStoreManager(Boolean storeManager) { this.storeManager = storeManager; }
+
+    public Boolean getCanManage() { return canManage; }
+    public void setCanManage(Boolean canManage) { this.canManage = canManage; }
+
+    public Boolean getCanEdit() { return canEdit; }
+    public void setCanEdit(Boolean canEdit) { this.canEdit = canEdit; }
+
+    public Boolean getCanDelete() { return canDelete; }
+    public void setCanDelete(Boolean canDelete) { this.canDelete = canDelete; }
+
+    public Boolean getCanDisable() { return canDisable; }
+    public void setCanDisable(Boolean canDisable) { this.canDisable = canDisable; }
+
+    public Boolean getCanChangeRoles() { return canChangeRoles; }
+    public void setCanChangeRoles(Boolean canChangeRoles) { this.canChangeRoles = canChangeRoles; }
+
+    public Boolean getCanResetTwoFactor() { return canResetTwoFactor; }
+    public void setCanResetTwoFactor(Boolean canResetTwoFactor) { this.canResetTwoFactor = canResetTwoFactor; }
+
+    public Boolean getCanChangePasswordAdmin() { return canChangePasswordAdmin; }
+    public void setCanChangePasswordAdmin(Boolean canChangePasswordAdmin) { this.canChangePasswordAdmin = canChangePasswordAdmin; }
+
+    public Boolean getCanViewSensitiveFields() { return canViewSensitiveFields; }
+    public void setCanViewSensitiveFields(Boolean canViewSensitiveFields) { this.canViewSensitiveFields = canViewSensitiveFields; }
+
+    public String getDisplayEmail() { return displayEmail; }
+    public void setDisplayEmail(String displayEmail) { this.displayEmail = displayEmail; }
+
+    public String getMaskedEmail() { return maskedEmail; }
+    public void setMaskedEmail(String maskedEmail) { this.maskedEmail = maskedEmail; }
 }

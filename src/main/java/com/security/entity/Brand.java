@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
  * Ej: Fender, Gibson, Yamaha, Roland, etc.
  */
 @Entity
-@Table(name = "brands")
+@Table(name = "brands", schema = "catalog")
 @Data
 @Builder
 @NoArgsConstructor
@@ -38,6 +38,13 @@ public class Brand {
 
     @Column(name = "logo_url")
     private String logoUrl;
+
+    @Column(name = "logo_public_id", length = 255)
+    private String logoPublicId;
+
+    @Column(name = "logo_provider", length = 50)
+    @Builder.Default
+    private String logoProvider = "LOCAL";
 
     @Column(name = "website_url")
     private String websiteUrl;

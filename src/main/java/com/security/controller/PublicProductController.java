@@ -27,13 +27,30 @@ import java.util.List;
  * </ul>
  */
 @RestController
-@RequestMapping("/api/public/products")
+@RequestMapping({"/api/public/products", "/api/products"})
 public class PublicProductController {
 
     private final PublicProductService publicProductService;
+    private final com.security.service.PublicProductRecommendationService publicProductRecommendationService;
 
-    public PublicProductController(PublicProductService publicProductService) {
+    public PublicProductController(PublicProductService publicProductService,
+                                   com.security.service.PublicProductRecommendationService publicProductRecommendationService) {
         this.publicProductService = publicProductService;
+        this.publicProductRecommendationService = publicProductRecommendationService;
+    }
+
+    // ── GET /api/public/products (y /api/products) ────────────────────────────
+
+    /**
+     * Endpoint raíz. Actúa como alias seguro para devolver el catálogo por defecto.
+     * Evita arrojar 404/500 cuando se consulta la raíz pública de productos.
+     */
+    @GetMapping
+    public ResponseEntity<Page<PublicProductDTO>> getRootCatalog(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "12") int size) {
+        return ResponseEntity.ok(
+                publicProductService.getCatalog(null, null, null, page, size, "featured"));
     }
 
     // ── GET /api/public/products/latest ───────────────────────────────────────
@@ -149,4 +166,27 @@ public class PublicProductController {
             return ResponseEntity.notFound().build();
         }
     }
+
+    // ── GET /api/public/products/{id}/recommendations ─────────────────────────
+
+    /**
+     * Devuelve las recomendaciones (productos complementarios) para un producto.
+     *
+     * <p>
+     * Si el ID no existe, o el producto existe pero tiene {@code active = false},
+     * retorna estrictamente <strong>404 Not Found</strong>.
+     * </p>
+     *
+     * @param id ID del producto
+     * @return 200 OK con la lista de recomendaciones, o 404 si no existe/inactivo
+     */
+    @GetMapping("/{id}/recommendations")
+    public ResponseEntity<List<com.security.dto.public_api.PublicProductRecommendationDTO>> getRecommendations(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(publicProductRecommendationService.getRecommendations(id));
+        } catch (EntityNotFoundException ex) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
 }

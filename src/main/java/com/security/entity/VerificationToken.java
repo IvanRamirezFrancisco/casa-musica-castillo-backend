@@ -7,7 +7,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "verification_tokens")
+@Table(name = "verification_tokens", schema = "auth")
 public class VerificationToken {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -15,6 +15,20 @@ public class VerificationToken {
 
     @Column(nullable = false, unique = true)
     private String token;
+
+    @Column(name = "code_digest", length = 64)
+    private String codeDigest;
+
+    @Column(name = "code_attempts", nullable = false)
+    private int codeAttempts;
+
+    public String getCodeDigest() { return codeDigest; }
+    public void setCodeDigest(String codeDigest) { this.codeDigest = codeDigest; }
+    public int getCodeAttempts() { return codeAttempts; }
+    public void recordCodeAttempt() { codeAttempts++; }
+
+    @Column(name = "recipient_email", length = 100)
+    private String recipientEmail;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
@@ -60,6 +74,14 @@ public class VerificationToken {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public void bindRecipient(String email) {
+        recipientEmail = email;
+    }
+
+    public boolean matchesRecipient(String email) {
+        return recipientEmail != null && recipientEmail.equalsIgnoreCase(email);
     }
 
     public User getUser() {

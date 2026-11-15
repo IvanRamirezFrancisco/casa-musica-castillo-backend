@@ -9,7 +9,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 @Entity
-@Table(name = "roles")
+@Table(name = "roles", schema = "auth")
 public class Role {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -30,6 +30,9 @@ public class Role {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "is_system_role")
+    private Boolean isSystemRole = false;
+
     @ManyToMany(mappedBy = "roles", fetch = FetchType.LAZY)
     private Set<User> users = new HashSet<>();
 
@@ -37,8 +40,8 @@ public class Role {
      * Relacion ManyToMany con Permissions
      * Un rol puede tener multiples permisos
      */
-    @ManyToMany(fetch = FetchType.EAGER)
-    @JoinTable(name = "role_permissions", joinColumns = @JoinColumn(name = "role_id"), inverseJoinColumns = @JoinColumn(name = "permission_id"))
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "role_permissions", schema = "auth", joinColumns = @JoinColumn(name = "role_id"), inverseJoinColumns = @JoinColumn(name = "permission_id"))
     private Set<Permission> permissions = new HashSet<>();
 
     // Constructors
@@ -88,6 +91,14 @@ public class Role {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Boolean getIsSystemRole() {
+        return isSystemRole;
+    }
+
+    public void setIsSystemRole(Boolean isSystemRole) {
+        this.isSystemRole = isSystemRole;
     }
 
     public Set<User> getUsers() {

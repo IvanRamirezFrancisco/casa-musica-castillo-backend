@@ -15,7 +15,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 @Entity
-@Table(name = "users")
+@Table(name = "users", schema = "auth")
 public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -41,6 +41,16 @@ public class User {
     @Size(max = 100)
     @Column(nullable = false, unique = true)
     private String email;
+
+    @Column(name = "email_verified_at")
+    private LocalDateTime emailVerifiedAt;
+
+    @Column(name = "pending_self_registration", nullable = false)
+    private boolean pendingSelfRegistration;
+
+    public void markPendingSelfRegistration() {
+        pendingSelfRegistration = true;
+    }
 
     @NotBlank
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
@@ -99,8 +109,8 @@ public class User {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @ManyToMany(fetch = FetchType.EAGER)
-    @JoinTable(name = "user_roles", joinColumns = @JoinColumn(name = "user_id"), inverseJoinColumns = @JoinColumn(name = "role_id"))
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "user_roles", schema = "auth", joinColumns = @JoinColumn(name = "user_id"), inverseJoinColumns = @JoinColumn(name = "role_id"))
     private Set<Role> roles = new HashSet<>();
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
@@ -255,7 +265,19 @@ public class User {
     }
 
     public void setEmail(String email) {
+        if (this.email != null && !this.email.equalsIgnoreCase(email)) {
+            emailVerifiedAt = null;
+        }
         this.email = email;
+    }
+
+    public boolean isEmailVerified() {
+        return emailVerifiedAt != null;
+    }
+
+    public void recordEmailVerification(LocalDateTime verifiedAt) {
+        emailVerifiedAt = verifiedAt;
+        pendingSelfRegistration = false;
     }
 
     public String getPassword() {

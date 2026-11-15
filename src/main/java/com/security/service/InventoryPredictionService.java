@@ -35,8 +35,8 @@ public class InventoryPredictionService {
                     c.critical_level,
                     c.alert_threshold_days,
                     COALESCE(SUM(p.stock), 0) AS i_current
-                FROM inventory_prediction_config c
-                LEFT JOIN products p
+                FROM ops.inventory_prediction_config c
+                LEFT JOIN catalog.products p
                     ON p.category_id = c.category_id
                     AND p.active = true
                 GROUP BY
@@ -82,9 +82,16 @@ public class InventoryPredictionService {
                     continue;
                 }
 
+                // Si el stock actual supera el stock_reference, el stock creció
+                // (reabastecimiento). Usamos iCurrent como la nueva referencia i0.
+                if (iCurrent > i0) {
+                    i0 = iCurrent;
+                }
+
                 // Calcular k
                 double k;
                 if (iCurrent >= i0) {
+                    // iCurrent == i0 exactamente: recién reabastecido, k mínima
                     k = K_MIN;
                 } else {
                     k = -Math.log(iCurrent / i0) / t;

@@ -106,6 +106,8 @@ public class AuditLogService {
         }
     }
 
+
+
     /**
      * Registra un log de auditoría de forma asíncrona
      * NO bloquea la operación principal

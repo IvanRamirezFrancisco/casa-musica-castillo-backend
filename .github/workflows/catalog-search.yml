@@ -1,0 +1,48 @@
+name: Catalog search regression
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/catalog-search.yml'
+      - 'pom.xml'
+      - 'src/main/java/com/security/entity/**'
+      - 'src/main/java/com/security/repository/PublicProductRepository.java'
+      - 'src/main/java/com/security/service/**'
+      - 'src/test/java/com/security/repository/PublicProductCatalogPostgresTest.java'
+      - 'src/test/resources/catalog-search-test-schema.sql'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: Catalog pagination on PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CMC_CATALOG_TEST_PASSWORD: test-${{ github.run_id }}
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: catalog_search_test
+          POSTGRES_USER: catalog_search_test
+          POSTGRES_PASSWORD: test-${{ github.run_id }}
+        ports:
+          - 55448:5432
+        options: >-
+          --health-cmd "pg_isready -U catalog_search_test -d catalog_search_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Verify ranked search and count
+        run: mvn -B --no-transfer-progress -Dtest=PublicProductCatalogPostgresTest,PublicProductServiceTest,SearchNormalizationServiceTest test

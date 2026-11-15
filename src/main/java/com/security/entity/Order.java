@@ -6,8 +6,9 @@ import com.security.enums.PaymentStatus;
 import com.security.enums.ShippingStatus;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.AllArgsConstructor;
-import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
@@ -22,13 +23,14 @@ import java.util.List;
  * Incluye: items, pagos, envíos y estados
  */
 @Entity
-@Table(name = "orders", indexes = {
+@Table(name = "orders", schema = "sales", indexes = {
         @Index(name = "idx_order_user", columnList = "user_id"),
         @Index(name = "idx_order_status", columnList = "status"),
         @Index(name = "idx_order_date", columnList = "created_at"),
         @Index(name = "idx_payment_status", columnList = "payment_status")
 })
-@Data
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
 public class Order {
@@ -80,6 +82,46 @@ public class Order {
     @Column(name = "payment_status", nullable = false, length = 20)
     private PaymentStatus paymentStatus = PaymentStatus.PENDING;
 
+    @Column(name = "shipping_method", length = 50)
+    private String shippingMethod;
+
+    @Column(name = "shipping_label", length = 100)
+    private String shippingLabel;
+
+    @Column(name = "delivery_type", length = 50)
+    private String deliveryType;
+
+    @Column(name = "pickup_address_snapshot", columnDefinition = "TEXT")
+    private String pickupAddressSnapshot;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pickup_status", length = 50)
+    private com.security.enums.PickupStatus pickupStatus = com.security.enums.PickupStatus.NOT_APPLICABLE;
+
+    @Column(name = "pickup_code_hash", length = 255)
+    private String pickupCodeHash;
+
+    @Column(name = "pickup_code_encrypted", length = 255)
+    private String pickupCodeEncrypted;
+
+    @Column(name = "pickup_code_last4", length = 4)
+    private String pickupCodeLast4;
+
+    @Column(name = "pickup_ready_at")
+    private LocalDateTime pickupReadyAt;
+
+    @Column(name = "picked_up_at")
+    private LocalDateTime pickedUpAt;
+
+    @Column(name = "picked_up_by_name", length = 255)
+    private String pickedUpByName;
+
+    @Column(name = "picked_up_by_authorization_id")
+    private Long pickedUpByAuthorizationId;
+
+    @Column(name = "verified_by_admin_id")
+    private Long verifiedByAdminId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "payment_method", length = 30)
     private PaymentMethod paymentMethod;
@@ -110,6 +152,12 @@ public class Order {
 
     @Column(name = "cancelled_at")
     private LocalDateTime cancelledAt;
+
+    @Column(name = "cancelled_by")
+    private Long cancelledBy;
+
+    @Column(name = "cancel_source", length = 20)
+    private String cancelSource;
 
     @Column(name = "cancellation_reason", columnDefinition = "TEXT")
     private String cancellationReason;
@@ -145,4 +193,13 @@ public class Order {
                 .add(shipping != null ? shipping : BigDecimal.ZERO)
                 .subtract(discount != null ? discount : BigDecimal.ZERO);
     }
+    
+    // Explicit getters and setters to bypass Lombok issues
+    public User getUser() { return user; }
+    public PaymentMethod getPaymentMethod() { return paymentMethod; }
+    public OrderStatus getStatus() { return status; }
+    public PaymentStatus getPaymentStatus() { return paymentStatus; }
+    public Long getId() { return id; }
+    public String getOrderNumber() { return orderNumber; }
+    public void setPaymentStatus(PaymentStatus paymentStatus) { this.paymentStatus = paymentStatus; }
 }

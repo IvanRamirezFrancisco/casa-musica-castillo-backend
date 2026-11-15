@@ -24,7 +24,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/admin/customers")
-@CrossOrigin(origins = { "http://localhost:4200", "https://login.up.railway.app" }, allowCredentials = "true")
 public class AdminCustomerController {
 
     @Autowired
@@ -43,7 +42,7 @@ public class AdminCustomerController {
      * sortDir (default "desc")
      */
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_READ')")
     public ResponseEntity<Map<String, Object>> getAllCustomers(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size,
@@ -72,7 +71,7 @@ public class AdminCustomerController {
      * page / size
      */
     @GetMapping("/search")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_READ')")
     public ResponseEntity<Map<String, Object>> searchCustomers(
             @RequestParam(required = false) String searchTerm,
             @RequestParam(required = false) Boolean enabled,
@@ -92,6 +91,23 @@ public class AdminCustomerController {
         return ResponseEntity.ok(response);
     }
 
+    // ==================== Detalle ====================
+
+    /**
+     * GET /api/admin/customers/{id}
+     * Obtener los datos de un cliente por su ID.
+     */
+    @GetMapping("/{id}")
+    @PreAuthorize("hasAuthority('CUSTOMER_READ')")
+    public ResponseEntity<Map<String, Object>> getCustomerById(@PathVariable Long id) {
+        CustomerListDTO customer = adminCustomerService.getCustomerById(id);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("customer", customer);
+
+        return ResponseEntity.ok(response);
+    }
+
     // ==================== Cambios de Estado ====================
 
     /**
@@ -100,7 +116,7 @@ public class AdminCustomerController {
      * CRÍTICO: No permite que un admin se desactive a sí mismo si fuera cliente.
      */
     @PatchMapping("/{id}/toggle-enabled")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_MANAGE')")
     public ResponseEntity<Map<String, Object>> toggleEnabledStatus(@PathVariable Long id) {
         CustomerListDTO updatedCustomer = adminCustomerService.toggleEnabledStatus(id);
 
@@ -118,7 +134,7 @@ public class AdminCustomerController {
      * Bloquear o desbloquear la cuenta de un cliente (toggle).
      */
     @PatchMapping("/{id}/toggle-locked")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_MANAGE')")
     public ResponseEntity<Map<String, Object>> toggleLockedStatus(@PathVariable Long id) {
         CustomerListDTO updatedCustomer = adminCustomerService.toggleLockedStatus(id);
 
@@ -136,7 +152,7 @@ public class AdminCustomerController {
      * Resetear intentos fallidos de login y desbloquear la cuenta.
      */
     @PatchMapping("/{id}/reset-failed-attempts")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_MANAGE')")
     public ResponseEntity<Map<String, Object>> resetFailedAttempts(@PathVariable Long id) {
         CustomerListDTO updatedCustomer = adminCustomerService.resetFailedLoginAttempts(id);
 
@@ -154,7 +170,7 @@ public class AdminCustomerController {
      * permitiéndole solicitar recuperación de contraseña desde cero.
      */
     @PatchMapping("/{id}/reset-recovery-block")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('CUSTOMER_MANAGE')")
     public ResponseEntity<Map<String, Object>> resetRecoveryBlock(@PathVariable Long id) {
         CustomerListDTO updatedCustomer = adminCustomerService.resetPasswordRecoveryBlock(id);
 
@@ -175,7 +191,7 @@ public class AdminCustomerController {
      * search — término de búsqueda opcional para filtrar el export
      */
     @GetMapping("/export/csv")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
+    @PreAuthorize("hasAuthority('REPORT_EXPORT')")
     public ResponseEntity<byte[]> exportCustomersToCsv(
             @RequestParam(required = false) String search) {
 

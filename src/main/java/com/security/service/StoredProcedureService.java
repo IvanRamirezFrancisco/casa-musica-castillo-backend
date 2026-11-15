@@ -30,7 +30,7 @@ public class StoredProcedureService {
         log.info("Calculando descuento del cupón {} para monto {}", couponId, amount);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_calculate_coupon_discount");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_calculate_coupon_discount");
 
             query.registerStoredProcedureParameter("p_coupon_id", Long.class, ParameterMode.IN);
             query.registerStoredProcedureParameter("p_amount", BigDecimal.class, ParameterMode.IN);
@@ -61,7 +61,7 @@ public class StoredProcedureService {
         log.info("Aplicando cupón {} al carrito {}", couponId, cartId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_apply_coupon_to_cart");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_apply_coupon_to_cart");
 
             query.registerStoredProcedureParameter("p_cart_id", Long.class, ParameterMode.IN);
             query.registerStoredProcedureParameter("p_coupon_id", Long.class, ParameterMode.IN);
@@ -88,7 +88,7 @@ public class StoredProcedureService {
         log.info("Aplicando cupón {} a la orden {}", couponId, orderId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_apply_coupon_to_order");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_apply_coupon_to_order");
 
             query.registerStoredProcedureParameter("p_order_id", Long.class, ParameterMode.IN);
             query.registerStoredProcedureParameter("p_coupon_id", Long.class, ParameterMode.IN);
@@ -115,7 +115,8 @@ public class StoredProcedureService {
         log.info("Recalculando rating del producto {}", productId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_recalculate_product_rating");
+            StoredProcedureQuery query = entityManager
+                    .createStoredProcedureQuery("catalog.sp_recalculate_product_rating");
 
             query.registerStoredProcedureParameter("p_product_id", Long.class, ParameterMode.IN);
             query.setParameter("p_product_id", productId);
@@ -139,7 +140,7 @@ public class StoredProcedureService {
         log.info("Calculando totales de la orden {}", orderId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_calculate_order_totals");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_calculate_order_totals");
 
             query.registerStoredProcedureParameter("p_order_id", Long.class, ParameterMode.IN);
             query.setParameter("p_order_id", orderId);
@@ -163,7 +164,7 @@ public class StoredProcedureService {
         log.info("Transfiriendo carrito {} a orden", cartId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_transfer_cart_to_order");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_transfer_cart_to_order");
 
             query.registerStoredProcedureParameter("p_cart_id", Long.class, ParameterMode.IN);
             query.registerStoredProcedureParameter("p_order_id", Long.class, ParameterMode.OUT);
@@ -192,7 +193,7 @@ public class StoredProcedureService {
         log.info("Cancelando orden {}", orderId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_cancel_order");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_cancel_order");
 
             query.registerStoredProcedureParameter("p_order_id", Long.class, ParameterMode.IN);
             query.registerStoredProcedureParameter("p_reason", String.class, ParameterMode.IN);
@@ -219,7 +220,7 @@ public class StoredProcedureService {
         log.info("Generando número de orden");
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_generate_order_number");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_generate_order_number");
 
             query.registerStoredProcedureParameter("p_order_number", String.class, ParameterMode.OUT);
 
@@ -246,7 +247,7 @@ public class StoredProcedureService {
         log.info("Actualizando estadísticas del usuario {}", userId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_update_user_stats");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("auth.sp_update_user_stats");
 
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);
@@ -270,7 +271,7 @@ public class StoredProcedureService {
         log.info("Moviendo item {} de wishlist a carrito", wishlistId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_move_wishlist_to_cart");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_move_wishlist_to_cart");
 
             query.registerStoredProcedureParameter("p_wishlist_id", Long.class, ParameterMode.IN);
             query.setParameter("p_wishlist_id", wishlistId);
@@ -294,7 +295,7 @@ public class StoredProcedureService {
         log.info("Verificando descuentos en wishlist del usuario {}", userId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_check_wishlist_discounts");
+            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sales.sp_check_wishlist_discounts");
 
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);
@@ -318,7 +319,8 @@ public class StoredProcedureService {
         log.info("Verificando productos en stock en wishlist del usuario {}", userId);
 
         try {
-            StoredProcedureQuery query = entityManager.createStoredProcedureQuery("sp_check_wishlist_back_in_stock");
+            StoredProcedureQuery query = entityManager
+                    .createStoredProcedureQuery("sales.sp_check_wishlist_back_in_stock");
 
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);
@@ -343,7 +345,7 @@ public class StoredProcedureService {
 
         try {
             StoredProcedureQuery query = entityManager
-                    .createStoredProcedureQuery("sp_get_wishlist_with_price_comparison");
+                    .createStoredProcedureQuery("sales.sp_get_wishlist_with_price_comparison");
 
             query.registerStoredProcedureParameter("p_user_id", Long.class, ParameterMode.IN);
             query.setParameter("p_user_id", userId);

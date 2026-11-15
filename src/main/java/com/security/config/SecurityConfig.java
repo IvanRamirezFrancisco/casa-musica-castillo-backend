@@ -1,11 +1,15 @@
 package com.security.config;
 
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import com.security.security.CustomUserDetailsService;
 import com.security.security.JwtAuthenticationEntryPoint;
 import com.security.security.JwtAuthenticationFilter;
+import com.security.validation.BcryptPasswordValidator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -21,13 +25,21 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.util.Arrays;
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity(prePostEnabled = true)
 public class SecurityConfig {
+
+        // FASE 0 - Seguridad - 2026-05-15
+        // Inyectado para detectar el perfil activo y aplicar reglas diferenciadas
+        // en endpoints sensibles (Swagger, H2, TestController).
+        @Autowired
+        private Environment environment;
 
         @Autowired
         private CustomUserDetailsService customUserDetailsService;
@@ -41,14 +53,42 @@ public class SecurityConfig {
         }
 
         @Bean
-        public PasswordEncoder passwordEncoder() {
-                return new BCryptPasswordEncoder();
+        public FilterRegistrationBean<JwtAuthenticationFilter> jwtServletRegistration(JwtAuthenticationFilter filter) {
+                // The security chain invokes this filter after setting up the security context.
+                FilterRegistrationBean<JwtAuthenticationFilter> registration = new FilterRegistrationBean<>(filter);
+                registration.setEnabled(false);
+                return registration;
         }
 
         @Bean
+        public PasswordEncoder passwordEncoder() {
+                BCryptPasswordEncoder bcrypt = new BCryptPasswordEncoder(12);
+                return new PasswordEncoder() {
+                        @Override
+                        public String encode(CharSequence rawPassword) {
+                                return bcrypt.encode(rawPassword);
+                        }
+
+                        @Override
+                        public boolean matches(CharSequence rawPassword, String encodedPassword) {
+                                return BcryptPasswordValidator.isWithinLimit(rawPassword)
+                                                && bcrypt.matches(rawPassword, encodedPassword);
+                        }
+
+                        @Override
+                        public boolean upgradeEncoding(String encodedPassword) {
+                                return bcrypt.upgradeEncoding(encodedPassword);
+                        }
+                };
+        }
+
+        // Fuente única de CORS. En producción proviene de CORS_ORIGINS (obligatoria).
+        @Value("${cors.allowed-origins}")
+        private List<String> allowedOrigins;
+
+        @Bean
         public DaoAuthenticationProvider authenticationProvider() {
-                DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
-                authProvider.setUserDetailsService(customUserDetailsService);
+                DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider(customUserDetailsService);
                 authProvider.setPasswordEncoder(passwordEncoder());
                 return authProvider;
         }
@@ -59,32 +99,40 @@ public class SecurityConfig {
         }
 
         /**
-         * Configuración CORS robusta para producción en Render + Netlify
+         * Configuración CORS: única fuente de verdad (cors.allowed-origins ← CORS_ORIGINS).
          */
         @Bean
         public CorsConfigurationSource corsConfigurationSource() {
                 CorsConfiguration config = new CorsConfiguration();
 
+                // Normalizar: trim, quitar '/' final y descartar vacíos
+                List<String> origins = allowedOrigins.stream()
+                                .map(String::trim)
+                                .map(o -> o.endsWith("/") ? o.substring(0, o.length() - 1) : o)
+                                .filter(o -> !o.isEmpty())
+                                .toList();
+                if (origins.isEmpty()) {
+                        throw new IllegalStateException(
+                                        "CORS_ORIGINS (cors.allowed-origins) está vacío: define una lista explícita de orígenes separada por comas.");
+                }
+                if (origins.contains("*")) {
+                        throw new IllegalStateException(
+                                        "CORS_ORIGINS no puede contener '*' porque allowCredentials=true; usa orígenes explícitos.");
+                }
+
                 // IMPORTANTE: Usar SOLO allowedOriginPatterns cuando allowCredentials es true
                 // NO usar setAllowedOrigins con "*" porque causa error
-                config.setAllowedOriginPatterns(Arrays.asList(
-                                "http://localhost:4200",
-                                "http://localhost:4300",
-                                "http://localhost:*",
-                                "http://127.0.0.1:*",
-                                "https://casa-musica-castillo.netlify.app",
-                                "https://bucolic-torrone-10f382.netlify.app",
-                                "https://*.netlify.app",
-                                "https://fronlogin-production.up.railway.app",
-                                "https://*.railway.app",
-                                "https://*.up.railway.app",
-                                "https://*.onrender.com"));
+                config.setAllowedOriginPatterns(origins);
 
                 // Métodos HTTP permitidos
                 config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"));
 
-                // Headers permitidos - TODOS
-                config.setAllowedHeaders(Arrays.asList("*"));
+                // Headers permitidos - solo los necesarios
+                config.setAllowedHeaders(Arrays.asList(
+                                "Authorization", "Content-Type", "Accept", "Origin",
+                                "X-Requested-With", "Cache-Control",
+                                // Fase 7C: headers de webhook de Mercado Pago
+                                "x-signature", "x-request-id"));
 
                 // Headers expuestos al cliente
                 config.setExposedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Total-Count"));
@@ -127,7 +175,8 @@ public class SecurityConfig {
                                                 .frameOptions(frameOptions -> frameOptions.deny())
 
                                                 // X-Content-Type-Options: Previene MIME sniffing
-                                                .contentTypeOptions(contentType -> contentType.disable())
+                                                // X-Content-Type-Options: nosniff está habilitado por defecto en Spring
+                                                // Security
 
                                                 // X-XSS-Protection: Protección XSS del navegador
                                                 .xssProtection(xss -> xss.headerValue(
@@ -157,37 +206,70 @@ public class SecurityConfig {
                                 // Autorización de endpoints
                                 .authorizeHttpRequests(authz -> authz
                                                 // CORS preflight - SIEMPRE permitir OPTIONS primero
+                                                .requestMatchers("/api/2fa/debug/**").denyAll()
                                                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
                                                 // ========== ENDPOINTS PÚBLICOS ==========
-                                                // API pública del Storefront (sin autenticación)
-                                                .requestMatchers("/api/public/**").permitAll()
+                                                // API pública del Storefront (solo lectura explícita)
+                                                .requestMatchers(HttpMethod.GET, "/api/products/catalog").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/products/catalog/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/products/*").permitAll() // Para detalle por ID
+                                                .requestMatchers(HttpMethod.GET, "/api/categories/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/brands/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/public/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/reviews/product/**").permitAll()
+                                                .requestMatchers(HttpMethod.GET, "/api/alexa/**").permitAll()
 
                                                 // Autenticación
-                                                .requestMatchers("/api/auth/**").permitAll() // 2FA endpoints para login
-                                                                                             // (sin autenticación) -
-                                                                                             // MUY IMPORTANTE
-                                                .requestMatchers("/api/2fa/verify").permitAll()
-                                                .requestMatchers("/api/2fa/send-login-code").permitAll()
+                                                .requestMatchers(com.security.security.PublicAuthRoutes.EXACT).permitAll()
+                                                .requestMatchers(com.security.security.PublicAuthRoutes.PATTERNS).permitAll()
+                                                .requestMatchers("/api/auth/**").authenticated()
 
-                                                // Health y test
-                                                .requestMatchers("/api/test/public").permitAll()
-                                                .requestMatchers("/api/test/health").permitAll()
-                                                .requestMatchers("/actuator/**").permitAll()
+                                                // FASE 0 - Seguridad - 2026-05-15
+                                                // /api/test/** restringido a SYSTEM_SETTINGS como segunda capa de defensa.
+                                                // TestController además está anotado con @Profile({"local","dev"})
+                                                // y no se registra en producción.
+                                                .requestMatchers("/api/test/**").hasAuthority("SYSTEM_SETTINGS")
+                                                // Health check — solo /actuator/health es público
+                                                .requestMatchers("/actuator/health").permitAll()
+                                                .requestMatchers("/actuator/**").hasAuthority("SYSTEM_SETTINGS")
                                                 .requestMatchers("/error").permitAll()
 
-                                                // Swagger/OpenAPI
-                                                .requestMatchers("/swagger-ui/**").permitAll()
-                                                .requestMatchers("/v3/api-docs/**").permitAll()
-                                                .requestMatchers("/h2-console/**").permitAll()
+                                                // Fase 7C: Webhook de Mercado Pago — público pero protegido por HMAC x-signature
+                                                // NO requiere JWT. La seguridad real es la validación HMAC en MercadoPagoWebhookService.
+                                                .requestMatchers(HttpMethod.POST, "/api/webhooks/mercado-pago").permitAll()
+
+                                                // FASE 0 - Seguridad - 2026-05-15
+                                                // Swagger/OpenAPI: público solo en perfiles local/dev.
+                                                // En producción requiere SYSTEM_SETTINGS.
+                                                .requestMatchers("/swagger-ui/**", "/v3/api-docs/**")
+                                                .access((authentication, context) -> {
+                                                    boolean isDevProfile = environment.acceptsProfiles(Profiles.of("local", "dev"));
+                                                    if (isDevProfile) {
+                                                        return new org.springframework.security.authorization.AuthorizationDecision(true);
+                                                    }
+                                                    boolean hasSystemSettings = authentication.get().getAuthorities()
+                                                            .stream()
+                                                            .anyMatch(a -> "SYSTEM_SETTINGS".equals(a.getAuthority()));
+                                                    return new org.springframework.security.authorization.AuthorizationDecision(hasSystemSettings);
+                                                })
+
+                                                // FASE 0 - Seguridad - 2026-05-15
+                                                // H2 Console: denyAll() en todos los perfiles.
+                                                // El proyecto usa PostgreSQL; H2 no debe estar accesible en ningún entorno.
+                                                // Si se requiere H2 en local/dev en el futuro, usar:
+                                                //   environment.acceptsProfiles(Profiles.of("local","dev")) ? permitAll() : denyAll()
+                                                .requestMatchers("/h2-console/**").denyAll()
 
                                                 // Upload de archivos y servir imágenes estáticas
-                                                .requestMatchers("/api/upload/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                                                // Staff con permisos de producto también necesitan subir imágenes
+                                                .requestMatchers("/api/upload/**").authenticated()
                                                 .requestMatchers("/uploads/**").permitAll() // Servir archivos estáticos
 
                                                 // ========== ENDPOINTS PROTEGIDOS ==========
-                                                // Administración - Solo ADMIN/SUPER_ADMIN
-                                                .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                                                // Administración — delegamos la autorización granular a @PreAuthorize
+                                                // en cada controller. Solo exigimos autenticación a nivel de filtro.
+                                                .requestMatchers("/api/admin/**").authenticated()
 
                                                 // 2FA setup/config (requiere estar logueado) - EXCLUYE los ya
                                                 // permitidos
@@ -196,14 +278,19 @@ public class SecurityConfig {
                                                 .requestMatchers("/api/2fa/backup-codes/**").authenticated()
                                                 .requestMatchers("/api/2fa/status").authenticated()
 
-                                                // Test endpoints con RBAC
-                                                .requestMatchers("/api/test/protected").authenticated()
-                                                .requestMatchers("/api/test/admin").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                                                // FASE 0 - Seguridad - 2026-05-15
+                                                // Reglas específicas de test COMENTADAS — son código muerto.
+                                                // La regla general .requestMatchers("/api/test/**").hasAuthority("SYSTEM_SETTINGS")
+                                                // (línea superior) consume todos los paths /api/test/** antes de llegar aquí
+                                                // (Spring Security aplica first-match-wins).
+                                                // Todo /api/test/** requiere SYSTEM_SETTINGS. No hay excepciones.
+                                                // .requestMatchers("/api/test/protected").authenticated()
+                                                // .requestMatchers("/api/test/admin").authenticated()
 
                                                 // Usuarios - usuarios normales pueden ver su perfil y cambiar
                                                 // contraseña, admins todo
                                                 .requestMatchers("/api/users/profile").authenticated()
-                                                .requestMatchers("/api/users/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
+                                                .requestMatchers("/api/users/**").authenticated()
 
                                                 // Carrito de compras - solo usuarios autenticados
                                                 .requestMatchers("/api/cart/**").authenticated()

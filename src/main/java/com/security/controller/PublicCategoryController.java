@@ -21,7 +21,7 @@ import java.util.List;
  * </ul>
  */
 @RestController
-@RequestMapping("/api/public/categories")
+@RequestMapping({"/api/public/categories", "/api/categories"})
 public class PublicCategoryController {
 
     private final PublicCategoryService publicCategoryService;

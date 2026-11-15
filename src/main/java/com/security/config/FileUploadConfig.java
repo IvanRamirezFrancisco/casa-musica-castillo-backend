@@ -1,5 +1,7 @@
 package com.security.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,6 +19,8 @@ import java.nio.file.Paths;
 @Configuration
 public class FileUploadConfig implements WebMvcConfigurer {
 
+    private static final Logger log = LoggerFactory.getLogger(FileUploadConfig.class);
+
     @Value("${upload.path:uploads/products}")
     private String uploadPath;
 
@@ -27,11 +31,10 @@ public class FileUploadConfig implements WebMvcConfigurer {
 
         // Mapear /uploads/products/** a la carpeta física uploads/products/
         registry.addResourceHandler("/uploads/products/**")
-                .addResourceLocations("file:" + absolutePath.toString() + "/")
+                .addResourceLocations("file:" + absolutePath + "/")
                 .setCachePeriod(3600);
 
-        System.out.println("📁 Serving static files from: " + absolutePath.toString());
-        System.out.println("🔗 URL pattern: /uploads/products/** -> file:" + absolutePath.toString());
+        log.info("Serving static files from: {}", absolutePath);
     }
 
     /**

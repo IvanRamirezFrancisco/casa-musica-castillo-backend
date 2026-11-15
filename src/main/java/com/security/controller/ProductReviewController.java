@@ -35,7 +35,7 @@ public class ProductReviewController {
      * POST /api/reviews
      */
     @PostMapping
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ReviewDTO.ReviewResponse> createReview(
             @Valid @RequestBody ReviewDTO.CreateReviewRequest request,
             Authentication authentication) {
@@ -47,6 +47,38 @@ public class ProductReviewController {
         var response = reviewService.createReview(userId, request);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    /**
+     * Verifica la elegibilidad del usuario para reseñar un producto
+     * GET /api/reviews/product/{productId}/eligibility
+     */
+    @GetMapping("/product/{productId}/eligibility")
+    public ResponseEntity<ReviewDTO.EligibilityResponse> checkEligibility(
+            @PathVariable Long productId,
+            Authentication authentication) {
+        
+        log.info("Verificando elegibilidad para producto {}", productId);
+        
+        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getPrincipal())) {
+            return ResponseEntity.ok(ReviewDTO.EligibilityResponse.builder()
+                    .canReview(false)
+                    .hasPurchased(false)
+                    .alreadyReviewed(false)
+                    .build());
+        }
+        
+        Long userId = getUserIdFromAuth(authentication);
+        if (userId == null) {
+             return ResponseEntity.ok(ReviewDTO.EligibilityResponse.builder()
+                    .canReview(false)
+                    .hasPurchased(false)
+                    .alreadyReviewed(false)
+                    .build());
+        }
+
+        var response = reviewService.checkEligibility(productId, userId);
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -96,7 +128,7 @@ public class ProductReviewController {
      * GET /api/reviews/my-reviews
      */
     @GetMapping("/my-reviews")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<List<ReviewDTO.ReviewResponse>> getMyReviews(
             Authentication authentication,
             @RequestParam(defaultValue = "0") int page,
@@ -115,7 +147,7 @@ public class ProductReviewController {
      * GET /api/reviews/pending
      */
     @GetMapping("/pending")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<List<ReviewDTO.ReviewResponse>> getPendingReviews(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
@@ -156,7 +188,7 @@ public class ProductReviewController {
      * PUT /api/reviews/{reviewId}
      */
     @PutMapping("/{reviewId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<ReviewDTO.ReviewResponse> updateReview(
             @PathVariable Long reviewId,
             @Valid @RequestBody ReviewDTO.UpdateReviewRequest request,
@@ -175,7 +207,7 @@ public class ProductReviewController {
      * DELETE /api/reviews/{reviewId}
      */
     @DeleteMapping("/{reviewId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, String>> deleteReview(
             @PathVariable Long reviewId,
             Authentication authentication) {
@@ -193,7 +225,7 @@ public class ProductReviewController {
      * POST /api/reviews/{reviewId}/approve
      */
     @PostMapping("/{reviewId}/approve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<ReviewDTO.ReviewResponse> approveReview(@PathVariable Long reviewId) {
         log.info("Admin aprobando reseña {}", reviewId);
 
@@ -206,7 +238,7 @@ public class ProductReviewController {
      * POST /api/reviews/{reviewId}/reject
      */
     @PostMapping("/{reviewId}/reject")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<ReviewDTO.ReviewResponse> rejectReview(@PathVariable Long reviewId) {
         log.info("Admin rechazando reseña {}", reviewId);
 
@@ -219,7 +251,7 @@ public class ProductReviewController {
      * POST /api/reviews/{reviewId}/seller-response
      */
     @PostMapping("/{reviewId}/seller-response")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<ReviewDTO.ReviewResponse> addSellerResponse(
             @PathVariable Long reviewId,
             @Valid @RequestBody ReviewDTO.SellerResponseRequest request) {
@@ -235,7 +267,7 @@ public class ProductReviewController {
      * POST /api/reviews/{reviewId}/vote
      */
     @PostMapping("/{reviewId}/vote")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, Object>> voteHelpful(
             @PathVariable Long reviewId,
             @Valid @RequestBody ReviewDTO.VoteHelpfulRequest request,
@@ -263,7 +295,7 @@ public class ProductReviewController {
      * PUT /api/reviews/{reviewId}/vote
      */
     @PutMapping("/{reviewId}/vote")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, Object>> changeVote(
             @PathVariable Long reviewId,
             @Valid @RequestBody ReviewDTO.VoteHelpfulRequest request,
@@ -289,7 +321,7 @@ public class ProductReviewController {
      * DELETE /api/reviews/{reviewId}/vote
      */
     @DeleteMapping("/{reviewId}/vote")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, String>> removeVote(
             @PathVariable Long reviewId,
             Authentication authentication) {
@@ -307,7 +339,7 @@ public class ProductReviewController {
      * GET /api/reviews/{reviewId}/my-vote
      */
     @GetMapping("/{reviewId}/my-vote")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, Object>> getMyVote(
             @PathVariable Long reviewId,
             Authentication authentication) {

@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
  * Entidad para reseñas de productos
  */
 @Entity
-@Table(name = "product_reviews", indexes = {
+@Table(name = "product_reviews", schema = "catalog", indexes = {
         @Index(name = "idx_review_product", columnList = "product_id"),
         @Index(name = "idx_review_user", columnList = "user_id"),
         @Index(name = "idx_review_status", columnList = "status")

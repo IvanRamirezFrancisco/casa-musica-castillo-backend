@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
@@ -13,7 +15,7 @@ import java.time.LocalDateTime;
  * Cumple con estándares de seguridad Enterprise para trazabilidad
  */
 @Entity
-@Table(name = "audit_logs", indexes = {
+@Table(name = "audit_logs", schema = "security", indexes = {
         @Index(name = "idx_audit_action", columnList = "action"),
         @Index(name = "idx_audit_entity_type", columnList = "entity_type"),
         @Index(name = "idx_audit_performed_by", columnList = "performed_by"),
@@ -100,14 +102,24 @@ public class AuditLog {
     private String userAgent;
 
     /**
-     * Datos antiguos en formato JSON (antes de la actualización)
+     * Datos antiguos en formato JSON (antes de la actualización).
+     * 
+     * @JdbcTypeCode(SqlTypes.JSON) hace que Hibernate 6 envíe el binding
+     *                              como un tipo JSON nativo de PostgreSQL, evitando
+     *                              el error "character varying".
      */
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "old_values", columnDefinition = "json")
     private String oldValues;
 
     /**
-     * Datos nuevos en formato JSON (después de la actualización)
+     * Datos nuevos en formato JSON (después de la actualización).
+     * 
+     * @JdbcTypeCode(SqlTypes.JSON) hace que Hibernate 6 envíe el binding
+     *                              como un tipo JSON nativo de PostgreSQL, evitando
+     *                              el error "character varying".
      */
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "new_values", columnDefinition = "json")
     private String newValues;
 

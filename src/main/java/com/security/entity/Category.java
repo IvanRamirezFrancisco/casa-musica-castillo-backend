@@ -21,7 +21,7 @@ import java.util.List;
  * Entidad para categorías de productos musicales
  */
 @Entity
-@Table(name = "categories")
+@Table(name = "categories", schema = "catalog")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -41,6 +41,12 @@ public class Category {
 
     @Column(name = "image_url")
     private String imageUrl;
+
+    @Column(name = "image_public_id")
+    private String imagePublicId;
+
+    @Column(name = "image_provider", length = 50)
+    private String imageProvider;
 
     @Column(nullable = false)
     private Boolean active = true;
@@ -78,7 +84,7 @@ public class Category {
      * @Getter(NONE) evita que Lombok genere un getter duplicado;
      *               el getter manual getProductCount() devuelve 0 si aún es null.
      */
-    @Formula("(SELECT COUNT(p.id) FROM products p WHERE p.category_id = id)")
+    @Formula("(SELECT COUNT(p.id) FROM catalog.products p WHERE p.category_id = id)")
     @Getter(AccessLevel.NONE)
     private Integer productCount;
 

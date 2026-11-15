@@ -72,6 +72,9 @@ public class WishlistDTO {
         private Boolean priceDropped;
         private Integer availableStock;
         private Boolean inStock;
+        private Boolean available;
+        private String availabilityStatus;
+        private Boolean canMoveToCart;
         private Integer priority;
         private String priorityLabel; // LOW, MEDIUM, HIGH
         private String notes;
@@ -149,5 +152,20 @@ public class WishlistDTO {
         private BigDecimal previousPrice;
         private Double discountPercentage;
         private LocalDateTime notifiedAt;
+    }
+
+    /**
+     * Respuesta ligera para verificar si un producto está en la wishlist.
+     * Usada por GET /api/wishlist/check/{productId}
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CheckResponse {
+        /** true si el producto está en la wishlist del usuario */
+        private boolean inWishlist;
+        /** ID del registro de wishlist, o null si no está */
+        private Long wishlistId;
     }
 }

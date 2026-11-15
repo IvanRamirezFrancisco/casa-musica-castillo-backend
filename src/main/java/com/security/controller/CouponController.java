@@ -13,6 +13,11 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
+// FASE 0 - Seguridad - 2026-05-15
+// TODO Fase-Seguridad: Crear permisos COUPON_READ, COUPON_CREATE,
+// COUPON_UPDATE, COUPON_DELETE y COUPON_MANAGE en una migración futura
+// para desacoplar la administración de cupones de los permisos PRODUCT_*.
+
 /**
  * Controller para gestión de cupones de descuento
  * Endpoints: /api/coupons (public), /api/admin/coupons (admin only)
@@ -76,7 +81,7 @@ public class CouponController {
      * POST /api/admin/coupons
      */
     @PostMapping("/api/admin/coupons")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_CREATE')")
     public ResponseEntity<CouponDTO.CouponResponse> createCoupon(
             @Valid @RequestBody CouponDTO.CreateCouponRequest request,
             Authentication authentication) {
@@ -92,7 +97,7 @@ public class CouponController {
      * GET /api/admin/coupons
      */
     @GetMapping("/api/admin/coupons")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<CouponDTO.CouponListResponse> getAllCoupons(
             @RequestParam(required = false) Boolean active,
             @RequestParam(required = false) String discountType,
@@ -114,7 +119,7 @@ public class CouponController {
      * GET /api/admin/coupons/id/{id}
      */
     @GetMapping("/api/admin/coupons/id/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<CouponDTO.CouponResponse> getCouponById(@PathVariable Long id) {
         log.info("Admin obteniendo cupón por ID: {}", id);
 
@@ -127,7 +132,7 @@ public class CouponController {
      * PUT /api/admin/coupons/{id}
      */
     @PutMapping("/api/admin/coupons/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<CouponDTO.CouponResponse> updateCoupon(
             @PathVariable Long id,
             @Valid @RequestBody CouponDTO.CreateCouponRequest request,
@@ -144,7 +149,7 @@ public class CouponController {
      * PATCH /api/admin/coupons/{id}/deactivate
      */
     @PatchMapping("/api/admin/coupons/{id}/deactivate")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<Map<String, String>> deactivateCoupon(
             @PathVariable Long id,
             Authentication authentication) {
@@ -162,7 +167,7 @@ public class CouponController {
      * PATCH /api/admin/coupons/{id}/activate
      */
     @PatchMapping("/api/admin/coupons/{id}/activate")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_UPDATE')")
     public ResponseEntity<Map<String, String>> activateCoupon(
             @PathVariable Long id,
             Authentication authentication) {
@@ -181,7 +186,7 @@ public class CouponController {
      * DELETE /api/admin/coupons/{id}
      */
     @DeleteMapping("/api/admin/coupons/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_DELETE')")
     public ResponseEntity<Map<String, String>> deleteCoupon(
             @PathVariable Long id,
             Authentication authentication) {
@@ -199,7 +204,7 @@ public class CouponController {
      * GET /api/admin/coupons/{id}/stats
      */
     @GetMapping("/api/admin/coupons/{id}/stats")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<CouponDTO.CouponUsageStats> getCouponStats(@PathVariable Long id) {
         log.info("Admin obteniendo estadísticas del cupón {}", id);
 
@@ -212,7 +217,7 @@ public class CouponController {
      * GET /api/admin/coupons/stats/overview
      */
     @GetMapping("/api/admin/coupons/stats/overview")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAuthority('PRODUCT_READ')")
     public ResponseEntity<Map<String, Object>> getCouponsOverview() {
         log.info("Admin obteniendo estadísticas generales de cupones");
 

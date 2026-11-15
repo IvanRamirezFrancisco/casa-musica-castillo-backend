@@ -3,11 +3,14 @@ package com.security.repository;
 import com.security.entity.VerificationToken;
 import com.security.entity.User;
 import com.security.enums.TokenType;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -19,14 +22,24 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
     // Búsqueda por token
     Optional<VerificationToken> findByToken(String token);
 
+    Optional<VerificationToken> findFirstByUserIdAndTokenTypeAndUsedFalseOrderByCreatedAtDescIdDesc(
+            Long userId, TokenType type);
+
+    long countByUserIdAndTokenTypeAndCreatedAtAfter(Long userId, TokenType type, LocalDateTime since);
+
+    @Modifying
+    @Query("UPDATE VerificationToken vt SET vt.used = true WHERE vt.user.id = :userId AND vt.tokenType = :type AND vt.used = false")
+    void invalidateForUser(@Param("userId") Long userId, @Param("type") TokenType type);
+
     // Búsqueda por usuario y tipo
     Optional<VerificationToken> findByUserAndTokenType(User user, TokenType tokenType);
 
     List<VerificationToken> findByUserId(Long userId);
 
     // Tokens válidos
-    @Query("SELECT vt FROM VerificationToken vt WHERE vt.token = :token AND vt.expiryDate > :currentTime AND vt.used = false")
-    Optional<VerificationToken> findValidToken(@Param("token") String token,
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT vt FROM VerificationToken vt WHERE vt.token = :token AND vt.tokenType = :type AND vt.expiryDate > :currentTime AND vt.used = false")
+    Optional<VerificationToken> findValidToken(@Param("token") String token, @Param("type") TokenType type,
             @Param("currentTime") LocalDateTime currentTime);
 
     // Verificar existencia
@@ -40,6 +53,7 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
     void markTokenAsUsed(@Param("tokenId") Long tokenId);
 
     // Eliminar tokens expirados
+    @Transactional
     @Modifying
     @Query("DELETE FROM VerificationToken vt WHERE vt.expiryDate < :currentTime")
     void deleteExpiredTokens(@Param("currentTime") LocalDateTime currentTime);
@@ -55,4 +69,9 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
     // Contar tokens activos
     @Query("SELECT COUNT(vt) FROM VerificationToken vt WHERE vt.user.id = :userId AND vt.expiryDate > :currentTime AND vt.used = false")
     long countActiveTokensByUserId(@Param("userId") Long userId, @Param("currentTime") LocalDateTime currentTime);
+
+    // Eliminar tokens de verificación por lista de IDs de usuario (cleanup job)
+    @Modifying
+    @Query("DELETE FROM VerificationToken vt WHERE vt.user.id IN :userIds")
+    void deleteByUserIdIn(@Param("userIds") List<Long> userIds);
 }

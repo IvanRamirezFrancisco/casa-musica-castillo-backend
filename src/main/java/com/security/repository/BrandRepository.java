@@ -58,10 +58,10 @@ public interface BrandRepository extends JpaRepository<Brand, Long> {
          * Usa nativeQuery para evitar el bug de Hibernate 6 + PostgreSQL con parámetros
          * null en LIKE
          */
-        @Query(value = "SELECT * FROM brands b WHERE " +
+        @Query(value = "SELECT * FROM catalog.brands b WHERE " +
                         "(:name IS NULL OR LOWER(CAST(b.name AS text)) LIKE LOWER('%' || :name || '%')) AND " +
                         "(:active IS NULL OR b.active = :active) AND " +
-                        "(:countryOrigin IS NULL OR LOWER(CAST(b.country_origin AS text)) LIKE LOWER('%' || :countryOrigin || '%'))", countQuery = "SELECT COUNT(*) FROM brands b WHERE "
+                        "(:countryOrigin IS NULL OR LOWER(CAST(b.country_origin AS text)) LIKE LOWER('%' || :countryOrigin || '%'))", countQuery = "SELECT COUNT(*) FROM catalog.brands b WHERE "
                                         +
                                         "(:name IS NULL OR LOWER(CAST(b.name AS text)) LIKE LOWER('%' || :name || '%')) AND "
                                         +

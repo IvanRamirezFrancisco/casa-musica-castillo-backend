@@ -1,10 +1,12 @@
 package com.security.controller.admin;
 
-import com.security.dto.admin.CsvImportResultDto;
+import com.security.dto.admin.*;
 import com.security.enums.CollisionRule;
 import com.security.service.CsvExportService;
 import com.security.service.CsvImportService;
+import com.security.service.CsvSecurityValidator;
 import com.security.util.LogSanitizer;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -17,6 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * Controlador REST para importación y exportación de datos en formato CSV.
@@ -55,21 +58,24 @@ import java.time.format.DateTimeFormatter;
  */
 @RestController
 @RequestMapping("/api/admin/csv")
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasAuthority('REPORT_EXPORT')")
 public class CsvController {
 
     private static final Logger log = LoggerFactory.getLogger(CsvController.class);
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    private static final long MAX_CSV_BYTES = 5L * 1024 * 1024; // 5 MB — defensa DoS
+    private static final long MAX_CSV_BYTES = 10L * 1024 * 1024; // 10 MB — defensa DoS
 
     private final CsvExportService csvExportService;
     private final CsvImportService csvImportService;
+    private final CsvSecurityValidator csvSecurityValidator;
 
     public CsvController(CsvExportService csvExportService,
-            CsvImportService csvImportService) {
+            CsvImportService csvImportService,
+            CsvSecurityValidator csvSecurityValidator) {
         this.csvExportService = csvExportService;
         this.csvImportService = csvImportService;
+        this.csvSecurityValidator = csvSecurityValidator;
     }
 
     // ── Exportaciones ─────────────────────────────────────────────────────────
@@ -151,6 +157,90 @@ public class CsvController {
 
     // ── Utilidades ─────────────────────────────────────────────────────────────
 
+    // ── Nuevos endpoints: Columnas, Exportación configurable, Preview, Plantilla
+    // ──
+
+    /**
+     * Retorna las columnas disponibles para exportación de productos.
+     */
+    @GetMapping("/export/columns/products")
+    public ResponseEntity<List<ColumnMetadataDto>> getProductColumns() {
+        return ResponseEntity.ok(csvExportService.getAvailableProductColumns());
+    }
+
+    /**
+     * Exporta productos con configuración personalizada de columnas, orden y
+     * límite.
+     */
+    @PostMapping(value = "/export/products/download", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<byte[]> exportProductsConfigured(@Valid @RequestBody ExportConfigDto config)
+            throws IOException {
+        log.info("[CsvController] Exportación configurable: columns={}, sort={}:{}, limit={}",
+                config.columns().size(), config.sortBy(), config.sortDir(), config.limit());
+        byte[] csv = csvExportService.exportProductsWithConfig(config);
+        return downloadResponse(csv, "productos_" + today() + ".csv");
+    }
+
+    /**
+     * Genera una plantilla CSV de ejemplo para importación de productos.
+     */
+    @GetMapping("/import/template/products")
+    public ResponseEntity<byte[]> downloadProductTemplate() throws IOException {
+        log.info("[CsvController] Descargando plantilla CSV de productos");
+        byte[] csv = csvExportService.generateProductTemplate();
+        return downloadResponse(csv, "plantilla_productos.csv");
+    }
+
+    /**
+     * Valida y genera una previsualización del CSV sin importar datos.
+     * El usuario puede revisar las filas, ver errores y decidir qué importar.
+     */
+    @PostMapping(value = "/import/preview/products", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> previewProductImport(@RequestParam("file") MultipartFile file) throws IOException {
+        // — Validación de seguridad —
+        List<String> securityErrors = csvSecurityValidator.validate(file);
+        if (!securityErrors.isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    java.util.Map.of("errors", securityErrors, "message",
+                            "El archivo no pasó la validación de seguridad"));
+        }
+
+        log.info("[CsvController] Preview de importación CSV: {}",
+                LogSanitizer.sanitizeFilename(file.getOriginalFilename()));
+        CsvImportPreviewDto preview = csvImportService.previewProducts(file);
+        return ResponseEntity.ok(preview);
+    }
+
+    /**
+     * Confirma la importación procesando solo las filas seleccionadas por el
+     * usuario.
+     *
+     * @param file         archivo CSV original (se re-parsea)
+     * @param selectedRows filas seleccionadas (1-based, JSON array como string)
+     * @param rule         regla de colisión: UPDATE o SKIP
+     */
+    @PostMapping(value = "/import/confirm/products", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> confirmProductImport(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("selectedRows") List<Integer> selectedRows,
+            @RequestParam(name = "rule", defaultValue = "UPDATE") CollisionRule rule) throws IOException {
+
+        // — Validación de seguridad —
+        List<String> securityErrors = csvSecurityValidator.validate(file);
+        if (!securityErrors.isEmpty()) {
+            return ResponseEntity.badRequest().body(
+                    java.util.Map.of("errors", securityErrors, "message",
+                            "El archivo no pasó la validación de seguridad"));
+        }
+
+        log.info("[CsvController] Confirmando importación: {} filas seleccionadas, rule={}",
+                selectedRows.size(), rule);
+        CsvImportResultDto result = csvImportService.importProductsFromPreview(file, selectedRows, rule);
+        return ResponseEntity.ok(result);
+    }
+
+    // ── Utilidades legacy ────────────────────────────────────────────────────
+
     private ResponseEntity<byte[]> downloadResponse(byte[] content, String filename) {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
@@ -162,10 +252,10 @@ public class CsvController {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("El archivo CSV no puede estar vacio");
         }
-        // Defensa DoS: máximo 5 MB
+        // Defensa DoS: máximo 10 MB
         if (file.getSize() > MAX_CSV_BYTES) {
             throw new IllegalArgumentException(
-                    "El archivo excede el limite de 5 MB (" + (file.getSize() / 1024 / 1024) + " MB recibidos)");
+                    "El archivo excede el limite de 10 MB (" + (file.getSize() / 1024 / 1024) + " MB recibidos)");
         }
         String name = file.getOriginalFilename();
         if (name != null && !name.toLowerCase().endsWith(".csv")) {
