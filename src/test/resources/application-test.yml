@@ -18,6 +18,9 @@ spring:
     url: jdbc:postgresql://127.0.0.1:55439/backend_hardening_test
     username: auth_test
     password: synthetic-test-only
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
   flyway:
     locations: classpath:db/test-baseline,classpath:db/migration
   task:
