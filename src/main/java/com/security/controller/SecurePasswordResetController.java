@@ -23,13 +23,16 @@ public class SecurePasswordResetController {
     @Autowired
     private SecurePasswordResetService passwordResetService;
 
+    @Autowired private com.security.service.ActivationClientAddress addresses;
+    @Autowired private com.security.service.VerificationRequestLimit limits;
+
     @PostMapping("/password-reset/request")
     public ResponseEntity<ApiResponse> requestPasswordReset(
             @Valid @RequestBody PasswordResetRequest request,
             HttpServletRequest httpRequest) {
 
         try {
-            String clientIp = getClientIpAddress(httpRequest);
+            String clientIp = addresses.resolve(httpRequest);
             String userAgent = httpRequest.getHeader("User-Agent");
 
             logger.info("Password reset request from IP: {} for email pattern: {}",
@@ -42,12 +45,13 @@ public class SecurePasswordResetController {
 
             return ResponseEntity.ok(new ApiResponse(
                     true,
-                    "Si tu email está registrado, recibirás un enlace de recuperación dentro de unos minutos."));
+                    "Si existe una cuenta asociada a este correo y puede recuperarse, recibirás instrucciones para restablecer tu contraseña."));
 
         } catch (AuthFlowException e) {
-            return ResponseEntity.status(e.getStatus()).body(new ApiResponse(
-                    false,
-                    e.getMessage()));
+            var builder = ResponseEntity.status(e.getStatus());
+            if (e instanceof com.security.exception.ActivationLimitException limited)
+                builder.header("Retry-After", Long.toString(limited.getRetryAfter()));
+            return builder.body(new ApiResponse(false,e.getMessage()));
 
         } catch (SecurityException e) {
             logger.warn("Security restriction for password reset: {}", e.getClass().getSimpleName());
@@ -64,7 +68,8 @@ public class SecurePasswordResetController {
     }
 
     @GetMapping("/password-reset/verify/{token}")
-    public ResponseEntity<ApiResponse> verifyResetToken(@PathVariable String token) {
+    public ResponseEntity<ApiResponse> verifyResetToken(@PathVariable String token, HttpServletRequest client) {
+        limits.checkClient("password-reset-check",client);
         try {
             boolean isValid = passwordResetService.isTokenValid(token);
 
@@ -91,8 +96,9 @@ public class SecurePasswordResetController {
             @Valid @RequestBody ResetPasswordRequest request,
             HttpServletRequest httpRequest) {
 
+        limits.checkClient("password-reset-confirm-http",httpRequest);
         try {
-            String clientIp = getClientIpAddress(httpRequest);
+            String clientIp = addresses.resolve(httpRequest);
             String userAgent = httpRequest.getHeader("User-Agent");
 
             logger.info("Password reset confirmation from IP: {}", LogSanitizer.sanitize(clientIp));
@@ -113,6 +119,10 @@ public class SecurePasswordResetController {
                         "Token inválido, expirado o ya utilizado. Solicita un nuevo enlace."));
             }
 
+        } catch (AuthFlowException e) {
+            var response=ResponseEntity.status(e.getStatus());
+            if(e instanceof com.security.exception.ActivationLimitException limited)response.header("Retry-After",Long.toString(limited.getRetryAfter()));
+            return response.body(new ApiResponse(false,e.getMessage()));
         } catch (SecurityException e) {
             logger.warn("Security restriction for password reset confirmation: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(429).body(new ApiResponse(
@@ -127,32 +137,4 @@ public class SecurePasswordResetController {
         }
     }
 
-    private String getClientIpAddress(HttpServletRequest request) {
-        String xForwardedFor = request.getHeader("X-Forwarded-For");
-        String xRealIp = request.getHeader("X-Real-IP");
-        String xClientIp = request.getHeader("X-Client-IP");
-        String cfConnectingIp = request.getHeader("CF-Connecting-IP");
-
-        if (isValidIp(cfConnectingIp)) {
-            return cfConnectingIp;
-        }
-        if (isValidIp(xForwardedFor)) {
-            return xForwardedFor.split(",")[0].trim();
-        }
-        if (isValidIp(xRealIp)) {
-            return xRealIp;
-        }
-        if (isValidIp(xClientIp)) {
-            return xClientIp;
-        }
-        return request.getRemoteAddr();
-    }
-
-    private boolean isValidIp(String ip) {
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            return false;
-        }
-        return ip.matches("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$") ||
-                ip.matches("^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$");
-    }
 }

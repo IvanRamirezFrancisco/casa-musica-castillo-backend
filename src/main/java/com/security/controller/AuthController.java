@@ -81,7 +81,7 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<ApiResponse> registerUser(@Valid @RequestBody RegisterRequest registerRequest, HttpServletRequest request) {
-        verificationRequestLimit.check("registration", request.getRemoteAddr(), 30);
+        verificationRequestLimit.checkClient("registration", request);
         authService.registerUser(registerRequest);
         return ResponseEntity.ok(new ApiResponse(true,
                 "Si los datos permiten activar la cuenta, recibirás un enlace y un código de verificación."));
@@ -216,7 +216,8 @@ public class AuthController {
     }
 
     @PostMapping("/verify-email")
-    public ResponseEntity<?> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
+    public ResponseEntity<?> verifyEmail(@Valid @RequestBody VerifyEmailRequest request, HttpServletRequest client) {
+        verificationRequestLimit.checkClient("activation-link", client);
         try {
             log.debug("Procesando verificación de email");
             if (!verificationService.verifyToken(request.getToken().trim())) {
@@ -237,7 +238,8 @@ public class AuthController {
     }
 
     @GetMapping("/verify")
-    public ResponseEntity<?> verifyAccount(@RequestParam("token") String token) {
+    public ResponseEntity<?> verifyAccount(@RequestParam("token") String token, HttpServletRequest client) {
+        verificationRequestLimit.checkClient("activation-link", client);
         String frontendBaseUrl = emailService != null
                 ? emailService.getFrontendBaseUrl()
                 : "http://localhost:4200";
@@ -255,7 +257,7 @@ public class AuthController {
 
     @PostMapping("/verify-email-code")
     public ResponseEntity<?> verifyEmailCode(@Valid @RequestBody VerifyEmailCodeRequest request, HttpServletRequest client) {
-        verificationRequestLimit.check("activation-code", client.getRemoteAddr(), 60);
+        verificationRequestLimit.checkClient("activation-code", client);
         if (!verificationService.verifyCode(request.email(), request.code())) {
             return ResponseEntity.badRequest().body(new ApiResponse(false,
                     "El código es inválido, ha expirado o ya no admite intentos. Solicita otro si es necesario."));
@@ -265,8 +267,8 @@ public class AuthController {
 
     @PostMapping("/resend-verification")
     public ResponseEntity<?> resendVerification(@Valid @RequestBody ResendVerificationRequest request, HttpServletRequest client) {
+        verificationRequestLimit.checkClient("resend-activation", client);
         try {
-            verificationRequestLimit.check("resend-activation", client.getRemoteAddr(), 30);
             verificationService.resendVerificationEmail(request.getEmail());
             return ResponseEntity.ok(new ApiResponse(true,
                     "Si el correo está pendiente y puede recibir un reenvío, recibirás un enlace y un código de activación."));

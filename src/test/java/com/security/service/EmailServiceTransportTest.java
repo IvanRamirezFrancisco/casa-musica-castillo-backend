@@ -95,4 +95,91 @@ class EmailServiceTransportTest {
         http.verify();
         verify(smtp).send(message);
     }
+
+    @Test void activationTimeoutIsUnknownWithoutRetryOrFallback() {
+        ReflectionTestUtils.setField(service, "brevoApiKey", "synthetic-key");
+        ReflectionTestUtils.setField(service, "resendApiKey", "synthetic-alternative");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andRespond(withException(new java.net.SocketTimeoutException("synthetic")));
+        assertEquals(EmailService.ActivationDelivery.UNKNOWN, service.deliverActivation(user,"synthetic-token","012345"));
+        http.verify(); verifyNoInteractions(smtp);
+    }
+
+    @Test void activationConfirmedRejectionDoesNotFallbackAndCanBeRecoveredExplicitly() {
+        ReflectionTestUtils.setField(service, "brevoApiKey", "synthetic-key");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email")).andRespond(withStatus(HttpStatus.BAD_REQUEST));
+        assertEquals(EmailService.ActivationDelivery.FAILED, service.deliverActivation(user,"synthetic-token","012345"));
+        http.verify(); verifyNoInteractions(smtp);
+    }
+
+    @Test void activationAcceptedIsOneRequestAndNoFallback() {
+        ReflectionTestUtils.setField(service, "brevoApiKey", "synthetic-key");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email")).andRespond(withSuccess("{}",MediaType.APPLICATION_JSON));
+        assertEquals(EmailService.ActivationDelivery.ACCEPTED, service.deliverActivation(user,"synthetic-token","012345"));
+        http.verify(); verifyNoInteractions(smtp);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={401,429,500})
+    void recoveryAndNoticeNeverFallBackOrRetryOnProviderResponses(int code) {
+        ReflectionTestUtils.setField(service,"brevoApiKey","synthetic-brevo-key");
+        ReflectionTestUtils.setField(service,"resendApiKey","synthetic-alternative");
+        ReflectionTestUtils.setField(service,"baseUrl","https://shop.example.test");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andExpect(header("api-key","synthetic-brevo-key"))
+            .andExpect(jsonPath("$.htmlContent").value(org.hamcrest.Matchers.containsString("https://shop.example.test/reset-password?token=synthetic-token")))
+            .andRespond(withStatus(HttpStatus.valueOf(code)));
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andExpect(jsonPath("$.subject").value("Se actualizó la contraseña de tu cuenta — Casa de Música Castillo"))
+            .andExpect(jsonPath("$.htmlContent").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("synthetic-token"))))
+            .andRespond(withStatus(HttpStatus.valueOf(code)));
+        assertEquals(code>=500?EmailService.ActivationDelivery.UNKNOWN:EmailService.ActivationDelivery.FAILED,
+            service.deliverPasswordReset(user,"synthetic-token"));
+        assertEquals(code>=500?EmailService.ActivationDelivery.UNKNOWN:EmailService.ActivationDelivery.FAILED,
+            service.deliverPasswordChanged(user));
+        http.verify();verifyNoInteractions(smtp);
+    }
+    @Test void recoveryAndNotificationAcceptOneRequestOrRecordUnknownAfterTimeout() {
+        ReflectionTestUtils.setField(service,"brevoApiKey","synthetic-brevo-key");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andRespond(withSuccess("{\"messageId\":\"synthetic-id\"}",MediaType.APPLICATION_JSON));
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andRespond(withException(new java.net.SocketTimeoutException("synthetic")));
+        assertEquals(EmailService.ActivationDelivery.ACCEPTED,service.deliverPasswordReset(user,"synthetic-token"));
+        assertEquals(EmailService.ActivationDelivery.UNKNOWN,service.deliverPasswordChanged(user));
+        http.verify();verifyNoInteractions(smtp);
+    }
+    @Test void brandedNoticeContractIsIdenticalForHtmlAndTextInBrevo() {
+        ReflectionTestUtils.setField(service,"brevoApiKey","synthetic-brevo-key");
+        http.expect(requestTo("https://api.brevo.com/v3/smtp/email"))
+            .andExpect(method(HttpMethod.POST)).andExpect(header("api-key","synthetic-brevo-key"))
+            .andExpect(header("Content-Type",org.hamcrest.Matchers.startsWith("application/json")))
+            .andExpect(jsonPath("$.sender.email").value("sender@example.invalid"))
+            .andExpect(jsonPath("$.subject").value("Se actualizó la contraseña de tu cuenta — Casa de Música Castillo"))
+            .andExpect(jsonPath("$.htmlContent").value(org.hamcrest.Matchers.containsString("max-width:600px")))
+            .andExpect(jsonPath("$.textContent").value(org.hamcrest.Matchers.containsString("Tu contraseña fue actualizada")))
+            .andExpect(jsonPath("$.htmlContent").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("token="))))
+            .andRespond(withSuccess("{}",MediaType.APPLICATION_JSON));
+        assertEquals(EmailService.ActivationDelivery.ACCEPTED,service.deliverPasswordChanged(user));
+        http.verify();verifyNoInteractions(smtp);
+    }
+    @Test void smtpNoticePreservesUtf8AndBothMimeAlternatives() throws Exception {
+        MimeMessage message=new MimeMessage(Session.getInstance(new Properties()));
+        when(smtp.createMimeMessage()).thenReturn(message);
+        assertEquals(EmailService.ActivationDelivery.ACCEPTED,service.deliverPasswordChanged(user));
+        verify(smtp,times(1)).send(message);message.saveChanges();
+        assertEquals("Se actualizó la contraseña de tu cuenta — Casa de Música Castillo",message.getSubject());
+        assertTrue(message.getContentType().startsWith("multipart/"));
+        var bytes=new java.io.ByteArrayOutputStream();message.writeTo(bytes);
+        var parsed=new MimeMessage(Session.getInstance(new Properties()),new java.io.ByteArrayInputStream(bytes.toByteArray()));
+        assertEquals(message.getSubject(),parsed.getSubject());
+        assertTrue(hasMimePart(parsed,"text/plain"));assertTrue(hasMimePart(parsed,"text/html"));
+    }
+    private boolean hasMimePart(jakarta.mail.Part part,String type) throws Exception {
+        if(part.isMimeType(type))return true;
+        if(part.getContent() instanceof jakarta.mail.Multipart multipart)
+            for(int i=0;i<multipart.getCount();i++)if(hasMimePart(multipart.getBodyPart(i),type))return true;
+        return false;
+    }
+
 }

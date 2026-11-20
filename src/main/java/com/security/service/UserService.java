@@ -60,6 +60,8 @@ public class UserService {
 
     @Autowired
     private SessionManagementService sessionManagementService;
+    @Autowired private SecurityMailQueue securityMail;
+    @Autowired private VerificationRequestLimit passwordLimits;
 
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
@@ -94,21 +96,19 @@ public class UserService {
             if (!userRepository.existsByEmail(email) && !userRepository.existsByUsername(username)) throw ex;
             prepared = null;
         }
-        if (prepared == null) {
-            verificationService.resendVerificationEmail(email);
-        } else {
-            verificationService.deliver(prepared);
-        }
+        // Issuance is queued in the registration transaction. Duplicate registration never resends.
     }
 
     private VerificationService.PendingVerification prepareRegistrationInTx(RegisterRequest request, String email, String username) {
+        // Same password work for valid duplicate/new submissions; never persist a duplicate's hash.
+        String encodedPassword = passwordEncoder.encode(request.getPassword());
         if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return null;
         User user = new User();
         user.setUsername(username);
         user.setFirstName(request.getFirstName().trim());
         user.setLastName(request.getLastName().trim());
         user.setEmail(email);
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setPassword(encodedPassword);
         user.setPhone(request.getPhone() == null || request.getPhone().isBlank() ? null : request.getPhone().trim());
         user.setEnabled(false);
         user.markPendingSelfRegistration();
@@ -189,9 +189,11 @@ public class UserService {
     }
 
     public void disableUser(Long userId) {
-        User user = getUserById(userId);
+        User user = lockAccount(userId);
         assertCanActOn(user, "DISABLE");
         user.setEnabled(false);
+        user.cancelPendingSelfRegistration();
+        verificationService.cancelForUser(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
 
@@ -238,8 +240,20 @@ public class UserService {
         }
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void changeOwnPassword(Long userId, String currentPassword, String newPassword) {
+        passwordLimits.check("password-stepup-account", userId.toString(), 5);
+        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        String requestJti = attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet
+            ? (String) servlet.getRequest().getAttribute("authenticatedJti") : null;
+        if (attributes != null && requestJti == null) throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
+        if (requestJti != null) passwordLimits.check("password-stepup-session", userId + ":" + requestJti, 5);
+        requiresNewTx.executeWithoutResult(status -> changeOwnPasswordInTx(userId,currentPassword,newPassword,requestJti));
+    }
+    private void changeOwnPasswordInTx(Long userId, String currentPassword, String newPassword, String requestJti) {
         User user = lockAccount(userId);
+        if (requestJti != null && (!sessionManagementService.isSessionValid(requestJti)
+                || !sessionManagementService.belongsToUser(requestJti,userId))) throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
         if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
             throw new AuthFlowException(HttpStatus.FORBIDDEN);
         }
@@ -257,6 +271,11 @@ public class UserService {
         sessionManagementService.invalidateAllUserSessions(user.getEmail());
         jdbcTemplate.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",
                 now, userId);
+        jdbcTemplate.update("UPDATE security.password_reset_tokens SET used=true,used_at=? WHERE user_id=?",now,userId);
+        jdbcTemplate.update("UPDATE auth.security_mail_outbox SET payload=NULL,state='CANCELLED' WHERE user_id=? AND purpose='PASSWORD_RESET' AND state='PENDING'",userId);
+        securityMail.enqueueNotification(user);
+        try { auditLogService.log("UPDATE","USER_PASSWORD_CHANGE","USER",userId,null,null,"WARNING",true); }
+        catch (RuntimeException ex) { logger.warn("password_change_audit_unavailable account={}",userId); }
     }
 
     public void changePassword(Long userId, String newPassword) {

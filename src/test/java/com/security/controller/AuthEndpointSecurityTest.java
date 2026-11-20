@@ -31,6 +31,7 @@ class AuthEndpointSecurityTest {
     @MockitoBean SecurePasswordResetService securePasswords;
     @MockitoBean LoginSecurityService limits;
     @MockitoBean VerificationRequestLimit verificationLimits;
+    @MockitoBean ActivationClientAddress activationAddresses;
     @MockitoBean SessionManagementService sessions;
     @MockitoBean LoginChallengeService challenges;
     @MockitoBean CustomUserDetailsService details;
@@ -41,6 +42,7 @@ class AuthEndpointSecurityTest {
     @MockitoBean EmailService emailService;
 
     @BeforeEach void setup() {
+        when(activationAddresses.resolve(any())).thenReturn("127.0.0.1");
         User user=new User();user.setId(1L);user.setEmail("synthetic@example.invalid");user.setEnabled(true);
         when(jwt.validateToken("synthetic-valid-token")).thenReturn(true);
         when(jwt.getJtiFromJWT("synthetic-valid-token")).thenReturn("synthetic-session");
@@ -128,5 +130,14 @@ class AuthEndpointSecurityTest {
                 .andExpect(status().isOk());
         verify(limits).clearAfterSuccessfulLogin("synthetic@example.invalid");
         verify(limits,never()).clearAfterSuccessfulLogin("other@example.invalid");
+    }
+    @Test void publicIpLimitReturnsRetryAfterWithoutAccountSignals() throws Exception {
+        doThrow(new com.security.exception.ActivationLimitException(73)).when(verificationLimits)
+            .checkClient(eq("resend-activation"),any());
+        mvc.perform(post("/api/auth/resend-verification").contentType("application/json")
+            .content("{\"email\":\"synthetic@example.invalid\"}"))
+            .andExpect(status().isTooManyRequests()).andExpect(header().string("Retry-After","73"))
+            .andExpect(jsonPath("$.success").value(false));
+        verifyNoInteractions(verification);
     }
 }

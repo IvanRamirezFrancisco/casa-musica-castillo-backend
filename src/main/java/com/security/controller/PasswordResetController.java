@@ -22,6 +22,8 @@ public class PasswordResetController {
     @Autowired
     private PasswordResetService passwordResetService;
 
+    @Autowired private com.security.service.VerificationRequestLimit limits;
+
     /**
      * Solicitar reset de contraseña con limitación de intentos (3 cada 5 minutos)
      */
@@ -52,7 +54,9 @@ public class PasswordResetController {
                     "maxAttempts", e.getMaxAttempts()));
 
         } catch (AuthFlowException e) {
-            return ResponseEntity.status(e.getStatus()).body(Map.of(
+            var response=ResponseEntity.status(e.getStatus());
+            if(e instanceof com.security.exception.ActivationLimitException limited)response.header("Retry-After",Long.toString(limited.getRetryAfter()));
+            return response.body(Map.of(
                     "success", false,
                     "message", e.getMessage()));
 
@@ -72,7 +76,8 @@ public class PasswordResetController {
      * Validar token de reset
      */
     @GetMapping("/validate-reset-token")
-    public ResponseEntity<?> validateResetToken(@RequestParam String token) {
+    public ResponseEntity<?> validateResetToken(@RequestParam String token, HttpServletRequest client) {
+        limits.checkClient("password-reset-check",client);
         try {
             boolean isValid = passwordResetService.validateResetToken(token);
 
@@ -97,7 +102,8 @@ public class PasswordResetController {
      * Resetear contraseña con token (desde email)
      */
     @PostMapping("/reset-password")
-    public ResponseEntity<?> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
+    public ResponseEntity<?> resetPassword(@Valid @RequestBody ResetPasswordRequest request, HttpServletRequest client) {
+        limits.checkClient("password-reset-confirm-http",client);
         try {
             if (request.getToken() == null || request.getToken().trim().isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
@@ -124,6 +130,10 @@ public class PasswordResetController {
                         "message", "El enlace de reset ha expirado o es inválido. Solicita uno nuevo."));
             }
 
+        } catch (AuthFlowException e) {
+            var response=ResponseEntity.status(e.getStatus());
+            if(e instanceof com.security.exception.ActivationLimitException limited)response.header("Retry-After",Long.toString(limited.getRetryAfter()));
+            return response.body(Map.of("success",false,"message",e.getMessage()));
         } catch (Exception e) {
             logger.error("Error en reset-password: {}", e.getClass().getSimpleName());
             return ResponseEntity.status(500).body(Map.of(

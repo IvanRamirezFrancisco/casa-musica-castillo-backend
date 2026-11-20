@@ -170,8 +170,8 @@ public class SessionManagementService {
         // Revocar todas en la base de datos
         sessionRepository.revokeAllUserSessions(user);
 
-        logger.info("Todas las sesiones cerradas para {} ({} sesiones)",
-                userEmail, userSessions.size());
+        logger.info("Sesiones revocadas para cuenta={} cantidad={}",
+                user.getId(), userSessions.size());
     }
 
     /**

@@ -99,6 +99,70 @@ public class EmailService {
         dispatchEmail(user, subject, content.html(), content.text(), "VERIFICATION");
     }
 
+    public enum ActivationDelivery { ACCEPTED, FAILED, UNKNOWN }
+
+    /** One transport, one attempt. Ambiguous outcomes must never enter the fallback chain. */
+    public ActivationDelivery deliverActivation(User user, String token, String code) {
+        AuthMailContent content = AuthMailContent.activation(user.getFirstName(),
+                getFrontendBaseUrl() + "/verify-account?token=" + token, code);
+        return deliverOnce(user, content, "Verificación de cuenta - Casa de Música Castillo", "VERIFICATION");
+    }
+
+    @Value("${app.security.password-reset.token-expiration:3600000}")
+    private long resetExpirationMs = 3600000;
+
+    public ActivationDelivery deliverPasswordReset(User user, String token) {
+        AuthMailContent content = AuthMailContent.passwordReset(user.getFirstName(),
+            getFrontendBaseUrl() + "/reset-password?token=" + token,
+            "El enlace caduca en " + Math.max(1, Math.min(1440, resetExpirationMs / 60000)) + " minutos y es de un solo uso. Si no lo solicitaste, ignora este correo.");
+        return deliverOnce(user, content, "Recuperación de contraseña - Casa de Música Castillo", "PASSWORD_RESET");
+    }
+    public ActivationDelivery deliverPasswordChanged(User user) {
+        return deliverOnce(user, AuthMailContent.passwordChanged(user.getFirstName()),
+            "Se actualizó la contraseña de tu cuenta — Casa de Música Castillo", "PASSWORD_CHANGED");
+    }
+    private ActivationDelivery deliverOnce(User user, AuthMailContent content, String subject, String category) {
+        if (hasValue(brevoApiKey)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("api-key", brevoApiKey.trim());
+            Map<String, Object> body = Map.of("sender", Map.of("name", resolveSenderName(), "email", resolveSenderAddress()),
+                "to", new Map[]{Map.of("email", user.getEmail())}, "subject", subject,
+                "htmlContent", content.html(), "textContent", content.text());
+            try {
+                var response = restTemplate.postForEntity(BREVO_API_URL, new HttpEntity<>(body, headers), String.class);
+                return response.getStatusCode().is2xxSuccessful() ? ActivationDelivery.ACCEPTED : ActivationDelivery.UNKNOWN;
+            } catch (HttpClientErrorException ex) {
+                return ex.getStatusCode().value() == 408 ? ActivationDelivery.UNKNOWN : ActivationDelivery.FAILED;
+            } catch (RuntimeException ex) {
+                return ActivationDelivery.UNKNOWN;
+            }
+        }
+        try {
+            sendViaSmtp(user, subject, content.html(), content.text(), category);
+            return ActivationDelivery.ACCEPTED;
+        } catch (ActivationMailException ex) {
+            return ex.outcome;
+        } catch (RuntimeException ex) {
+            return ActivationDelivery.UNKNOWN;
+        }
+    }
+
+    private static class ActivationMailException extends AuthFlowException {
+        final ActivationDelivery outcome;
+        ActivationMailException(Throwable cause) {
+            super(HttpStatus.SERVICE_UNAVAILABLE,
+                "No se pudo enviar el correo electrónico en este momento. Por favor intenta nuevamente más tarde.");
+            ActivationDelivery result = ActivationDelivery.UNKNOWN;
+            for (Throwable item = cause; item != null; item = item.getCause()) {
+                if (item instanceof java.net.ConnectException || item instanceof org.springframework.mail.MailAuthenticationException) {
+                    result = ActivationDelivery.FAILED; break;
+                }
+            }
+            outcome = result;
+        }
+    }
+
     /**
      * Envía el correo de recuperación de contraseña.
      * Orden de prioridad: Brevo API (HTTPS 443) → Resend API (HTTPS 443) → SMTP JavaMail (fallback).
@@ -109,8 +173,7 @@ public class EmailService {
         String frontendUrl = getFrontendBaseUrl();
         String resetUrl = frontendUrl + "/reset-password?token=" + token;
         String subject = "Recuperación de contraseña - Casa de Música Castillo";
-        AuthMailContent content = AuthMailContent.link("Recuperación de contraseña", user.getFirstName(),
-                "Recibimos una solicitud para restablecer tu contraseña.", "Restablecer contraseña", resetUrl,
+        AuthMailContent content = AuthMailContent.passwordReset(user.getFirstName(), resetUrl,
                 "El enlace caduca en una hora y es de un solo uso. Si no lo solicitaste, ignora este correo.");
         dispatchEmail(user, subject, content.html(), content.text(), "PASSWORD_RESET");
     }
@@ -332,9 +395,7 @@ public class EmailService {
         } catch (Exception e) {
             logger.error("Fallo total de entrega de correo (tipo={}, destinatario={}, causa={})",
                     category, LogSanitizer.maskEmail(user.getEmail()), e.getClass().getSimpleName());
-            throw new AuthFlowException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo enviar el correo electrónico en este momento. Por favor intenta nuevamente más tarde.");
+            throw new ActivationMailException(e);
         }
     }
 

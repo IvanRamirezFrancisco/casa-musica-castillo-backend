@@ -2,7 +2,6 @@ package com.security.entity;
 
 import com.security.enums.TokenType;
 import jakarta.persistence.*;
-import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
 
@@ -18,6 +17,25 @@ public class VerificationToken {
 
     @Column(name = "code_digest", length = 64)
     private String codeDigest;
+
+    @Column(name = "code_expires_at")
+    private LocalDateTime codeExpiresAt;
+    @Column(name = "delivery_state", nullable = false, length = 24)
+    private String deliveryState = "ACCEPTED";
+    @Column(name = "delivery_payload")
+    private String deliveryPayload;
+    @Column(name = "delivery_started_at")
+    private LocalDateTime deliveryStartedAt;
+
+    public LocalDateTime getCodeExpiresAt() { return codeExpiresAt; }
+    public void setCodeExpiresAt(LocalDateTime value) { codeExpiresAt = value; }
+    public String getDeliveryState() { return deliveryState; }
+    public void setDeliveryState(String value) { deliveryState = value; }
+    public String getDeliveryPayload() { return deliveryPayload; }
+    public void setDeliveryPayload(String value) { deliveryPayload = value; }
+    public LocalDateTime getDeliveryStartedAt() { return deliveryStartedAt; }
+    public void setDeliveryStartedAt(LocalDateTime value) { deliveryStartedAt = value; }
+    public String getRecipientEmail() { return recipientEmail; }
 
     @Column(name = "code_attempts", nullable = false)
     private int codeAttempts;
@@ -44,9 +62,13 @@ public class VerificationToken {
     @Column(nullable = false)
     private Boolean used = false;
 
-    @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    @PrePersist
+    void initializeCreatedAt() {
+        if (createdAt == null) createdAt = LocalDateTime.now(java.time.Clock.systemUTC());
+    }
 
     // Constructors
     public VerificationToken() {

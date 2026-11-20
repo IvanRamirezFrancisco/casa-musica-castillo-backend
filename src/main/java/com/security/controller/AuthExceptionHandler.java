@@ -22,7 +22,10 @@ public class AuthExceptionHandler {
 
     @ExceptionHandler(AuthFlowException.class)
     public ResponseEntity<ApiResponse> flow(AuthFlowException ex) {
-        return ResponseEntity.status(ex.getStatus()).body(new ApiResponse(false, ex.getMessage()));
+        var response = ResponseEntity.status(ex.getStatus());
+        if (ex instanceof com.security.exception.ActivationLimitException limit)
+            response.header("Retry-After", Long.toString(limit.getRetryAfter()));
+        return response.body(new ApiResponse(false, ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
