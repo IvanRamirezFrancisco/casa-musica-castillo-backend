@@ -1,5 +1,7 @@
 # Consolidación local del backend — 20 de noviembre de 2026
 
+> Actualización posterior: este documento conserva la evidencia histórica de la consolidación. El uso de `cmc_development:55439` como base de desarrollo queda sustituido por la conexión original `security_db:5432`. Sigue `LOCAL_DATABASE_RECOVERY.md`; no reinicialices clústeres ni uses el baseline de pruebas en la base original. V53–V59 están pendientes de autorización administrativa.
+
 La fuente activa de desarrollo es `C:\Users\ivanf\Documents\7mo\Proyecto del login original y funcional\segundo proyecto`, en `fix/account-activation-hardening`. El móvil permanece en `C:\Users\ivanf\Documents\Desarrollo Movil Integral\casa-musica-mobile`, rama `feature/pen-dev-ui-unification`.
 
 ## Estado recuperado y preservación
