@@ -6,6 +6,15 @@ app:
   security:
     jwt:
       secret: test-only-jwt-secret-do-not-use-anywhere-else-0123456789-abcdefghijklmnopqrstuvwxyz
+      refresh-inactivity-ms: 604800000
+      refresh-absolute-ms: 2592000000
+      refresh-cookie-name: cmc_refresh_token
+      refresh-cookie-secure: false
+      refresh-cookie-same-site: Lax
+    google:
+      enabled: true
+      web-client-id: synthetic-web-client.apps.googleusercontent.com
+      allowed-client-ids: synthetic-web-client.apps.googleusercontent.com
 
 pickup:
   code:

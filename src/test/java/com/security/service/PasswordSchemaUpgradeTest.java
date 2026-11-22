@@ -27,7 +27,7 @@ class PasswordSchemaUpgradeTest {
         var expires=jdbc.queryForObject("SELECT expiry_date FROM security.password_reset_tokens",java.sql.Timestamp.class);
         var after=Flyway.configure().dataSource(ds).schemas("public","auth","security","catalog","sales","customer","ops","analytics")
             .initSql("SET search_path TO public,auth,security,catalog,sales,customer,ops,analytics")
-            .locations("classpath:db/test-baseline","classpath:db/migration").load();
+            .locations("classpath:db/test-baseline","classpath:db/migration").target("59").load();
         assertEquals(1,after.migrate().migrationsExecuted);after.validate();
         assertEquals(SecurePasswordResetService.resetDigest(raw),jdbc.queryForObject("SELECT token FROM security.password_reset_tokens",String.class));
         assertEquals(expires,jdbc.queryForObject("SELECT expiry_date FROM security.password_reset_tokens",java.sql.Timestamp.class));
