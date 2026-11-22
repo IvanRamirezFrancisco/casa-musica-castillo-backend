@@ -17,6 +17,8 @@ public class GoogleAuthProperties {
     private long challengeTtlSeconds = 300;
     private long registrationTtlSeconds = 600;
     private long reauthTtlSeconds = 300;
+    private long linkConfirmTtlSeconds = 300;
+    private boolean allowLegacyUnauthenticatedChallenge = true;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -43,6 +45,14 @@ public class GoogleAuthProperties {
 
     public long getReauthTtlSeconds() { return reauthTtlSeconds; }
     public void setReauthTtlSeconds(long reauthTtlSeconds) { this.reauthTtlSeconds = reauthTtlSeconds; }
+
+    public long getLinkConfirmTtlSeconds() { return linkConfirmTtlSeconds; }
+    public void setLinkConfirmTtlSeconds(long linkConfirmTtlSeconds) { this.linkConfirmTtlSeconds = linkConfirmTtlSeconds; }
+
+    public boolean isAllowLegacyUnauthenticatedChallenge() { return allowLegacyUnauthenticatedChallenge; }
+    public void setAllowLegacyUnauthenticatedChallenge(boolean allowLegacyUnauthenticatedChallenge) {
+        this.allowLegacyUnauthenticatedChallenge = allowLegacyUnauthenticatedChallenge;
+    }
 
     public Set<String> getEffectiveAllowedClientIds() {
         Set<String> clients = new LinkedHashSet<>();

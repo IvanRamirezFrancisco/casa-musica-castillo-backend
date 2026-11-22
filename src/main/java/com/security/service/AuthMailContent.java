@@ -4,6 +4,9 @@ import org.springframework.web.util.HtmlUtils;
 
 /** Email-safe presentation shared by the authentication notifications. */
 record AuthMailContent(String html, String text) {
+    private static final String UNRECOGNIZED_ACTIVITY_TITLE = "¿No reconoces esta actividad?";
+    private static final String UNRECOGNIZED_ACTIVITY_BLOCK = "\n\n" + UNRECOGNIZED_ACTIVITY_TITLE + "\n";
+
     static AuthMailContent link(String title, String name, String message, String action, String url, String note) {
         String safeUrl = HtmlUtils.htmlEscape(url);
         String content = """
@@ -39,8 +42,30 @@ record AuthMailContent(String html, String text) {
         String extra = "<p style=\"margin:0 0 28px;line-height:1.65\">Si realizaste este cambio, no necesitas hacer nada más.</p>";
         String warning = "Si no realizaste este cambio, comunícate con nuestro equipo de soporte lo antes posible.";
         return passwordLayout(name, "Tu contraseña fue actualizada", message, extra,
-                "¿No reconoces esta actividad?", warning,
-                "Si realizaste este cambio, no necesitas hacer nada más.\n\n¿No reconoces esta actividad?\n" + warning);
+                UNRECOGNIZED_ACTIVITY_TITLE, warning,
+                "Si realizaste este cambio, no necesitas hacer nada más." + UNRECOGNIZED_ACTIVITY_BLOCK + warning);
+    }
+
+    static AuthMailContent googleLinked(String name, String occurredAtLabel) {
+        String when = (occurredAtLabel == null || occurredAtLabel.isBlank()) ? "recientemente" : occurredAtLabel.strip();
+        String message = "Te confirmamos que el " + when
+                + " se vinculó una cuenta de Google como método de acceso a tu perfil de Casa de Música Castillo.";
+        String extra = "<p style=\"margin:0 0 28px;line-height:1.65\">Tu correo electrónico principal no cambió. Ahora puedes iniciar sesión con tu método habitual o con Google. Si realizaste este cambio, no necesitas hacer nada más.</p>";
+        String warning = "Si no autorizaste esta vinculación, ingresa a Seguridad de la cuenta para desvincular Google, cambia tu contraseña, revisa tus sesiones activas y comunícate con soporte.";
+        return passwordLayout(name, "Se vinculó Google a tu cuenta", message, extra,
+                UNRECOGNIZED_ACTIVITY_TITLE, warning,
+                "Tu correo electrónico principal no cambió." + UNRECOGNIZED_ACTIVITY_BLOCK + warning);
+    }
+
+    static AuthMailContent googleUnlinked(String name, String occurredAtLabel) {
+        String when = (occurredAtLabel == null || occurredAtLabel.isBlank()) ? "recientemente" : occurredAtLabel.strip();
+        String message = "Te confirmamos que el " + when
+                + " se desvinculó Google como método de acceso de tu cuenta de Casa de Música Castillo.";
+        String extra = "<p style=\"margin:0 0 28px;line-height:1.65\">Continuarás iniciando sesión con tu correo y contraseña local. Si realizaste este cambio, no necesitas hacer nada más.</p>";
+        String warning = "Si no autorizaste esta desvinculación, cambia tu contraseña de inmediato, cierra las sesiones activas que no reconozcas y comunícate con soporte.";
+        return passwordLayout(name, "Se desvinculó Google de tu cuenta", message, extra,
+                UNRECOGNIZED_ACTIVITY_TITLE, warning,
+                "Continuarás iniciando sesión con tu correo y contraseña local." + UNRECOGNIZED_ACTIVITY_BLOCK + warning);
     }
 
     static AuthMailContent passwordReset(String name, String url, String expiryNote) {

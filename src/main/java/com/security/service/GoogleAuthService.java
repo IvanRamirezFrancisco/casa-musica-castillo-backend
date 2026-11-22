@@ -1,10 +1,13 @@
 package com.security.service;
 
 import com.security.config.GoogleAuthProperties;
+import com.security.dto.request.CancelLinkGoogleRequest;
 import com.security.dto.request.CompleteGoogleRegistrationRequest;
+import com.security.dto.request.ConfirmLinkGoogleRequest;
 import com.security.dto.request.GoogleAuthenticateRequest;
 import com.security.dto.request.GoogleReauthRequest;
 import com.security.dto.request.LinkGoogleRequest;
+import com.security.dto.request.PrepareLinkGoogleRequest;
 import com.security.dto.request.UnlinkGoogleRequest;
 import com.security.dto.response.JwtAuthResponse;
 import com.security.dto.response.UserResponse;
@@ -43,12 +46,20 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 @Service
 public class GoogleAuthService {
     private static final Logger log = LoggerFactory.getLogger(GoogleAuthService.class);
     public static final String PROVIDER_GOOGLE = "GOOGLE";
+    private static final String PURPOSE_AUTH = "AUTH";
+    private static final String PURPOSE_LINK = "LINK";
+    private static final String PURPOSE_REAUTH = "REAUTH";
+    private static final String KEY_EXPIRES_IN_SECONDS = "expiresInSeconds";
+    private static final String AUDIT_ACTION_SECURITY = "SECURITY";
+    private static final Set<String> CHALLENGE_PURPOSES = Set.of(PURPOSE_AUTH, PURPOSE_LINK, PURPOSE_REAUTH);
+    private static final Set<String> AUTHENTICATED_CHALLENGE_PURPOSES = Set.of(PURPOSE_LINK, PURPOSE_REAUTH);
     private static final Pattern NON_USERNAME_CHARS = Pattern.compile("[^a-zA-Z0-9._-]");
 
     private final GoogleAuthProperties properties;
@@ -71,6 +82,7 @@ public class GoogleAuthService {
     private final PasswordEncoder passwordEncoder;
     private final Clock clock;
     private final TransactionTemplate requiresNewTx;
+    private final SecurityMailQueue securityMailQueue;
     @org.springframework.beans.factory.annotation.Value("${app.maintenance.enabled:true}")
     private boolean maintenanceEnabled = true;
 
@@ -97,7 +109,8 @@ public class GoogleAuthService {
             ActivationClientAddress clientAddress,
             PasswordEncoder passwordEncoder,
             PlatformTransactionManager txManager,
-            @Autowired(required = false) Clock clock) {
+            @Autowired(required = false) Clock clock,
+            @Autowired(required = false) SecurityMailQueue securityMailQueue) {
         this.properties = properties;
         this.verifier = verifier;
         this.flowTokens = flowTokens;
@@ -119,6 +132,7 @@ public class GoogleAuthService {
         this.clock = clock != null ? clock : Clock.systemUTC();
         this.requiresNewTx = new TransactionTemplate(txManager);
         this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.securityMailQueue = securityMailQueue;
     }
 
     public Map<String, Object> getPublicConfig() {
@@ -134,11 +148,46 @@ public class GoogleAuthService {
             throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
                     "El acceso con Google no está configurado en este servidor.");
         }
+        String normalizedPurpose = (purpose == null || purpose.isBlank()) ? PURPOSE_AUTH : purpose.trim();
+        if (!CHALLENGE_PURPOSES.contains(normalizedPurpose)) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Propósito de desafío inválido.");
+        }
+        if (!PURPOSE_AUTH.equals(normalizedPurpose)) {
+            if (!properties.isAllowLegacyUnauthenticatedChallenge()) {
+                throw new AuthFlowException(HttpStatus.UNAUTHORIZED,
+                        "Inicia sesión para solicitar este desafío de seguridad.");
+            }
+            log.warn("google_legacy_unbound_challenge_issued purpose={}", normalizedPurpose);
+        }
         requestLimit.check("google-challenge", clientAddress.resolve(request), 30);
-        String nonce = flowTokens.createNonceChallenge(purpose);
+        String nonce = flowTokens.createNonceChallenge(normalizedPurpose);
         return Map.of(
                 "nonce", nonce,
-                "expiresInSeconds", properties.getChallengeTtlSeconds());
+                KEY_EXPIRES_IN_SECONDS, properties.getChallengeTtlSeconds());
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<String, Object> issueAuthenticatedChallenge(Long userId, String sessionJti, String purpose) {
+        if (!properties.isConfigured()) {
+            throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "El acceso con Google no está configurado en este servidor.");
+        }
+        if (sessionJti == null || sessionJti.isBlank()) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Sesión inválida.");
+        }
+        String normalizedPurpose = purpose == null ? "" : purpose.trim();
+        if (!AUTHENTICATED_CHALLENGE_PURPOSES.contains(normalizedPurpose)) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Propósito de desafío inválido.");
+        }
+        requestLimit.check("google-auth-challenge", userId.toString(), 20);
+        String nonce = requiresNewTx.execute(status -> {
+            assertActiveSession(userId, sessionJti);
+            lockEnabledUser(userId);
+            return flowTokens.createBoundNonceChallenge(normalizedPurpose, userId, sessionJti);
+        });
+        return Map.of(
+                "nonce", nonce,
+                KEY_EXPIRES_IN_SECONDS, properties.getChallengeTtlSeconds());
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -148,7 +197,7 @@ public class GoogleAuthService {
     }
 
     private GoogleAuthResult authenticateInTx(GoogleAuthenticateRequest requestBody, HttpServletRequest request) {
-        flowTokens.consumeNonceChallenge(requestBody.nonce());
+        flowTokens.consumeNonceChallenge(requestBody.nonce(), "AUTH", null, null, false);
         GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified = verifier.verify(
                 requestBody.idToken(), requestBody.nonce());
         flowTokens.markGoogleTokenConsumed(requestBody.idToken(), verified.expiresAt());
@@ -320,16 +369,21 @@ public class GoogleAuthService {
         }
         requestLimit.check("google-reauth", userId.toString(), 10);
         return requiresNewTx.execute(status -> {
-            if (!sessionManagementService.isSessionValid(sessionJti)
-                    || !sessionManagementService.belongsToUser(sessionJti, userId)) {
-                throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Tu sesión expiró.");
-            }
+            assertActiveSession(userId, sessionJti);
             User user = lockEnabledUser(userId);
             ExternalIdentity identity = externalIdentities.findByUserIdAndProvider(userId, PROVIDER_GOOGLE)
                     .orElseThrow(() -> new AuthFlowException(HttpStatus.CONFLICT,
                             "Tu cuenta no tiene una identidad de Google vinculada."));
 
-            flowTokens.consumeNonceChallenge(req.nonce());
+            boolean bound = flowTokens.consumeNonceChallenge(
+                    req.nonce(),
+                    PURPOSE_REAUTH,
+                    userId,
+                    sessionJti,
+                    !properties.isAllowLegacyUnauthenticatedChallenge());
+            if (!bound) {
+                log.warn("google_legacy_unbound_reauth_consumed account={}", userId);
+            }
             GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified = verifier.verify(req.idToken(), req.nonce());
             flowTokens.markGoogleTokenConsumed(req.idToken(), verified.expiresAt());
 
@@ -340,12 +394,89 @@ public class GoogleAuthService {
 
             verifyAuthenticatedMfaIfEnabled(user, req.mfaMethod(), req.mfaCode());
             String reauthToken = flowTokens.createReauthToken(userId, sessionJti, req.purpose());
-            audit("SECURITY", "GOOGLE_REAUTHENTICATED", userId, "INFO", true);
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_REAUTHENTICATED", userId, "INFO", true);
 
             return Map.of(
                     "reauthToken", reauthToken,
-                    "expiresInSeconds", properties.getReauthTtlSeconds());
+                    KEY_EXPIRES_IN_SECONDS, properties.getReauthTtlSeconds());
         });
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<String, Object> prepareLinkGoogle(Long userId, String sessionJti, PrepareLinkGoogleRequest req) {
+        if (sessionJti == null || sessionJti.isBlank()) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Sesión inválida.");
+        }
+        requestLimit.check("google-link-prepare", userId.toString(), 10);
+        return requiresNewTx.execute(status -> {
+            User user = assertLinkPreconditions(userId, sessionJti, req.currentPassword(), req.mfaMethod(), req.mfaCode());
+
+            flowTokens.consumeNonceChallenge(req.nonce(), PURPOSE_LINK, userId, sessionJti, true);
+            GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified = verifier.verify(req.idToken(), req.nonce());
+            flowTokens.markGoogleTokenConsumed(req.idToken(), verified.expiresAt());
+
+            assertGoogleIdentityCanLink(userId, verified.subject(), verified.email());
+
+            String confirmationToken = flowTokens.createPendingLinkConfirmation(userId, sessionJti, verified);
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_LINK_PREPARED", userId, "INFO", true);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("confirmationToken", confirmationToken);
+            response.put(KEY_EXPIRES_IN_SECONDS, properties.getLinkConfirmTtlSeconds());
+            response.put("currentAccountEmail", user.getEmail());
+            response.put("googleEmail", verified.email());
+            response.put("googleEmailVerified", verified.emailVerified());
+            response.put("googleName", resolveDisplayName(verified));
+            response.put("googlePictureUrl", verified.pictureUrl());
+            response.put("sameEmail", user.getEmail().equalsIgnoreCase(verified.email()));
+            return response;
+        });
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<String, Object> confirmLinkGoogle(Long userId, String sessionJti, ConfirmLinkGoogleRequest req) {
+        if (!req.confirmed()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Debes confirmar explícitamente la vinculación de Google.");
+        }
+        if (sessionJti == null || sessionJti.isBlank()) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Sesión inválida.");
+        }
+        requestLimit.check("google-link-confirm", userId.toString(), 10);
+        try {
+            return requiresNewTx.execute(status -> {
+                assertActiveSession(userId, sessionJti);
+                User user = lockEnabledUser(userId);
+                if (!user.hasLocalPassword()) {
+                    throw new AuthFlowException(HttpStatus.BAD_REQUEST,
+                            "Esta cuenta requiere otro mecanismo de verificación antes de vincular.");
+                }
+                GoogleFlowTokenService.PendingLinkConfirmFlow pending = flowTokens.lockPendingLinkConfirmation(
+                        userId, sessionJti, req.confirmationToken());
+
+                persistVerifiedGoogleLink(user, pending.subject(), pending.email(), pending.pictureUrl());
+                flowTokens.markFlowConsumed(pending.flowId());
+                return buildSecurityCapabilities(user);
+            });
+        } catch (DataIntegrityViolationException ex) {
+            throw new AuthFlowException(HttpStatus.CONFLICT,
+                    "Esta cuenta de Google ya está vinculada o tu perfil ya tiene una cuenta de Google asociada.");
+        }
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<String, Object> cancelLinkGoogle(Long userId, String sessionJti, CancelLinkGoogleRequest req) {
+        if (sessionJti == null || sessionJti.isBlank()) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Sesión inválida.");
+        }
+        requestLimit.check("google-link-cancel", userId.toString(), 20);
+        boolean cancelled = Boolean.TRUE.equals(requiresNewTx.execute(status -> {
+            assertActiveSession(userId, sessionJti);
+            return flowTokens.cancelPendingLinkConfirmation(userId, sessionJti, req.confirmationToken());
+        }));
+        if (cancelled) {
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_LINK_CANCELLED", userId, "INFO", true);
+        }
+        return Map.of("cancelled", cancelled);
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -359,51 +490,21 @@ public class GoogleAuthService {
         requestLimit.check("google-link", userId.toString(), 10);
         try {
             return requiresNewTx.execute(status -> {
-                if (!sessionManagementService.isSessionValid(sessionJti)
-                        || !sessionManagementService.belongsToUser(sessionJti, userId)) {
-                    throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Tu sesión expiró.");
-                }
-                User user = lockEnabledUser(userId);
-                if (!user.hasLocalPassword()) {
-                    throw new AuthFlowException(HttpStatus.BAD_REQUEST,
-                            "Esta cuenta requiere otro mecanismo de verificación antes de vincular.");
-                }
-                if (!BcryptPasswordValidator.isWithinLimit(req.currentPassword())
-                        || !passwordEncoder.matches(req.currentPassword(), user.getPassword())) {
-                    throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta.");
-                }
-                verifyAuthenticatedMfaIfEnabled(user, req.mfaMethod(), req.mfaCode());
+                User user = assertLinkPreconditions(userId, sessionJti, req.currentPassword(), req.mfaMethod(), req.mfaCode());
 
-                if (externalIdentities.existsByUserIdAndProvider(userId, PROVIDER_GOOGLE)) {
-                    throw new AuthFlowException(HttpStatus.CONFLICT, "Tu cuenta ya tiene una cuenta de Google vinculada.");
+                boolean bound = flowTokens.consumeNonceChallenge(
+                        req.nonce(),
+                        PURPOSE_LINK,
+                        userId,
+                        sessionJti,
+                        !properties.isAllowLegacyUnauthenticatedChallenge());
+                if (!bound) {
+                    log.warn("google_legacy_unbound_link_consumed account={}", userId);
                 }
-
-                flowTokens.consumeNonceChallenge(req.nonce());
                 GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified = verifier.verify(req.idToken(), req.nonce());
                 flowTokens.markGoogleTokenConsumed(req.idToken(), verified.expiresAt());
 
-                Optional<ExternalIdentity> owner = externalIdentities.findByProviderAndProviderSubject(
-                        PROVIDER_GOOGLE, verified.subject());
-                if (owner.isPresent()) {
-                    throw new AuthFlowException(HttpStatus.CONFLICT,
-                            "Esta cuenta de Google ya está vinculada a otro usuario.");
-                }
-
-                ExternalIdentity identity = new ExternalIdentity();
-                identity.setUser(user);
-                identity.setProvider(PROVIDER_GOOGLE);
-                identity.setProviderSubject(verified.subject());
-                identity.setProviderEmail(verified.email());
-                identity.setEmailVerified(verified.emailVerified());
-                identity.setPictureUrl(verified.pictureUrl());
-                externalIdentities.saveAndFlush(identity);
-
-                if ((user.getAvatarUrl() == null || user.getAvatarUrl().isBlank()) && verified.pictureUrl() != null) {
-                    user.setAvatarUrl(verified.pictureUrl());
-                    userRepository.save(user);
-                }
-
-                audit("UPDATE", "GOOGLE_IDENTITY_LINKED", userId, "WARNING", true);
+                persistVerifiedGoogleLink(user, verified.subject(), verified.email(), verified.pictureUrl());
                 return buildSecurityCapabilities(user);
             });
         } catch (DataIntegrityViolationException ex) {
@@ -422,10 +523,7 @@ public class GoogleAuthService {
         }
         requestLimit.check("google-unlink", userId.toString(), 10);
         return requiresNewTx.execute(status -> {
-            if (!sessionManagementService.isSessionValid(sessionJti)
-                    || !sessionManagementService.belongsToUser(sessionJti, userId)) {
-                throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Tu sesión expiró.");
-            }
+            assertActiveSession(userId, sessionJti);
             User user = lockEnabledUser(userId);
             if (!user.hasLocalPassword()) {
                 throw new AuthFlowException(HttpStatus.CONFLICT,
@@ -450,9 +548,122 @@ public class GoogleAuthService {
 
             externalIdentities.delete(identity);
             externalIdentities.flush();
+            enqueueGoogleSecurityMail(user, false);
             audit("UPDATE", "GOOGLE_IDENTITY_UNLINKED", userId, "WARNING", true);
             return buildSecurityCapabilities(user);
         });
+    }
+
+    private void assertActiveSession(Long userId, String sessionJti) {
+        if (!sessionManagementService.isSessionValid(sessionJti)
+                || !sessionManagementService.belongsToUser(sessionJti, userId)) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Tu sesión expiró.");
+        }
+    }
+
+    private User assertLinkPreconditions(
+            Long userId,
+            String sessionJti,
+            String currentPassword,
+            String mfaMethod,
+            String mfaCode) {
+        assertActiveSession(userId, sessionJti);
+        User user = lockEnabledUser(userId);
+        if (!user.hasLocalPassword()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST,
+                    "Esta cuenta requiere otro mecanismo de verificación antes de vincular.");
+        }
+        if (!BcryptPasswordValidator.isWithinLimit(currentPassword)
+                || !passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta.");
+        }
+        verifyAuthenticatedMfaIfEnabled(user, mfaMethod, mfaCode);
+        if (externalIdentities.existsByUserIdAndProvider(userId, PROVIDER_GOOGLE)) {
+            throw new AuthFlowException(HttpStatus.CONFLICT, "Tu cuenta ya tiene una cuenta de Google vinculada.");
+        }
+        return user;
+    }
+
+    private void assertGoogleIdentityCanLink(Long userId, String providerSubject, String rawGoogleEmail) {
+        String normalizedEmail = rawGoogleEmail == null ? "" : rawGoogleEmail.trim().toLowerCase(Locale.ROOT);
+        Optional<ExternalIdentity> owner = externalIdentities.findByProviderAndProviderSubject(
+                PROVIDER_GOOGLE, providerSubject);
+        if (owner.isPresent()) {
+            Long ownerUserId = owner.get().getUser().getId();
+            if (userId.equals(ownerUserId)) {
+                throw new AuthFlowException(HttpStatus.CONFLICT,
+                        "Esta cuenta de Google ya está vinculada a tu perfil.");
+            }
+            throw new AuthFlowException(HttpStatus.CONFLICT,
+                    "Esta cuenta de Google ya está vinculada a otro usuario.");
+        }
+        if (externalIdentities.existsByUserIdAndProvider(userId, PROVIDER_GOOGLE)) {
+            throw new AuthFlowException(HttpStatus.CONFLICT, "Tu cuenta ya tiene una cuenta de Google vinculada.");
+        }
+        if (!normalizedEmail.isEmpty()) {
+            Optional<User> localEmailOwner = userRepository.findByEmailIgnoreCase(normalizedEmail);
+            if (localEmailOwner.isPresent() && !localEmailOwner.get().getId().equals(userId)) {
+                throw new AuthFlowException(HttpStatus.CONFLICT,
+                        "No es posible vincular esta cuenta de Google porque su correo electrónico ya está asociado a otra cuenta existente.");
+            }
+        }
+    }
+
+    private void persistVerifiedGoogleLink(
+            User user,
+            String providerSubject,
+            String providerEmail,
+            String pictureUrl) {
+        String normalizedEmail = providerEmail == null ? "" : providerEmail.trim().toLowerCase(Locale.ROOT);
+        flowTokens.acquireTransactionLock("google-link-sub", providerSubject);
+        if (!normalizedEmail.isEmpty()) {
+            flowTokens.acquireTransactionLock("google-link-email", normalizedEmail);
+        }
+
+        assertGoogleIdentityCanLink(user.getId(), providerSubject, normalizedEmail);
+
+        ExternalIdentity identity = new ExternalIdentity();
+        identity.setUser(user);
+        identity.setProvider(PROVIDER_GOOGLE);
+        identity.setProviderSubject(providerSubject);
+        identity.setProviderEmail(normalizedEmail);
+        identity.setEmailVerified(true);
+        identity.setPictureUrl(pictureUrl);
+        externalIdentities.saveAndFlush(identity);
+
+        if ((user.getAvatarUrl() == null || user.getAvatarUrl().isBlank()) && pictureUrl != null) {
+            user.setAvatarUrl(pictureUrl);
+            userRepository.save(user);
+        }
+
+        enqueueGoogleSecurityMail(user, true);
+        audit("UPDATE", "GOOGLE_IDENTITY_LINKED", user.getId(), "WARNING", true);
+    }
+
+    private void enqueueGoogleSecurityMail(User user, boolean linked) {
+        if (securityMailQueue == null) {
+            return;
+        }
+        try {
+            LocalDateTime now = LocalDateTime.now(clock);
+            if (linked) {
+                securityMailQueue.enqueueGoogleLinked(user, now);
+            } else {
+                securityMailQueue.enqueueGoogleUnlinked(user, now);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("google_security_mail_enqueue_failed account={} linked={}", user.getId(), linked);
+        }
+    }
+
+    private static String resolveDisplayName(GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified) {
+        if (verified.fullName() != null && !verified.fullName().isBlank()) {
+            return verified.fullName().trim();
+        }
+        String given = verified.givenName() == null ? "" : verified.givenName().trim();
+        String family = verified.familyName() == null ? "" : verified.familyName().trim();
+        String combined = (given + " " + family).trim();
+        return combined.isEmpty() ? "" : combined;
     }
 
     public Map<String, Object> buildSecurityCapabilities(User user) {
