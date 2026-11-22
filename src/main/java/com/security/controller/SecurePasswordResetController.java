@@ -33,7 +33,7 @@ public class SecurePasswordResetController {
 
         try {
             String clientIp = addresses.resolve(httpRequest);
-            String userAgent = httpRequest.getHeader("User-Agent");
+            String userAgent = httpRequest != null ? httpRequest.getHeader("User-Agent") : null;
 
             logger.info("Password reset request from IP: {} for email pattern: {}",
                     LogSanitizer.sanitize(clientIp), LogSanitizer.maskEmail(request.getEmail()));
@@ -99,7 +99,7 @@ public class SecurePasswordResetController {
         limits.checkClient("password-reset-confirm-http",httpRequest);
         try {
             String clientIp = addresses.resolve(httpRequest);
-            String userAgent = httpRequest.getHeader("User-Agent");
+            String userAgent = httpRequest != null ? httpRequest.getHeader("User-Agent") : null;
 
             logger.info("Password reset confirmation from IP: {}", LogSanitizer.sanitize(clientIp));
 
