@@ -6,10 +6,14 @@ import java.util.Set;
 public class UserResponse {
 
     private Long id;
+    private String username;
     private String firstName;
     private String lastName;
     private String email;
     private String phone;
+    private String avatarUrl;
+    private Boolean hasLocalPassword;
+    private Boolean googleLinked;
     private boolean enabled;
     private boolean emailVerified;
     private boolean twoFactorEnabled;
@@ -163,5 +167,37 @@ public class UserResponse {
 
     public void setIsCustomer(Boolean isCustomer) {
         this.isCustomer = isCustomer;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public void setUsername(String username) {
+        this.username = username;
+    }
+
+    public String getAvatarUrl() {
+        return avatarUrl;
+    }
+
+    public void setAvatarUrl(String avatarUrl) {
+        this.avatarUrl = avatarUrl;
+    }
+
+    public Boolean getHasLocalPassword() {
+        return hasLocalPassword;
+    }
+
+    public void setHasLocalPassword(Boolean hasLocalPassword) {
+        this.hasLocalPassword = hasLocalPassword;
+    }
+
+    public Boolean getGoogleLinked() {
+        return googleLinked;
+    }
+
+    public void setGoogleLinked(Boolean googleLinked) {
+        this.googleLinked = googleLinked;
     }
 }

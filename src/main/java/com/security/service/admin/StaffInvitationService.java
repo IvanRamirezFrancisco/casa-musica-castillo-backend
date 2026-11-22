@@ -35,6 +35,8 @@ import java.security.NoSuchAlgorithmException;
  */
 @Service
 public class StaffInvitationService {
+    @org.springframework.beans.factory.annotation.Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger logger = LoggerFactory.getLogger(StaffInvitationService.class);
     private static final int TOKEN_BYTES = 32; // 256 bits de entropía
@@ -436,6 +438,7 @@ public class StaffInvitationService {
     @Scheduled(cron = "0 0 2 * * ?")
     @Transactional
     public void expireOldInvitations() {
+        if (!maintenanceEnabled) return;
         List<StaffInvitation> expired = invitationRepo
                 .findByStatusOrderByCreatedAtDesc(InvitationStatus.PENDING)
                 .stream()

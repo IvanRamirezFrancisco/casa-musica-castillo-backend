@@ -51,6 +51,8 @@ import java.util.regex.Pattern;
  */
 @Service
 public class DatabaseBackupService {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger log = LoggerFactory.getLogger(DatabaseBackupService.class);
     private static final int TIMEOUT_SECONDS = 300;
@@ -142,6 +144,7 @@ public class DatabaseBackupService {
     @PostConstruct
     @Transactional
     public void recoverZombiePendingBackups() {
+        if (!maintenanceEnabled) return;
         List<BackupLog> zombies = backupLogRepository.findByStatus(BackupStatus.PENDING);
 
         if (zombies.isEmpty()) {

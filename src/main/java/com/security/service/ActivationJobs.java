@@ -6,6 +6,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 @Component
 @ConditionalOnProperty(name = "app.activation.jobs-enabled", havingValue = "true", matchIfMissing = true)
 public class ActivationJobs {
+    @org.springframework.beans.factory.annotation.Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
     private final VerificationService verification;
     private final VerificationRequestLimit limits;
     private final SecurityMailQueue passwordMail;
@@ -15,5 +17,5 @@ public class ActivationJobs {
     @Scheduled(fixedDelayString = "${app.activation.dispatch-ms:1000}")
     public void dispatch() { verification.dispatchPending();passwordMail.dispatchPending(); }
     @Scheduled(fixedDelayString = "${app.activation.cleanup-ms:3600000}")
-    public void cleanup() { limits.cleanup(); verification.cleanupExpiredTokens();passwordMail.cleanup(); }
+    public void cleanup() { if (!maintenanceEnabled) return; limits.cleanup(); verification.cleanupExpiredTokens();passwordMail.cleanup(); }
 }

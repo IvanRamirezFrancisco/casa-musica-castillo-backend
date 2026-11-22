@@ -54,10 +54,13 @@ public class User {
     public boolean isPendingSelfRegistration() { return pendingSelfRegistration; }
     public void cancelPendingSelfRegistration() { pendingSelfRegistration = false; }
 
-    @NotBlank
     @Size(min = 8, max = 255, message = "Password must be between 8 and 255 characters")
-    @Column(nullable = false)
+    @Column(nullable = true)
     private String password;
+
+    @Size(max = 500)
+    @Column(name = "avatar_url", length = 500)
+    private String avatarUrl;
 
     @Size(max = 20)
     @Column(name = "phone", length = 20)
@@ -288,6 +291,18 @@ public class User {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public boolean hasLocalPassword() {
+        return password != null && !password.isBlank();
+    }
+
+    public String getAvatarUrl() {
+        return avatarUrl;
+    }
+
+    public void setAvatarUrl(String avatarUrl) {
+        this.avatarUrl = avatarUrl;
     }
 
     public String getPhone() {

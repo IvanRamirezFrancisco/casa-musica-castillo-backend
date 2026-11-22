@@ -51,6 +51,8 @@ import java.util.stream.Collectors;
  */
 @Service
 public class DynamicSchedulerService {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger log = LoggerFactory.getLogger(DynamicSchedulerService.class);
 
@@ -94,6 +96,7 @@ public class DynamicSchedulerService {
 
     @PostConstruct
     public void onStartup() {
+        if (!maintenanceEnabled) return;
         log.info("⚙️ [DynamicScheduler] Iniciando motor de automatizaciones...");
         List<SystemAutomation> enabled = automationRepo.findByEnabledTrue();
         log.info("  ↳ {} automatización(es) habilitada(s) encontrada(s).", enabled.size());

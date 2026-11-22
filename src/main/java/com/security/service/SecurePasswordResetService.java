@@ -42,6 +42,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  */
 @Service
 public class SecurePasswordResetService {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger logger = LoggerFactory.getLogger(SecurePasswordResetService.class);
 
@@ -320,11 +322,12 @@ public class SecurePasswordResetService {
             if (!eligible(user) || Boolean.TRUE.equals(row.getUsed()) || row.getUsedAt()!=null
                 || !row.getExpiryDate().isAfter(LocalDateTime.now(clock))
                 || java.util.Set.of("PENDING","FAILED","CANCELLED").contains(row.getDeliveryState())) return false;
-            if (passwordEncoder.matches(newPassword,user.getPassword())) return false;
+            if (user.hasLocalPassword() && passwordEncoder.matches(newPassword, user.getPassword())) return false;
             LocalDateTime now=LocalDateTime.now(clock);
             user.setPassword(passwordEncoder.encode(newPassword));user.setCredentialsNonExpired(true);user.setUpdatedAt(now);
             row.markAsUsed();
             sessionManagementService.invalidateAllUserSessions(user.getEmail());
+            jdbc.update("UPDATE auth.refresh_tokens SET revoked=true,revoked_at=?,revoke_reason='PASSWORD_RESET' WHERE user_id=? AND revoked=false", now, user.getId());
             jdbc.update("UPDATE security.password_reset_tokens SET used=true,used_at=? WHERE user_id=?",now,user.getId());
             jdbc.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",now,user.getId());
             jdbc.update("UPDATE auth.security_mail_outbox SET payload=NULL,state='CANCELLED' WHERE user_id=? AND purpose='PASSWORD_RESET' AND state='PENDING'",user.getId());
@@ -364,6 +367,7 @@ public class SecurePasswordResetService {
     @Scheduled(fixedRateString = "${app.security.password-reset.cleanup-interval:3600000}")
     @Transactional
     public void cleanupOldRecords() {
+        if (!maintenanceEnabled) return;
         try {
             LocalDateTime cutoff = LocalDateTime.now().minusDays(1);
 

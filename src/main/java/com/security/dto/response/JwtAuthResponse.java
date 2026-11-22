@@ -1,11 +1,15 @@
 package com.security.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.time.LocalDateTime;
 import java.util.Set;
 
 public class JwtAuthResponse {
 
     private String accessToken;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     private String refreshToken;
     private String tokenType = "Bearer";
     private Long expiresIn;

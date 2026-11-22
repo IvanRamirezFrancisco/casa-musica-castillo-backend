@@ -133,6 +133,8 @@ public class TwoFactorController {
     private com.security.service.LoginChallengeService loginChallenges;
     @Autowired
     private com.security.service.LoginSecurityService loginSecurity;
+    @Autowired(required = false)
+    private com.security.service.RefreshTokenService refreshTokenService;
 
     @PostMapping("/send-login-code")
     public ResponseEntity<?> sendLoginCode(@jakarta.validation.Valid @RequestBody com.security.dto.request.LoginFactorRequest request) {
@@ -145,7 +147,12 @@ public class TwoFactorController {
             HttpServletRequest httpRequest) {
         JwtAuthResponse response = loginChallenges.verify(request, httpRequest);
         loginSecurity.clearAfterSuccessfulLogin(response.getUser().getEmail());
-        return ResponseEntity.ok(new ApiResponse(true, "Autenticación exitosa", response));
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        if (refreshTokenService != null && response.getUser() != null && response.getUser().getId() != null) {
+            User verifiedUser = userService.getUserById(response.getUser().getId());
+            headers = refreshTokenService.issueAndAttach(response, verifiedUser, httpRequest);
+        }
+        return ResponseEntity.ok().headers(headers).body(new ApiResponse(true, "Autenticación exitosa", response));
     }
 
     @PostMapping("/google/confirm")

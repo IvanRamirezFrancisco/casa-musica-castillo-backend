@@ -27,6 +27,8 @@ import java.util.Optional;
 @RequiredArgsConstructor
 @Slf4j
 public class OrderExpirationJob {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private final OrderRepository orderRepository;
     private final OrderService orderService;
@@ -40,6 +42,7 @@ public class OrderExpirationJob {
      */
     @Scheduled(fixedRateString = "${bank.transfer.expiration-job.fixed-rate-ms:1800000}")
     public void cancelExpiredOrders() {
+        if (!maintenanceEnabled) return;
         log.info("[OrderExpirationJob] Iniciando expiración de órdenes pendientes...");
 
         // Umbrales

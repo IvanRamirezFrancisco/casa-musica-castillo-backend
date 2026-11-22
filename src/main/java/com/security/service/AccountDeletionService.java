@@ -75,9 +75,17 @@ public class AccountDeletionService {
 
     @Transactional
     public Receipt request(long userId, String currentPassword) {
+        return request(userId, currentPassword, null);
+    }
+
+    @Transactional
+    public Receipt request(long userId, String currentPassword, String reauthToken) {
         String email = jdbc.query(SELECT_USER_EMAIL_FOR_UPDATE,
                 (row, index) -> row.getString(1), userId).stream().findFirst().orElseThrow(AccountDeletionService::missing);
-        users.requireStepUp(userId, Map.of("currentPassword", currentPassword));
+        java.util.HashMap<String, String> stepUp = new java.util.HashMap<>();
+        if (currentPassword != null) stepUp.put("currentPassword", currentPassword);
+        if (reauthToken != null) stepUp.put("reauthToken", reauthToken);
+        users.requireStepUp(userId, stepUp);
         return processVerifiedRequest(userId, email, "AUTHENTICATED", false);
     }
 
@@ -397,6 +405,8 @@ public class AccountDeletionService {
     private void eraseAccount(long userId, String email) {
         jdbc.update("DELETE FROM auth.active_sessions WHERE user_id = ?", userId);
         jdbc.update("DELETE FROM auth.refresh_tokens WHERE user_id = ?", userId);
+        jdbc.update("DELETE FROM auth.external_identities WHERE user_id = ?", userId);
+        jdbc.update("DELETE FROM auth.google_auth_flows WHERE user_id = ?", userId);
         jdbc.update("DELETE FROM auth.backup_codes WHERE user_id = ?", userId);
         jdbc.update("DELETE FROM auth.two_factor_tokens WHERE user_id = ?", userId);
         jdbc.update("DELETE FROM auth.verification_tokens WHERE user_id = ?", userId);

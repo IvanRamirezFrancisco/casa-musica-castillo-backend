@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /** Never include rejected input, parser messages, SQL values or token-bearing paths. */
 @Order(Ordered.HIGHEST_PRECEDENCE)
-@RestControllerAdvice(assignableTypes = {AuthController.class, TwoFactorController.class,
+@RestControllerAdvice(assignableTypes = {AuthController.class, GoogleAuthController.class, TwoFactorController.class,
         PasswordResetController.class, SecurePasswordResetController.class, AcceptInvitationController.class})
 public class AuthExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(AuthExceptionHandler.class);

@@ -74,6 +74,9 @@ public class AuthController {
     @Autowired
     private com.security.service.LoginChallengeService loginChallenges;
 
+    @Autowired(required = false)
+    private com.security.service.RefreshTokenService refreshTokenService;
+
     @GetMapping("/me")
     public ResponseEntity<?> getCurrentUser(@org.springframework.security.core.annotation.AuthenticationPrincipal com.security.security.UserPrincipal principal) {
         return ResponseEntity.ok(userService.getUserResponseById(principal.getId()));
@@ -149,9 +152,7 @@ public class AuthController {
             return userService.completePasswordLogin((com.security.security.UserPrincipal) authenticated.getPrincipal(), user -> {
                 UserResponse userResponse = userService.convertToUserResponse(user);
 
-                boolean hasGoogleAuth = Boolean.TRUE.equals(user.getGoogleAuthEnabled());
-                boolean hasEmail2FA = Boolean.TRUE.equals(user.getEmailEnabled());
-                boolean requiresTwoFactor = hasGoogleAuth || hasEmail2FA;
+                boolean requiresTwoFactor = com.security.service.LoginChallengeService.requiresTwoFactor(user);
 
                 if (requiresTwoFactor) {
                     return ResponseEntity.ok(new ApiResponse(true, "Two-factor authentication required", loginChallenges.create(user.getId())));
@@ -173,6 +174,11 @@ public class AuthController {
                 jwtResponse.setTokenType("Bearer");
                 jwtResponse.setUser(userResponse);
 
+                org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                if (refreshTokenService != null) {
+                    headers = refreshTokenService.issueAndAttach(jwtResponse, user, request);
+                }
+
                 Map<String, Object> sessionInfo = new HashMap<>();
                 sessionInfo.put("activeSessions", activeSessions);
                 sessionInfo.put("maxSessions", sessionManagementService.getMaxConcurrentSessions());
@@ -182,7 +188,8 @@ public class AuthController {
                 responseData.put("jwtResponse", jwtResponse);
                 responseData.put("sessionManagement", sessionInfo);
 
-                return ResponseEntity.ok(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
+                return ResponseEntity.ok().headers(headers)
+                        .body(new ApiResponse(true, "Inicio de sesión exitoso", responseData));
             });
         } catch (AuthFlowException ex) {
             throw ex;
@@ -333,16 +340,61 @@ public class AuthController {
         return request.getRemoteAddr();
     }
 
+    @PostMapping("/session/refresh")
+    public ResponseEntity<ApiResponse> refreshSession(
+            @Valid @RequestBody(required = false) com.security.dto.request.RefreshSessionRequest body,
+            HttpServletRequest request) {
+        if (refreshTokenService == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiResponse(false, "Servicio de renovación no disponible"));
+        }
+        try {
+            var rotated = refreshTokenService.rotate(body != null ? body.refreshToken() : null, request);
+            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+            if ("WEB".equals(rotated.clientType())) {
+                headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                        refreshTokenService.buildRefreshCookie(rotated.rawRefreshToken()).toString());
+            }
+            return ResponseEntity.ok().headers(headers)
+                    .body(new ApiResponse(true, "Sesión renovada exitosamente", rotated.jwtResponse()));
+        } catch (AuthFlowException ex) {
+            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+            if ("WEB".equals(refreshTokenService.resolveClientType(request))
+                    && ex.getStatus() == HttpStatus.UNAUTHORIZED) {
+                headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                        refreshTokenService.clearRefreshCookie().toString());
+            }
+            return ResponseEntity.status(ex.getStatus()).headers(headers)
+                    .body(new ApiResponse(false, ex.getMessage()));
+        }
+    }
+
     @PostMapping("/logout")
+    public ResponseEntity<?> logout(HttpServletRequest request, @RequestBody(required = false) Map<String, String> body) {
+        String jti = (String) request.getAttribute("authenticatedJti");
+        sessionManagementService.invalidateSession(jti);
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        if (refreshTokenService != null) {
+            String rawRefresh = body != null ? body.get("refreshToken") : null;
+            refreshTokenService.revokeForLogout(jti, rawRefresh, request);
+            headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                    refreshTokenService.clearRefreshCookie().toString());
+        }
+        return ResponseEntity.ok().headers(headers).body(Map.of("message", "Sesión cerrada exitosamente"));
+    }
+
     public ResponseEntity<?> logout(HttpServletRequest request) {
-        sessionManagementService.invalidateSession((String) request.getAttribute("authenticatedJti"));
-        return ResponseEntity.ok(Map.of("message", "Sesión cerrada exitosamente"));
+        return logout(request, null);
     }
 
     @PostMapping("/logout-all")
     public ResponseEntity<?> logoutFromAllDevices(org.springframework.security.core.Authentication authentication) {
         sessionManagementService.invalidateAllUserSessions(authentication.getName());
-        return ResponseEntity.ok(Map.of("message", "Todas las sesiones han sido cerradas"));
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        if (refreshTokenService != null) {
+            headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                    refreshTokenService.clearRefreshCookie().toString());
+        }
+        return ResponseEntity.ok().headers(headers).body(Map.of("message", "Todas las sesiones han sido cerradas"));
     }
 
     @GetMapping("/sessions")
