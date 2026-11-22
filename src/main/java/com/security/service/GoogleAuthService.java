@@ -545,7 +545,7 @@ public class GoogleAuthService {
                 .replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
         String base = NON_USERNAME_CHARS.matcher(normalized.replace(' ', '.')).replaceAll("")
                 .replaceAll("\\.{2,}", ".")
-                .replaceAll("^[._-]+|[._-]+$", "");
+                .replaceAll("(?:^[._-]+)|(?:[._-]+$)", "");
         if (base.length() < 3) {
             base = "usuario." + Math.abs(verified.subject().hashCode() % 10000);
         }

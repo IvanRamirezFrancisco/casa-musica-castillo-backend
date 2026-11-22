@@ -60,29 +60,35 @@ public class SecurityMailQueue {
             jdbc.update("UPDATE auth.security_mail_outbox SET state='CANCELLED',payload=NULL,completed_at=? WHERE id IN (SELECT id FROM auth.security_mail_outbox WHERE state='PENDING' AND expires_at<=? LIMIT 1000)",
                 LocalDateTime.now(clock),LocalDateTime.now(clock));
         });
-        for(int i=0;i<10;i++) {
-            Long id=tx.execute(status->{
-                var ids=jdbc.queryForList("SELECT id FROM auth.security_mail_outbox WHERE state='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",Long.class,LocalDateTime.now(clock));
-                if(ids.isEmpty())return null;
-                long item=ids.getFirst();
-                var pending=jdbc.queryForMap("SELECT purpose,operation_id,payload FROM auth.security_mail_outbox WHERE id=?",item);
+        for (int i = 0; i < 10; i++) {
+            final long[] claimedId = { -1L };
+            tx.executeWithoutResult(status -> {
+                var ids = jdbc.queryForList("SELECT id FROM auth.security_mail_outbox WHERE state='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED", Long.class, LocalDateTime.now(clock));
+                if (ids.isEmpty()) {
+                    claimedId[0] = -1L;
+                    return;
+                }
+                long item = ids.getFirst();
+                var pending = jdbc.queryForMap("SELECT purpose,operation_id,payload FROM auth.security_mail_outbox WHERE id=?", item);
                 if ("PASSWORD_CHANGED".equals(pending.get("purpose"))) {
-                    String recipient=null;
-                    try { recipient=(String)json.readValue(crypto.open((String)pending.get("payload"),
-                        "password-mail:"+pending.get("operation_id")),Map.class).get("email"); }
+                    String recipient = null;
+                    try { recipient = (String) json.readValue(crypto.open((String) pending.get("payload"),
+                        "password-mail:" + pending.get("operation_id")), Map.class).get("email"); }
                     catch (Exception ex) { /* Claim then record an unrecoverable payload safely below. */ }
-                    if(recipient!=null && !limits.reserveDeliveryFor("notification-recipient-day",recipient.toLowerCase(Locale.ROOT))) {
+                    if (recipient != null && !limits.reserveDeliveryFor("notification-recipient-day", recipient.toLowerCase(Locale.ROOT))) {
                         // Defer only this unsent intent; other recipients must keep making progress.
-                        jdbc.update("UPDATE auth.security_mail_outbox SET next_attempt_at=? WHERE id=?",LocalDateTime.now(clock).plusMinutes(1),item);
-                        return 0L;
+                        jdbc.update("UPDATE auth.security_mail_outbox SET next_attempt_at=? WHERE id=?", LocalDateTime.now(clock).plusMinutes(1), item);
+                        claimedId[0] = 0L;
+                        return;
                     }
                 }
-                jdbc.update("UPDATE auth.security_mail_outbox SET state='SENDING',started_at=? WHERE id=?",LocalDateTime.now(clock),item);
-                jdbc.update("UPDATE security.password_reset_tokens SET delivery_state='SENDING' WHERE id=(SELECT reset_token_id FROM auth.security_mail_outbox WHERE id=?) AND used=false",item);
-                return item;
+                jdbc.update("UPDATE auth.security_mail_outbox SET state='SENDING',started_at=? WHERE id=?", LocalDateTime.now(clock), item);
+                jdbc.update("UPDATE security.password_reset_tokens SET delivery_state='SENDING' WHERE id=(SELECT reset_token_id FROM auth.security_mail_outbox WHERE id=?) AND used=false", item);
+                claimedId[0] = item;
             });
-            if(id==null)break;
-            if(id==0)continue;
+            long id = claimedId[0];
+            if (id < 0L) break;
+            if (id == 0L) continue;
             dispatch(id);
         }
         tx.executeWithoutResult(status->{

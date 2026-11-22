@@ -335,4 +335,55 @@ class RefreshTokenPersistenceIntegrationTest extends LocalPostgresIntegrationTes
                 .toList();
         assertThat(active).isEmpty();
     }
+
+    @Test
+    void rejectsMalformedDisabledLockedAndClientMismatchedRefreshTokensAndMissingWebCookie() throws Exception {
+        // Missing/malformed refresh tokens -> 401
+        mvc.perform(post("/api/auth/session/refresh")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("refreshToken", "short"))))
+                .andExpect(status().isUnauthorized());
+
+        mvc.perform(post("/api/auth/session/refresh")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .header("Origin", "http://localhost:4200"))
+                .andExpect(status().isUnauthorized());
+
+        // Android token rejected if presented as WEB (clientType mismatch -> revokes family)
+        User u1 = createVerifiedUser("mismatch1");
+        MvcResult login1 = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", u1.getEmail(), "password", "Persist!Pass123"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String rt1 = json.readTree(login1.getResponse().getContentAsString())
+                .path("data").path("jwtResponse").path("refreshToken").asText();
+
+        mvc.perform(post("/api/auth/session/refresh")
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .header("Origin", "http://localhost:4200")
+                        .cookie(new Cookie("cmc_refresh_token", rt1)))
+                .andExpect(status().isUnauthorized());
+
+        // Disabled user -> revokes family on refresh
+        User u2 = createVerifiedUser("disabled1");
+        MvcResult login2 = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", u2.getEmail(), "password", "Persist!Pass123"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String rt2 = json.readTree(login2.getResponse().getContentAsString())
+                .path("data").path("jwtResponse").path("refreshToken").asText();
+        u2.setEnabled(false);
+        users.saveAndFlush(u2);
+
+        mvc.perform(post("/api/auth/session/refresh")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("refreshToken", rt2))))
+                .andExpect(status().isUnauthorized());
+    }
 }

@@ -19,6 +19,7 @@ public class ActivationClientAddress {
             }).toList();
     }
     public String resolve(HttpServletRequest request) {
+        if (request == null) return null;
         String peer = request.getRemoteAddr();
         if (!trusted(peer)) return peer;
         String header = request.getHeader("X-Forwarded-For");

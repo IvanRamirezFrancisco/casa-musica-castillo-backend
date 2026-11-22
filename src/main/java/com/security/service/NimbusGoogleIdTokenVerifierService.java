@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class NimbusGoogleIdTokenVerifierService implements GoogleIdTokenVerifierService {
@@ -29,7 +30,7 @@ public class NimbusGoogleIdTokenVerifierService implements GoogleIdTokenVerifier
 
     private final GoogleAuthProperties properties;
     private final Clock clock;
-    private volatile JwtDecoder jwtDecoder;
+    private final AtomicReference<JwtDecoder> jwtDecoderRef;
 
     @Autowired
     public NimbusGoogleIdTokenVerifierService(
@@ -37,7 +38,7 @@ public class NimbusGoogleIdTokenVerifierService implements GoogleIdTokenVerifier
             @Autowired(required = false) @Qualifier("googleJwtDecoder") JwtDecoder jwtDecoder,
             @Autowired(required = false) Clock clock) {
         this.properties = properties;
-        this.jwtDecoder = jwtDecoder;
+        this.jwtDecoderRef = new AtomicReference<>(jwtDecoder);
         this.clock = clock != null ? clock : Clock.systemUTC();
     }
 
@@ -135,14 +136,16 @@ public class NimbusGoogleIdTokenVerifierService implements GoogleIdTokenVerifier
     }
 
     private JwtDecoder decoder() {
-        JwtDecoder current = this.jwtDecoder;
+        JwtDecoder current = this.jwtDecoderRef.get();
         if (current != null) return current;
         synchronized (this) {
-            if (this.jwtDecoder == null) {
+            current = this.jwtDecoderRef.get();
+            if (current == null) {
                 // NimbusJwtDecoder caches Google's JWKS keys internally and enforces RS256 by default.
-                this.jwtDecoder = NimbusJwtDecoder.withJwkSetUri(properties.getJwkSetUri()).build();
+                current = NimbusJwtDecoder.withJwkSetUri(properties.getJwkSetUri()).build();
+                this.jwtDecoderRef.set(current);
             }
-            return this.jwtDecoder;
+            return current;
         }
     }
 

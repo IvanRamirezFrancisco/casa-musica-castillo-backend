@@ -135,6 +135,10 @@ public class RefreshTokenService {
 
     @Transactional
     public IssuedRefreshToken issueForSession(User user, String sessionJti, HttpServletRequest request) {
+        return createRefreshToken(user, sessionJti, request);
+    }
+
+    private IssuedRefreshToken createRefreshToken(User user, String sessionJti, HttpServletRequest request) {
         String clientType = resolveClientType(request);
         String rawToken = generateRawToken();
         LocalDateTime now = LocalDateTime.now(clock);
@@ -158,11 +162,12 @@ public class RefreshTokenService {
         return new IssuedRefreshToken(rawToken, clientType);
     }
 
+    @Transactional
     public HttpHeaders issueAndAttach(JwtAuthResponse jwtResponse, User user, HttpServletRequest request) {
         HttpHeaders headers = new HttpHeaders();
         if (jwtResponse == null || jwtResponse.getAccessToken() == null) return headers;
         String jti = jwtTokenProvider.getJtiFromJWT(jwtResponse.getAccessToken());
-        IssuedRefreshToken issued = issueForSession(user, jti, request);
+        IssuedRefreshToken issued = createRefreshToken(user, jti, request);
         if (CLIENT_ANDROID.equals(issued.clientType())) {
             jwtResponse.setRefreshToken(issued.rawToken());
         } else {

@@ -880,6 +880,180 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void coversGoogleEdgeCasesLinkUnlinkValidationReauthMismatchAndUsernameSuggestion() throws Exception {
+        mvc.perform(get("/api/auth/google/config"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+
+        // Unverified email user with blank avatar logs in via Google and auto-populates both + replay fails on nonce
+        String email = TEST_EMAIL_PREFIX + "edge1@example.com";
+        String sub = "sub-edge-1";
+        User edgeUser = createGoogleUser(email, "edge.user", sub);
+        edgeUser.recordEmailVerification(null);
+        edgeUser.setAvatarUrl("");
+        users.saveAndFlush(edgeUser);
+
+        String authNonce = issueChallenge("AUTH");
+        String authId = "header.edge.auth." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(authId), eq(authNonce))).thenReturn(
+                new VerifiedGoogleIdentity(sub, email, true, "Ana", "Gómez", "Ana Gómez", "https://lh3.googleusercontent.com/edge", Instant.now().plusSeconds(300)));
+
+        MvcResult edgeAuthRes = mvc.perform(post("/api/auth/google/authenticate")
+                        .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", authId, "nonce", authNonce))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.outcome").value("AUTHENTICATED"))
+                .andReturn();
+        String edgeJwt = json.readTree(edgeAuthRes.getResponse().getContentAsString())
+                .path("data").path("jwtResponse").path("accessToken").asText();
+
+        User synced = users.findById(edgeUser.getId()).orElseThrow();
+        assertThat(synced.getAvatarUrl()).isEqualTo("https://lh3.googleusercontent.com/edge");
+        assertThat(synced.isEmailVerified()).isTrue();
+
+        // Reusing same nonce fails with 401
+        mvc.perform(post("/api/auth/google/authenticate")
+                        .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", authId, "nonce", authNonce))))
+                .andExpect(status().isUnauthorized());
+
+        // Suggest username fallback on short names & collision + malformed registration token
+        createPasswordUser(TEST_EMAIL_PREFIX + "collide@example.com", "usuario.12", "Pass!123456");
+        String regNonce = issueChallenge("AUTH");
+        String regId = "header.edge.reg." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(regId), eq(regNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-short-!@#", TEST_EMAIL_PREFIX + "newshort@example.com", true, "__", "--", null, null, Instant.now().plusSeconds(300)));
+        mvc.perform(post("/api/auth/google/authenticate")
+                        .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", regId, "nonce", regNonce))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.outcome").value("REGISTRATION_REQUIRED"))
+                .andExpect(jsonPath("$.data.profile.suggestedUsername").isString());
+
+        // Malformed registration token -> 400
+        mvc.perform(post("/api/auth/google/complete-registration")
+                        .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "registrationToken", "bad",
+                                "username", "valid.user9",
+                                "firstName", "Ana",
+                                "lastName", "Gomez",
+                                "legalAcceptance", Map.of("termsAccepted", true, "privacyAccepted", true)))))
+                .andExpect(status().isBadRequest());
+
+        // Reauthenticate with different Google subject -> 403
+        String mismatchNonce = issueChallenge("REAUTH");
+        String mismatchId = "header.edge.mismatch." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(mismatchId), eq(mismatchNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-other-person", email, true, "Other", "Person", null, null, Instant.now().plusSeconds(300)));
+        mvc.perform(post("/api/auth/google/reauthenticate")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", mismatchId, "nonce", mismatchNonce, "purpose", "UNLINK_GOOGLE"))))
+                .andExpect(status().isForbidden());
+
+        // Unlink without password -> 409, unconfirmed -> 400
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", false))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", true, "reauthToken", "unused"))))
+                .andExpect(status().isConflict());
+
+        // Configure local password for edgeUser using valid Google reauthToken, then test unlink error paths and link error paths
+        String setPwdNonce = issueChallenge("REAUTH");
+        String setPwdId = "header.edge.setpwd." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(setPwdId), eq(setPwdNonce))).thenReturn(
+                new VerifiedGoogleIdentity(sub, email, true, "Ana", "Gómez", null, null, Instant.now().plusSeconds(300)));
+        MvcResult rSetPwd = mvc.perform(post("/api/auth/google/reauthenticate")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", setPwdId, "nonce", setPwdNonce, "purpose", "SET_INITIAL_PASSWORD"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String setPwdReauth = json.readTree(rSetPwd.getResponse().getContentAsString()).path("data").path("reauthToken").asText();
+
+        mvc.perform(post("/api/users/set-initial-password")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("newPassword", "EdgePass!2026", "reauthToken", setPwdReauth))))
+                .andExpect(status().isOk());
+
+        MvcResult reloginRes = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", email, "password", "EdgePass!2026"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        edgeJwt = json.readTree(reloginRes.getResponse().getContentAsString())
+                .path("data").path("jwtResponse").path("accessToken").asText();
+
+        // Link when unconfirmed -> 400; wrong password -> 400; link when already linked -> 409
+        mvc.perform(post("/api/auth/google/link")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", "a.b.c", "nonce", "valid-nonce-1234567890", "currentPassword", "EdgePass!2026", "confirmed", false))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/google/link")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", "a.b.c", "nonce", "valid-nonce-1234567890", "currentPassword", "WrongPass!", "confirmed", true))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/google/link")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", "a.b.c", "nonce", "valid-nonce-1234567890", "currentPassword", "EdgePass!2026", "confirmed", true))))
+                .andExpect(status().isConflict());
+
+        // Unlink missing verification -> 400, wrong password -> 400, valid Google reauthToken -> 200
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", true))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", true, "currentPassword", "WrongPass!"))))
+                .andExpect(status().isBadRequest());
+
+        String unlinkNonce = issueChallenge("REAUTH");
+        String unlinkId = "header.edge.unlink." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(unlinkId), eq(unlinkNonce))).thenReturn(
+                new VerifiedGoogleIdentity(sub, email, true, "Ana", "Gómez", null, null, Instant.now().plusSeconds(300)));
+        MvcResult rUnlink = mvc.perform(post("/api/auth/google/reauthenticate")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", unlinkId, "nonce", unlinkNonce, "purpose", "UNLINK_GOOGLE"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String unlinkReauth = json.readTree(rUnlink.getResponse().getContentAsString()).path("data").path("reauthToken").asText();
+
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", true, "reauthToken", unlinkReauth))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(false));
+
+        // Second unlink when no link remains -> 404
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + edgeJwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmed", true, "currentPassword", "EdgePass!2026"))))
+                .andExpect(status().isNotFound());
+    }
+
     private User createPasswordUser(String email, String username, String rawPassword) {
         Role role = roles.findByName("ROLE_USER").orElseThrow();
         User u = new User();

@@ -193,6 +193,7 @@ public class VerificationService {
         if (material != null) {
             try {
                 String[] payload = crypto.open(material[2], material[1]).split(":", 2);
+                if (payload.length < 2) throw new IllegalStateException("Invalid activation payload");
                 User recipient = new User(); recipient.setEmail(material[0]); recipient.setFirstName("");
                 outcome = emailService.deliverActivation(recipient, payload[0], payload[1]);
             } catch (RuntimeException ex) {

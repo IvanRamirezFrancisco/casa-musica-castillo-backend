@@ -25,12 +25,15 @@ public class VerificationRequestLimit {
             case "resend-activation" -> policy.resendIp;
             default -> policy.verifyIp;
         };
-        check(operation, addresses.resolve(request), maximum);
+        checkInternal(operation, addresses.resolve(request), maximum);
     }
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void check(String operation, String address, int maximum) {
+        checkInternal(operation, address, maximum);
+    }
+    private void checkInternal(String operation, String address, int maximum) {
         if (!reserve(operation, address, maximum, 300))
-            throw new ActivationLimitException(300 - Math.floorMod(clock.instant().getEpochSecond(), 300));
+            throw new ActivationLimitException(300L - Math.floorMod(clock.instant().getEpochSecond(), 300L));
     }
     /** Caller groups recipient/global reservations with challenge creation in one transaction. */
     public boolean reserve(String operation, String address, int maximum, int seconds) {

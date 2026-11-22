@@ -166,6 +166,51 @@ class GoogleIdTokenVerifierServiceTest {
                 .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
+    @Test
+    void rejectsMalformedTokenEmptyNonceMissingClaimsAndInitializesLazyDecoder() throws Exception {
+        assertUnauthorized(() -> verifier.verify(null, "nonce-value-1234567890"));
+        assertUnauthorized(() -> verifier.verify("not-a-jwt", "nonce-value-1234567890"));
+        assertUnauthorized(() -> verifier.verify("a.b.c", "   "));
+
+        String missingAud = signToken(trustedKey, new JWTClaimsSet.Builder()
+                .issuer("https://accounts.google.com")
+                .subject("sub-1")
+                .expirationTime(Date.from(FIXED_NOW.plusSeconds(120)))
+                .claim("email", "a@example.com")
+                .claim("email_verified", true)
+                .claim("nonce", "nonce-value-1234567890")
+                .build());
+        assertUnauthorized(() -> verifier.verify(missingAud, "nonce-value-1234567890"));
+
+        String missingExp = signToken(trustedKey, new JWTClaimsSet.Builder()
+                .issuer("https://accounts.google.com")
+                .subject("sub-1")
+                .audience(WEB_CLIENT_ID)
+                .claim("email", "a@example.com")
+                .claim("email_verified", true)
+                .claim("nonce", "nonce-value-1234567890")
+                .build());
+        assertUnauthorized(() -> verifier.verify(missingExp, "nonce-value-1234567890"));
+
+        String longName = "A".repeat(120);
+        String longClaimsToken = signToken(trustedKey, baseClaims()
+                .claim("given_name", longName)
+                .claim("family_name", longName)
+                .claim("name", longName)
+                .claim("picture", "   ")
+                .build());
+        var truncated = verifier.verify(longClaimsToken, "nonce-value-1234567890");
+        assertThat(truncated.givenName()).hasSize(50);
+        assertThat(truncated.familyName()).hasSize(50);
+        assertThat(truncated.fullName()).hasSize(100);
+        assertThat(truncated.pictureUrl()).isNull();
+
+        properties.setJwkSetUri("https://127.0.0.1:1/certs");
+        NimbusGoogleIdTokenVerifierService lazyVerifier = new NimbusGoogleIdTokenVerifierService(properties, null, null);
+        String anyValidShape = signToken(trustedKey, baseClaims().build());
+        assertUnauthorized(() -> lazyVerifier.verify(anyValidShape, "nonce-value-1234567890"));
+    }
+
     private static JWTClaimsSet.Builder baseClaims() {
         return new JWTClaimsSet.Builder()
                 .issuer("https://accounts.google.com")
