@@ -121,6 +121,16 @@ public class EmailService {
         return deliverOnce(user, AuthMailContent.passwordChanged(user.getFirstName()),
             "Se actualizó la contraseña de tu cuenta — Casa de Música Castillo", "PASSWORD_CHANGED");
     }
+
+    public ActivationDelivery deliverGoogleLinked(User user, String occurredAtLabel) {
+        return deliverOnce(user, AuthMailContent.googleLinked(user.getFirstName(), occurredAtLabel),
+            "Se vinculó Google como método de acceso — Casa de Música Castillo", "GOOGLE_LINKED");
+    }
+
+    public ActivationDelivery deliverGoogleUnlinked(User user, String occurredAtLabel) {
+        return deliverOnce(user, AuthMailContent.googleUnlinked(user.getFirstName(), occurredAtLabel),
+            "Se desvinculó Google de tu cuenta — Casa de Música Castillo", "GOOGLE_UNLINKED");
+    }
     private ActivationDelivery deliverOnce(User user, AuthMailContent content, String subject, String category) {
         if (hasValue(brevoApiKey)) {
             HttpHeaders headers = new HttpHeaders();

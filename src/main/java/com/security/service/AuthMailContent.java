@@ -43,6 +43,28 @@ record AuthMailContent(String html, String text) {
                 "Si realizaste este cambio, no necesitas hacer nada más.\n\n¿No reconoces esta actividad?\n" + warning);
     }
 
+    static AuthMailContent googleLinked(String name, String occurredAtLabel) {
+        String when = (occurredAtLabel == null || occurredAtLabel.isBlank()) ? "recientemente" : occurredAtLabel.strip();
+        String message = "Te confirmamos que el " + when
+                + " se vinculó una cuenta de Google como método de acceso a tu perfil de Casa de Música Castillo.";
+        String extra = "<p style=\"margin:0 0 28px;line-height:1.65\">Tu correo electrónico principal no cambió. Ahora puedes iniciar sesión con tu método habitual o con Google. Si realizaste este cambio, no necesitas hacer nada más.</p>";
+        String warning = "Si no autorizaste esta vinculación, ingresa a Seguridad de la cuenta para desvincular Google, cambia tu contraseña, revisa tus sesiones activas y comunícate con soporte.";
+        return passwordLayout(name, "Se vinculó Google a tu cuenta", message, extra,
+                "¿No reconoces esta actividad?", warning,
+                "Tu correo electrónico principal no cambió.\n\n¿No reconoces esta actividad?\n" + warning);
+    }
+
+    static AuthMailContent googleUnlinked(String name, String occurredAtLabel) {
+        String when = (occurredAtLabel == null || occurredAtLabel.isBlank()) ? "recientemente" : occurredAtLabel.strip();
+        String message = "Te confirmamos que el " + when
+                + " se desvinculó Google como método de acceso de tu cuenta de Casa de Música Castillo.";
+        String extra = "<p style=\"margin:0 0 28px;line-height:1.65\">Continuarás iniciando sesión con tu correo y contraseña local. Si realizaste este cambio, no necesitas hacer nada más.</p>";
+        String warning = "Si no autorizaste esta desvinculación, cambia tu contraseña de inmediato, cierra las sesiones activas que no reconozcas y comunícate con soporte.";
+        return passwordLayout(name, "Se desvinculó Google de tu cuenta", message, extra,
+                "¿No reconoces esta actividad?", warning,
+                "Continuarás iniciando sesión con tu correo y contraseña local.\n\n¿No reconoces esta actividad?\n" + warning);
+    }
+
     static AuthMailContent passwordReset(String name, String url, String expiryNote) {
         String safeUrl = HtmlUtils.htmlEscape(url);
         String action = """

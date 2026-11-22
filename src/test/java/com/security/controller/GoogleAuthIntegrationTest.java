@@ -2,6 +2,7 @@ package com.security.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.security.config.GoogleAuthProperties;
 import com.security.config.MercadoPagoConfiguration;
 import com.security.entity.ExternalIdentity;
 import com.security.entity.Role;
@@ -16,6 +17,7 @@ import com.security.service.EmailService;
 import com.security.service.GoogleAuthService;
 import com.security.service.GoogleIdTokenVerifierService;
 import com.security.service.GoogleIdTokenVerifierService.VerifiedGoogleIdentity;
+import com.security.service.SecurityMailQueue;
 import com.security.support.LocalPostgresIntegrationTest;
 import com.warrenstrange.googleauth.GoogleAuthenticator;
 import org.junit.jupiter.api.AfterEach;
@@ -34,15 +36,23 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
@@ -60,7 +70,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "app.security.google.web-client-id=1234567890-web.apps.googleusercontent.com",
         "app.legal.registration.terms-version=v2026-test",
         "app.legal.registration.privacy-version=v2026-test",
-        "cors.allowed-origins=http://localhost:4200,capacitor://localhost"
+        "cors.allowed-origins=http://localhost:4200,capacitor://localhost",
+        "spring.datasource.hikari.maximum-pool-size=8"
 })
 class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
     private static final String TEST_EMAIL_PREFIX = "gitest.";
@@ -76,6 +87,8 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired ActiveSessionRepository activeSessions;
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired BackupCodeService backupCodeService;
+    @Autowired SecurityMailQueue securityMailQueue;
+    @Autowired GoogleAuthProperties googleAuthProperties;
 
     @MockitoBean EmailService emailService;
     @MockitoBean MercadoPagoConfiguration mercadoPagoConfiguration;
@@ -83,6 +96,9 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
 
     @BeforeEach
     void setupRolesAndCleanState() {
+        googleAuthProperties.setAllowLegacyUnauthenticatedChallenge(true);
+        when(emailService.deliverGoogleLinked(any(), anyString())).thenReturn(EmailService.ActivationDelivery.ACCEPTED);
+        when(emailService.deliverGoogleUnlinked(any(), anyString())).thenReturn(EmailService.ActivationDelivery.ACCEPTED);
         ensureRole("ROLE_USER");
         cleanTestRows();
     }
@@ -119,6 +135,35 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         }
         jdbc.update("DELETE FROM auth.google_auth_flows");
         jdbc.update("DELETE FROM auth.consumed_google_tokens");
+        jdbc.update("DELETE FROM auth.activation_request_limits");
+    }
+
+    private String loginPassword(String email, String password) throws Exception {
+        MvcResult result = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", email, "password", password))))
+                .andExpect(status().isOk())
+                .andReturn();
+        return json.readTree(result.getResponse().getContentAsString())
+                .path("data").path("jwtResponse").path("accessToken").asText();
+    }
+
+    private String issueAuthenticatedChallenge(String jwt, String purpose) throws Exception {
+        MvcResult result = mvc.perform(post("/api/auth/google/authenticated-challenge")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("purpose", purpose))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.nonce").isString())
+                .andReturn();
+        return json.readTree(result.getResponse().getContentAsString()).path("data").path("nonce").asText();
+    }
+
+    private static String sha256Hex(String raw) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static String remoteIp() {
@@ -1052,6 +1097,662 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("confirmed", true, "currentPassword", "EdgePass!2026"))))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void twoStepLinkingWithDifferentUnusedGoogleEmailPreservesPrimaryEmailEnablesDualLoginAndSendsSecurityMail() throws Exception {
+        String localEmail = TEST_EMAIL_PREFIX + "local.a@example.com";
+        String googleEmail = TEST_EMAIL_PREFIX + "external.google.b@gmail.com";
+        String sub = "sub-two-step-a-" + SEQ.incrementAndGet();
+        String pass = "TwoStep!2026";
+        User userA = createPasswordUser(localEmail, "twostep.a", pass);
+        long usersBeforeLink = users.count();
+        String originalHash = userA.getPassword();
+
+        String jwt = loginPassword(localEmail, pass);
+        String nonce = issueAuthenticatedChallenge(jwt, "LINK");
+        String idToken = "header.twostep.ok." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(idToken), eq(nonce))).thenReturn(
+                new VerifiedGoogleIdentity(sub, googleEmail, true, "Iván", "Castillo", "Iván Castillo",
+                        "https://lh3.googleusercontent.com/avatar-a", Instant.now().plusSeconds(300)));
+
+        MvcResult prepRes = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", idToken,
+                                "nonce", nonce,
+                                "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.confirmationToken").isString())
+                .andExpect(jsonPath("$.data.currentAccountEmail").value(localEmail))
+                .andExpect(jsonPath("$.data.googleEmail").value(googleEmail))
+                .andExpect(jsonPath("$.data.googleEmailVerified").value(true))
+                .andExpect(jsonPath("$.data.sameEmail").value(false))
+                .andReturn();
+
+        String confirmToken = json.readTree(prepRes.getResponse().getContentAsString())
+                .path("data").path("confirmationToken").asText();
+
+        // Step 1 must NOT persist external_identities yet or store raw tokens in DB
+        assertThat(externalIdentities.existsByUserIdAndProvider(userA.getId(), "GOOGLE")).isFalse();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM auth.google_auth_flows WHERE flow_type = 'LINK_CONFIRM' AND user_id = ? AND token_hash = ? AND consumed_at IS NULL",
+                Integer.class, userA.getId(), sha256Hex(confirmToken))).isEqualTo(1);
+
+        // Step 2 without confirmed=true is rejected 400 and leaves confirmation pending
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmToken, "confirmed", false))))
+                .andExpect(status().isBadRequest());
+
+        // Step 2 confirmed persists link without changing primary email, password or user count
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmToken, "confirmed", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(true))
+                .andExpect(jsonPath("$.data.googleEmail").value(googleEmail))
+                .andExpect(jsonPath("$.data.canUnlinkGoogle").value(true));
+
+        User reloaded = users.findById(userA.getId()).orElseThrow();
+        assertThat(reloaded.getEmail()).isEqualTo(localEmail);
+        assertThat(reloaded.getPassword()).isEqualTo(originalHash);
+        assertThat(users.count()).isEqualTo(usersBeforeLink);
+        assertThat(externalIdentities.findByUserIdAndProvider(userA.getId(), "GOOGLE"))
+                .isPresent()
+                .get()
+                .satisfies(ext -> {
+                    assertThat(ext.getProviderSubject()).isEqualTo(sub);
+                    assertThat(ext.getProviderEmail()).isEqualTo(googleEmail);
+                });
+
+        // Reusing confirmationToken fails
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmToken, "confirmed", true))))
+                .andExpect(status().isBadRequest());
+
+        // Security email queued & dispatched to primary email without secrets
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM auth.security_mail_outbox WHERE user_id = ? AND purpose = 'GOOGLE_LINKED' AND state = 'PENDING'",
+                Integer.class, userA.getId())).isEqualTo(1);
+        securityMailQueue.dispatchPending();
+        verify(emailService).deliverGoogleLinked(argThat(u -> localEmail.equals(u.getEmail())), anyString());
+
+        // Both traditional login and Google login resolve to the exact same user_id
+        mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", localEmail, "password", pass))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.jwtResponse.user.id").value(userA.getId()));
+
+        JsonNode googleLogin = authenticateGoogle(
+                new VerifiedGoogleIdentity(sub, googleEmail, true, "Iván", "Castillo", null, null, Instant.now().plusSeconds(300)),
+                "ANDROID");
+        assertThat(googleLogin.path("outcome").asText()).isEqualTo("AUTHENTICATED");
+        assertThat(googleLogin.path("jwtResponse").path("user").path("id").asLong()).isEqualTo(userA.getId());
+    }
+
+    @Test
+    void twoStepLinkingSupportsSameEmailAndCancellationLeavesDatabaseUnchanged() throws Exception {
+        String email = TEST_EMAIL_PREFIX + "same.cancel@example.com";
+        String pass = "SameCancel!2026";
+        User user = createPasswordUser(email, "same.cancel", pass);
+        long usersBefore = users.count();
+        String jwt = loginPassword(email, pass);
+
+        // 1. Prepare then cancel leaves zero external_identities and invalidates confirmation token
+        String cancelNonce = issueAuthenticatedChallenge(jwt, "LINK");
+        String cancelIdToken = "header.cancel.ok." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(cancelIdToken), eq(cancelNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-cancel-1", email, true, "Ana", "Paz", null, null, Instant.now().plusSeconds(300)));
+
+        MvcResult prepCancel = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", cancelIdToken,
+                                "nonce", cancelNonce,
+                                "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sameEmail").value(true))
+                .andReturn();
+        String cancelledToken = json.readTree(prepCancel.getResponse().getContentAsString())
+                .path("data").path("confirmationToken").asText();
+
+        mvc.perform(post("/api/auth/google/link/cancel")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", cancelledToken))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cancelled").value(true));
+
+        assertThat(externalIdentities.existsByUserIdAndProvider(user.getId(), "GOOGLE")).isFalse();
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", cancelledToken, "confirmed", true))))
+                .andExpect(status().isBadRequest());
+
+        // 2. Re-prepare with fresh token and confirm same-email Google identity
+        String okNonce = issueAuthenticatedChallenge(jwt, "LINK");
+        String okIdToken = "header.same.ok." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(okIdToken), eq(okNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-same-ok-1", email, true, "Ana", "Paz", null, null, Instant.now().plusSeconds(300)));
+
+        MvcResult prepOk = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", okIdToken,
+                                "nonce", okNonce,
+                                "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sameEmail").value(true))
+                .andReturn();
+        String okToken = json.readTree(prepOk.getResponse().getContentAsString())
+                .path("data").path("confirmationToken").asText();
+
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", okToken, "confirmed", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(true))
+                .andExpect(jsonPath("$.data.googleEmail").value(email));
+        assertThat(users.count()).isEqualTo(usersBefore);
+        assertThat(users.findByEmailIgnoreCase(email)).contains(user);
+
+        // Case D: same user attempting to prepare link again with same or another Google identity gets 409
+        String dupNonce = issueAuthenticatedChallenge(jwt, "LINK");
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.case.d." + SEQ.incrementAndGet(),
+                                "nonce", dupNonce,
+                                "currentPassword", pass))))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void rejectsCaseBGoogleEmailBelongingToAnotherLocalUserAcrossPrepareConfirmAndLegacyLink() throws Exception {
+        String emailA = TEST_EMAIL_PREFIX + "linker.a@example.com";
+        String emailB = TEST_EMAIL_PREFIX + "victim.b@example.com";
+        String passA = "PassA!2026";
+        String passB = "PassB!2026";
+        User userA = createPasswordUser(emailA, "linker.a", passA);
+        User userB = createPasswordUser(emailB, "victim.b", passB);
+        String hashB = userB.getPassword();
+        long initialUsers = users.count();
+
+        String jwtA = loginPassword(emailA, passA);
+
+        // 1. Two-step prepare rejects Case B with 409 and reveals no info about userB
+        String boundNonce = issueAuthenticatedChallenge(jwtA, "LINK");
+        String tok1 = "header.caseb.prep." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tok1), eq(boundNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-fresh-caseb-1", emailB.toUpperCase(java.util.Locale.ROOT), true,
+                        "B", "Owner", null, null, Instant.now().plusSeconds(300)));
+
+        MvcResult prepConflict = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tok1, "nonce", boundNonce, "currentPassword", passA))))
+                .andExpect(status().isConflict())
+                .andReturn();
+        assertThat(prepConflict.getResponse().getContentAsString()).doesNotContain("victim.b");
+        assertThat(externalIdentities.existsByUserIdAndProvider(userA.getId(), "GOOGLE")).isFalse();
+        assertThat(externalIdentities.existsByUserIdAndProvider(userB.getId(), "GOOGLE")).isFalse();
+
+        // 1b. Case C on /link/prepare: Google sub already linked to another user -> 409
+        createGoogleUser(TEST_EMAIL_PREFIX + "holder.c@example.com", "holder.c", "sub-casec-owned");
+        String caseCNonce = issueAuthenticatedChallenge(jwtA, "LINK");
+        String tokCaseC = "header.casec.prep." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tokCaseC), eq(caseCNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-casec-owned", TEST_EMAIL_PREFIX + "alias.c@gmail.com", true,
+                        "C", "Holder", null, null, Instant.now().plusSeconds(300)));
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tokCaseC, "nonce", caseCNonce, "currentPassword", passA))))
+                .andExpect(status().isConflict());
+
+        // 2. Legacy v1.3 /link also rejects Case B with 409
+        String legacyNonce = issueChallenge("LINK");
+        String tok2 = "header.caseb.leg." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tok2), eq(legacyNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-fresh-caseb-2", emailB, true, "B", "Owner", null, null, Instant.now().plusSeconds(300)));
+
+        mvc.perform(post("/api/auth/google/link")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", tok2,
+                                "nonce", legacyNonce,
+                                "currentPassword", passA,
+                                "confirmed", true))))
+                .andExpect(status().isConflict());
+
+        // 3. Late collision between prepare and confirm (user registers with emailB after prepare) -> confirm rejects 409
+        String lateEmail = TEST_EMAIL_PREFIX + "late.owner@example.com";
+        String lateNonce = issueAuthenticatedChallenge(jwtA, "LINK");
+        String tok3 = "header.caseb.late." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tok3), eq(lateNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-late-caseb-3", lateEmail, true, "Late", "Owner", null, null, Instant.now().plusSeconds(300)));
+
+        MvcResult prepLate = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tok3, "nonce", lateNonce, "currentPassword", passA))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String lateConfirmToken = json.readTree(prepLate.getResponse().getContentAsString())
+                .path("data").path("confirmationToken").asText();
+
+        createPasswordUser(lateEmail, "late.owner", "LatePass!2026");
+
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", lateConfirmToken, "confirmed", true))))
+                .andExpect(status().isConflict());
+
+        assertThat(users.count()).isEqualTo(initialUsers + 2);
+        assertThat(users.findById(userA.getId()).orElseThrow().getEmail()).isEqualTo(emailA);
+        assertThat(users.findById(userB.getId()).orElseThrow().getPassword()).isEqualTo(hashB);
+        assertThat(externalIdentities.existsByUserIdAndProvider(userA.getId(), "GOOGLE")).isFalse();
+    }
+
+    @Test
+    void enforcesNoncePurposeUserSessionBindingExpiryAndMfaOnPrepareAndConfirm() throws Exception {
+        String emailA = TEST_EMAIL_PREFIX + "sec.a@example.com";
+        String emailB = TEST_EMAIL_PREFIX + "sec.b@example.com";
+        String pass = "SecBind!2026";
+        User userA = createPasswordUser(emailA, "sec.a", pass);
+        String totpSecret = "JBSWY3DPEHPK3PXP";
+        userA.setGoogleAuthSecret(totpSecret);
+        userA.setGoogleAuthEnabled(true);
+        userA.setTwoFactorEnabled(true);
+        users.saveAndFlush(userA);
+        User userB = createPasswordUser(emailB, "sec.b", pass);
+
+        // Login userA across TWO distinct sessions
+        Instant totpRef = Instant.now();
+        MvcResult loginRes1 = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", emailA, "password", pass))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String pre1 = json.readTree(loginRes1.getResponse().getContentAsString()).path("data").path("preAuthChallenge").asText();
+        String code1 = String.format("%06d",
+                new GoogleAuthenticator().getTotpPassword(totpSecret, totpRef.minusSeconds(30).toEpochMilli()));
+        String jwtA1 = json.readTree(mvc.perform(post("/api/2fa/verify")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("preAuthChallenge", pre1, "method", "GOOGLE_AUTHENTICATOR", "code", code1))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("accessToken").asText();
+
+        MvcResult loginRes2 = mvc.perform(post("/api/auth/login")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("email", emailA, "password", pass))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String pre2 = json.readTree(loginRes2.getResponse().getContentAsString()).path("data").path("preAuthChallenge").asText();
+        String code2 = String.format("%06d",
+                new GoogleAuthenticator().getTotpPassword(totpSecret, totpRef.toEpochMilli()));
+        String jwtA2 = json.readTree(mvc.perform(post("/api/2fa/verify")
+                        .header("X-Client-Platform", "ANDROID")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("preAuthChallenge", pre2, "method", "GOOGLE_AUTHENTICATOR", "code", code2))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("accessToken").asText();
+
+        String jwtB = loginPassword(emailB, pass);
+
+        // Unauthenticated cannot call /authenticated-challenge
+        mvc.perform(post("/api/auth/google/authenticated-challenge")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"purpose\":\"LINK\"}"))
+                .andExpect(status().isUnauthorized());
+
+        // Cross-purpose AUTH nonce rejected on /link/prepare & REAUTH nonce rejected on /link/prepare
+        String authNonce = issueChallenge("AUTH");
+        String reauthBoundNonce = issueAuthenticatedChallenge(jwtA1, "REAUTH");
+        String validTotp = String.format("%06d",
+                new GoogleAuthenticator().getTotpPassword(totpSecret, totpRef.plusSeconds(30).toEpochMilli()));
+
+        // Wrong MFA code rejected 400
+        String linkNonceA1 = issueAuthenticatedChallenge(jwtA1, "LINK");
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.mfa.bad",
+                                "nonce", linkNonceA1,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", "000000".equals(validTotp) ? "999999" : "000000"))))
+                .andExpect(status().isBadRequest());
+
+        // Unbound /challenge(LINK) rejected on /link/prepare (even during legacy transition)
+        String unboundLegacyNonce = issueChallenge("LINK");
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.unbound",
+                                "nonce", unboundLegacyNonce,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isUnauthorized());
+
+        // AUTH nonce & REAUTH nonce rejected on /link/prepare
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.cross.auth",
+                                "nonce", authNonce,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.cross.reauth",
+                                "nonce", reauthBoundNonce,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isUnauthorized());
+
+        // User B cannot consume User A's bound nonce; User A's Session 2 cannot consume Session 1's bound nonce
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.cross.user",
+                                "nonce", linkNonceA1,
+                                "currentPassword", pass))))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA2)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.cross.session",
+                                "nonce", linkNonceA1,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isUnauthorized());
+
+        // Expired nonce rejected 401
+        String expiredNonce = issueAuthenticatedChallenge(jwtA1, "LINK");
+        jdbc.update("UPDATE auth.google_auth_flows SET expires_at = ? WHERE token_hash = ?",
+                LocalDateTime.now().minusMinutes(1), sha256Hex(expiredNonce));
+        mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", "header.expired",
+                                "nonce", expiredNonce,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isUnauthorized());
+
+        // User A's original Session 1 CAN still use linkNonceA1 to prepare!
+        String okToken = "header.prepare.a1." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(okToken), eq(linkNonceA1))).thenReturn(
+                new VerifiedGoogleIdentity("sub-bind-a1", TEST_EMAIL_PREFIX + "newbind@gmail.com", true,
+                        "Sec", "A", null, null, Instant.now().plusSeconds(300)));
+        MvcResult prepA1 = mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", okToken,
+                                "nonce", linkNonceA1,
+                                "currentPassword", pass,
+                                "mfaMethod", "GOOGLE_AUTHENTICATOR",
+                                "mfaCode", validTotp))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String confirmTokenA1 = json.readTree(prepA1.getResponse().getContentAsString())
+                .path("data").path("confirmationToken").asText();
+
+        // User B & User A's Session 2 cannot confirm using Session 1's confirmationToken
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwtB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmTokenA1, "confirmed", true))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwtA2)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmTokenA1, "confirmed", true))))
+                .andExpect(status().isBadRequest());
+        assertThat(externalIdentities.existsByUserIdAndProvider(userA.getId(), "GOOGLE")).isFalse();
+        assertThat(externalIdentities.existsByUserIdAndProvider(userB.getId(), "GOOGLE")).isFalse();
+
+        // Session 1 confirms successfully
+        mvc.perform(post("/api/auth/google/link/confirm")
+                        .header("Authorization", "Bearer " + jwtA1)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("confirmationToken", confirmTokenA1, "confirmed", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(true));
+    }
+
+    @Test
+    void concurrentConfirmAttemptsProduceSingleWinnerAndNoDuplicatesAcrossSameTokenOrSameGoogleSubject() throws Exception {
+        String emailA = TEST_EMAIL_PREFIX + "conc.a@example.com";
+        String emailB = TEST_EMAIL_PREFIX + "conc.b@example.com";
+        String pass = "Concurrent!2026";
+        User userA = createPasswordUser(emailA, "conc.a", pass);
+        User userB = createPasswordUser(emailB, "conc.b", pass);
+
+        String jwtA = loginPassword(emailA, pass);
+        String jwtB = loginPassword(emailB, pass);
+
+        // 1. Two users prepare different idTokens for the SAME Google subject concurrently, then race on confirm
+        String sharedSub = "sub-concurrent-shared-" + SEQ.incrementAndGet();
+        String sharedGoogleEmail = TEST_EMAIL_PREFIX + "shared.g@gmail.com";
+
+        String nonceA = issueAuthenticatedChallenge(jwtA, "LINK");
+        String tokA = "header.conc.a." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tokA), eq(nonceA))).thenReturn(
+                new VerifiedGoogleIdentity(sharedSub, sharedGoogleEmail, true, "C", "A", null, null, Instant.now().plusSeconds(300)));
+        String confirmA = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtA)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tokA, "nonce", nonceA, "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("confirmationToken").asText();
+
+        String nonceB = issueAuthenticatedChallenge(jwtB, "LINK");
+        String tokB = "header.conc.b." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tokB), eq(nonceB))).thenReturn(
+                new VerifiedGoogleIdentity(sharedSub, sharedGoogleEmail, true, "C", "B", null, null, Instant.now().plusSeconds(300)));
+        String confirmB = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tokB, "nonce", nonceB, "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("confirmationToken").asText();
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch go = new CountDownLatch(1);
+            Future<Integer> f1 = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return mvc.perform(post("/api/auth/google/link/confirm")
+                                .header("Authorization", "Bearer " + jwtA)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(Map.of("confirmationToken", confirmA, "confirmed", true))))
+                        .andReturn().getResponse().getStatus();
+            });
+            Future<Integer> f2 = pool.submit(() -> {
+                ready.countDown();
+                go.await();
+                return mvc.perform(post("/api/auth/google/link/confirm")
+                                .header("Authorization", "Bearer " + jwtB)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(Map.of("confirmationToken", confirmB, "confirmed", true))))
+                        .andReturn().getResponse().getStatus();
+            });
+            ready.await();
+            go.countDown();
+            List<Integer> statuses = List.of(f1.get(), f2.get());
+            assertThat(statuses).containsExactlyInAnyOrder(200, 409);
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM auth.external_identities WHERE provider = 'GOOGLE' AND provider_subject = ?",
+                    Integer.class, sharedSub)).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // 2. Two concurrent confirm calls by the SAME user with the SAME confirmationToken
+        User userC = createPasswordUser(TEST_EMAIL_PREFIX + "conc.c@example.com", "conc.c", pass);
+        String jwtC = loginPassword(userC.getEmail(), pass);
+        String nonceC = issueAuthenticatedChallenge(jwtC, "LINK");
+        String tokC = "header.conc.c." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(tokC), eq(nonceC))).thenReturn(
+                new VerifiedGoogleIdentity("sub-conc-c-" + SEQ.incrementAndGet(), TEST_EMAIL_PREFIX + "conc.cg@gmail.com",
+                        true, "C", "C", null, null, Instant.now().plusSeconds(300)));
+        String confirmC = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
+                        .header("Authorization", "Bearer " + jwtC)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("idToken", tokC, "nonce", nonceC, "currentPassword", pass))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("confirmationToken").asText();
+
+        var pool2 = Executors.newFixedThreadPool(2);
+        try {
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch go = new CountDownLatch(1);
+            Future<Integer> c1 = pool2.submit(() -> {
+                ready.countDown();
+                go.await();
+                return mvc.perform(post("/api/auth/google/link/confirm")
+                                .header("Authorization", "Bearer " + jwtC)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(Map.of("confirmationToken", confirmC, "confirmed", true))))
+                        .andReturn().getResponse().getStatus();
+            });
+            Future<Integer> c2 = pool2.submit(() -> {
+                ready.countDown();
+                go.await();
+                return mvc.perform(post("/api/auth/google/link/confirm")
+                                .header("Authorization", "Bearer " + jwtC)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(Map.of("confirmationToken", confirmC, "confirmed", true))))
+                        .andReturn().getResponse().getStatus();
+            });
+            ready.await();
+            go.countDown();
+            List<Integer> statuses = List.of(c1.get(), c2.get());
+            assertThat(statuses.stream().filter(s -> s == 200).count()).isEqualTo(1);
+            assertThat(statuses.stream().filter(s -> s == 400).count()).isEqualTo(1);
+            assertThat(externalIdentities.existsByUserIdAndProvider(userC.getId(), "GOOGLE")).isTrue();
+        } finally {
+            pool2.shutdownNow();
+        }
+    }
+
+    @Test
+    void preservesPublishedAndroid13LegacyFlowDuringTransitionBlocksWhenDisabledAndToleratesMailFailure() throws Exception {
+        String email = TEST_EMAIL_PREFIX + "legacy.v13@example.com";
+        String pass = "LegacyV13!2026";
+        User user = createPasswordUser(email, "legacy.v13", pass);
+        String jwt = loginPassword(email, pass);
+
+        // Simulate Brevo failure during link and unlink: transaction & persistence must succeed
+        when(emailService.deliverGoogleLinked(any(), anyString())).thenReturn(EmailService.ActivationDelivery.UNKNOWN);
+        when(emailService.deliverGoogleUnlinked(any(), anyString())).thenReturn(EmailService.ActivationDelivery.FAILED);
+
+        // Published Android v1.3 calls public /challenge(LINK) + /link
+        String legacyLinkNonce = issueChallenge("LINK");
+        String legacyLinkToken = "header.v13.link." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(legacyLinkToken), eq(legacyLinkNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-v13-legacy-1", TEST_EMAIL_PREFIX + "v13.g@gmail.com",
+                        true, "V13", "Tester", null, null, Instant.now().plusSeconds(300)));
+
+        mvc.perform(post("/api/auth/google/link")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", legacyLinkToken,
+                                "nonce", legacyLinkNonce,
+                                "currentPassword", pass,
+                                "confirmed", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(true));
+
+        securityMailQueue.dispatchPending();
+        assertThat(externalIdentities.existsByUserIdAndProvider(user.getId(), "GOOGLE")).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT state FROM auth.security_mail_outbox WHERE user_id = ? AND purpose = 'GOOGLE_LINKED'",
+                String.class, user.getId())).isEqualTo("UNKNOWN");
+
+        // Published Android v1.3 calls public /challenge(REAUTH) + /reauthenticate + /unlink
+        String legacyReauthNonce = issueChallenge("REAUTH");
+        String legacyReauthToken = "header.v13.reauth." + SEQ.incrementAndGet();
+        when(googleVerifier.verify(eq(legacyReauthToken), eq(legacyReauthNonce))).thenReturn(
+                new VerifiedGoogleIdentity("sub-v13-legacy-1", TEST_EMAIL_PREFIX + "v13.g@gmail.com",
+                        true, "V13", "Tester", null, null, Instant.now().plusSeconds(300)));
+        String reauthToken = json.readTree(mvc.perform(post("/api/auth/google/reauthenticate")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "idToken", legacyReauthToken,
+                                "nonce", legacyReauthNonce,
+                                "purpose", "UNLINK_GOOGLE"))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("reauthToken").asText();
+
+        mvc.perform(post("/api/auth/google/unlink")
+                        .header("Authorization", "Bearer " + jwt)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("reauthToken", reauthToken, "confirmed", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.googleLinked").value(false));
+
+        securityMailQueue.dispatchPending();
+        assertThat(externalIdentities.existsByUserIdAndProvider(user.getId(), "GOOGLE")).isFalse();
+        verify(emailService).deliverGoogleUnlinked(argThat(u -> email.equals(u.getEmail())), anyString());
+
+        // When transition flag is turned off, public /challenge rejects LINK/REAUTH with 401
+        googleAuthProperties.setAllowLegacyUnauthenticatedChallenge(false);
+        try {
+            mvc.perform(post("/api/auth/google/challenge")
+                            .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"purpose\":\"LINK\"}"))
+                    .andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/auth/google/challenge")
+                            .with(req -> { req.setRemoteAddr(remoteIp()); return req; })
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"purpose\":\"REAUTH\"}"))
+                    .andExpect(status().isUnauthorized());
+            // AUTH continues working
+            assertThat(issueChallenge("AUTH")).isNotBlank();
+        } finally {
+            googleAuthProperties.setAllowLegacyUnauthenticatedChallenge(true);
+        }
     }
 
     private User createPasswordUser(String email, String username, String rawPassword) {

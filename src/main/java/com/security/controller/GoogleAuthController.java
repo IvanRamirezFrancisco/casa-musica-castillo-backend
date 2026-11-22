@@ -1,10 +1,14 @@
 package com.security.controller;
 
+import com.security.dto.request.AuthenticatedGoogleChallengeRequest;
+import com.security.dto.request.CancelLinkGoogleRequest;
 import com.security.dto.request.CompleteGoogleRegistrationRequest;
+import com.security.dto.request.ConfirmLinkGoogleRequest;
 import com.security.dto.request.GoogleAuthenticateRequest;
 import com.security.dto.request.GoogleChallengeRequest;
 import com.security.dto.request.GoogleReauthRequest;
 import com.security.dto.request.LinkGoogleRequest;
+import com.security.dto.request.PrepareLinkGoogleRequest;
 import com.security.dto.request.UnlinkGoogleRequest;
 import com.security.dto.response.ApiResponse;
 import com.security.security.CurrentUser;
@@ -40,6 +44,17 @@ public class GoogleAuthController {
         return ResponseEntity.ok(new ApiResponse(true, "Desafío generado", googleAuthService.issueChallenge(purpose, request)));
     }
 
+    @PostMapping("/authenticated-challenge")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse> createAuthenticatedChallenge(
+            @CurrentUser UserPrincipal principal,
+            @Valid @RequestBody AuthenticatedGoogleChallengeRequest body,
+            HttpServletRequest request) {
+        String sessionJti = (String) request.getAttribute("authenticatedJti");
+        return ResponseEntity.ok(new ApiResponse(true, "Desafío autenticado generado",
+                googleAuthService.issueAuthenticatedChallenge(principal.getId(), sessionJti, body.purpose())));
+    }
+
     @PostMapping("/authenticate")
     public ResponseEntity<ApiResponse> authenticate(
             @Valid @RequestBody GoogleAuthenticateRequest body,
@@ -69,6 +84,39 @@ public class GoogleAuthController {
         String sessionJti = (String) request.getAttribute("authenticatedJti");
         return ResponseEntity.ok(new ApiResponse(true, "Identidad verificada",
                 googleAuthService.reauthenticate(principal.getId(), sessionJti, body)));
+    }
+
+    @PostMapping("/link/prepare")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse> prepareLinkGoogle(
+            @CurrentUser UserPrincipal principal,
+            @Valid @RequestBody PrepareLinkGoogleRequest body,
+            HttpServletRequest request) {
+        String sessionJti = (String) request.getAttribute("authenticatedJti");
+        return ResponseEntity.ok(new ApiResponse(true, "Identidad Google verificada para confirmar vinculación",
+                googleAuthService.prepareLinkGoogle(principal.getId(), sessionJti, body)));
+    }
+
+    @PostMapping("/link/confirm")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse> confirmLinkGoogle(
+            @CurrentUser UserPrincipal principal,
+            @Valid @RequestBody ConfirmLinkGoogleRequest body,
+            HttpServletRequest request) {
+        String sessionJti = (String) request.getAttribute("authenticatedJti");
+        return ResponseEntity.ok(new ApiResponse(true, "Cuenta de Google vinculada",
+                googleAuthService.confirmLinkGoogle(principal.getId(), sessionJti, body)));
+    }
+
+    @PostMapping("/link/cancel")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<ApiResponse> cancelLinkGoogle(
+            @CurrentUser UserPrincipal principal,
+            @Valid @RequestBody CancelLinkGoogleRequest body,
+            HttpServletRequest request) {
+        String sessionJti = (String) request.getAttribute("authenticatedJti");
+        return ResponseEntity.ok(new ApiResponse(true, "Vinculación de Google cancelada",
+                googleAuthService.cancelLinkGoogle(principal.getId(), sessionJti, body)));
     }
 
     @PostMapping("/link")

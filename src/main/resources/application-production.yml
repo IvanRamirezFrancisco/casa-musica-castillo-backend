@@ -94,6 +94,8 @@ app:
       challenge-ttl-seconds: ${APP_SECURITY_GOOGLE_CHALLENGE_TTL_SECONDS:300}
       registration-ttl-seconds: ${APP_SECURITY_GOOGLE_REGISTRATION_TTL_SECONDS:600}
       reauth-ttl-seconds: ${APP_SECURITY_GOOGLE_REAUTH_TTL_SECONDS:300}
+      link-confirm-ttl-seconds: ${APP_SECURITY_GOOGLE_LINK_CONFIRM_TTL_SECONDS:300}
+      allow-legacy-unauthenticated-challenge: ${APP_SECURITY_GOOGLE_ALLOW_LEGACY_UNAUTHENTICATED_CHALLENGE:true}
 
     # Configuración de sesiones
     session:

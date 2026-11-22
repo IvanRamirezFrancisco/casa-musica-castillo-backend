@@ -5,6 +5,9 @@ import com.security.repository.UserRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import org.springframework.stereotype.Service;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,19 +35,44 @@ public class SecurityMailQueue {
         this.limits=limits;
         tx=new TransactionTemplate(manager);tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
+    private static final ZoneId DISPLAY_ZONE = ZoneId.of("America/Mexico_City");
+    private static final DateTimeFormatter DISPLAY_FORMATTER = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+
     @Transactional(propagation=Propagation.MANDATORY)
     public void enqueueReset(User user,long tokenId,String token,LocalDateTime expires) {
-        enqueue(user,"PASSWORD_RESET",tokenId,token,expires);
+        enqueue(user,"PASSWORD_RESET",tokenId,token,null,expires);
     }
     @Transactional(propagation=Propagation.MANDATORY)
     public void enqueueNotification(User user) {
-        enqueue(user,"PASSWORD_CHANGED",null,"",LocalDateTime.now(clock).plusDays(1));
+        enqueue(user,"PASSWORD_CHANGED",null,"",null,LocalDateTime.now(clock).plusDays(1));
     }
-    private void enqueue(User user,String purpose,Long tokenId,String token,LocalDateTime expires) {
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void enqueueGoogleLinked(User user,LocalDateTime occurredAt) {
+        enqueue(user,"GOOGLE_LINKED",null,"",formatTimestamp(occurredAt),LocalDateTime.now(clock).plusDays(1));
+    }
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void enqueueGoogleUnlinked(User user,LocalDateTime occurredAt) {
+        enqueue(user,"GOOGLE_UNLINKED",null,"",formatTimestamp(occurredAt),LocalDateTime.now(clock).plusDays(1));
+    }
+    private String formatTimestamp(LocalDateTime occurredAt) {
+        LocalDateTime reference = occurredAt != null ? occurredAt : LocalDateTime.now(clock);
+        ZonedDateTime zoned = ZonedDateTime.of(reference, clock.getZone()).withZoneSameInstant(DISPLAY_ZONE);
+        return DISPLAY_FORMATTER.format(zoned) + " (hora del centro de México)";
+    }
+    private static boolean isSecurityNotification(String purpose) {
+        return "PASSWORD_CHANGED".equals(purpose)
+            || "GOOGLE_LINKED".equals(purpose)
+            || "GOOGLE_UNLINKED".equals(purpose);
+    }
+    private void enqueue(User user,String purpose,Long tokenId,String token,String occurredAt,LocalDateTime expires) {
         String operation=UUID.randomUUID().toString();
         try {
-            String payload=json.writeValueAsString(Map.of("email",user.getEmail(),
-                "name",user.getFirstName()==null?"":user.getFirstName(),"token",token));
+            Map<String,Object> data = new HashMap<>();
+            data.put("email",user.getEmail());
+            data.put("name",user.getFirstName()==null?"":user.getFirstName());
+            data.put("token",token);
+            if(occurredAt!=null) data.put("occurredAt",occurredAt);
+            String payload=json.writeValueAsString(data);
             jdbc.update("""
                 INSERT INTO auth.security_mail_outbox(operation_id,purpose,user_id,reset_token_id,state,payload,created_at,expires_at)
                 VALUES (?,?,?,?,'PENDING',?,?,?)
@@ -70,7 +98,7 @@ public class SecurityMailQueue {
                 }
                 long item = ids.getFirst();
                 var pending = jdbc.queryForMap("SELECT purpose,operation_id,payload FROM auth.security_mail_outbox WHERE id=?", item);
-                if ("PASSWORD_CHANGED".equals(pending.get("purpose"))) {
+                if (isSecurityNotification((String) pending.get("purpose"))) {
                     String recipient = null;
                     try { recipient = (String) json.readValue(crypto.open((String) pending.get("payload"),
                         "password-mail:" + pending.get("operation_id")), Map.class).get("email"); }
@@ -111,16 +139,20 @@ public class SecurityMailQueue {
             eligible=tx.execute(status->{
                 var user=users.findByIdForAuthUpdate(((Number)row.get("user_id")).longValue()).orElse(null);
                 if(user==null || !((java.sql.Timestamp)row.get("expires_at")).toLocalDateTime().isAfter(LocalDateTime.now(clock)))return false;
-                if("PASSWORD_CHANGED".equals(row.get("purpose")))return true;
+                if(isSecurityNotification((String)row.get("purpose")))return true;
                 Boolean used=jdbc.queryForObject("SELECT used FROM security.password_reset_tokens WHERE id=?",Boolean.class,row.get("reset_token_id"));
                 return !Boolean.TRUE.equals(used) && Boolean.TRUE.equals(user.getEnabled()) &&
                     Boolean.TRUE.equals(user.getAccountNonLocked()) && email.equalsIgnoreCase(user.getEmail());
             });
             if(eligible) {
                 User recipient=new User();recipient.setEmail(email);recipient.setFirstName((String)data.get("name"));
-                outcome="PASSWORD_RESET".equals(row.get("purpose"))
-                    ? mail.deliverPasswordReset(recipient,(String)data.get("token"))
-                    : mail.deliverPasswordChanged(recipient);
+                String purpose = (String) row.get("purpose");
+                outcome = switch (purpose) {
+                    case "PASSWORD_RESET" -> mail.deliverPasswordReset(recipient,(String)data.get("token"));
+                    case "GOOGLE_LINKED" -> mail.deliverGoogleLinked(recipient,(String)data.get("occurredAt"));
+                    case "GOOGLE_UNLINKED" -> mail.deliverGoogleUnlinked(recipient,(String)data.get("occurredAt"));
+                    default -> mail.deliverPasswordChanged(recipient);
+                };
             }
         } catch (Exception ex) {
             if(eligible)outcome=EmailService.ActivationDelivery.UNKNOWN;

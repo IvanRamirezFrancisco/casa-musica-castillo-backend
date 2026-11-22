@@ -1,6 +1,9 @@
 package com.security.service;
 
 import com.security.config.GoogleAuthProperties;
+import com.security.dto.request.CancelLinkGoogleRequest;
+import com.security.dto.request.ConfirmLinkGoogleRequest;
+import com.security.dto.request.PrepareLinkGoogleRequest;
 import com.security.entity.ExternalIdentity;
 import com.security.entity.RefreshToken;
 import com.security.entity.User;
@@ -35,6 +38,8 @@ class GoogleAuthUnitCoverageTest {
         props.setChallengeTtlSeconds(240);
         props.setRegistrationTtlSeconds(480);
         props.setReauthTtlSeconds(180);
+        props.setLinkConfirmTtlSeconds(210);
+        props.setAllowLegacyUnauthenticatedChallenge(false);
 
         assertThat(props.isConfigured()).isTrue();
         assertThat(props.getEffectiveAllowedClientIds()).containsExactlyInAnyOrder("web-id-1", "android-id-1", "android-id-2");
@@ -42,6 +47,27 @@ class GoogleAuthUnitCoverageTest {
         assertThat(props.getChallengeTtlSeconds()).isEqualTo(240);
         assertThat(props.getRegistrationTtlSeconds()).isEqualTo(480);
         assertThat(props.getReauthTtlSeconds()).isEqualTo(180);
+        assertThat(props.getLinkConfirmTtlSeconds()).isEqualTo(210);
+        assertThat(props.isAllowLegacyUnauthenticatedChallenge()).isFalse();
+    }
+
+    @Test
+    void googleLinkDtosRedactSensitiveFieldsAndSecurityMailContentIncludesTimestampWithoutSecrets() {
+        var prepareReq = new PrepareLinkGoogleRequest("secret-id-token", "secret-nonce-12345678", "SuperSecret!1", "EMAIL", "654321");
+        var confirmReq = new ConfirmLinkGoogleRequest("opaque-confirm-token-1234567890", true);
+        var cancelReq = new CancelLinkGoogleRequest("opaque-confirm-token-1234567890");
+
+        assertThat(prepareReq.toString()).isEqualTo("PrepareLinkGoogleRequest[redacted]");
+        assertThat(confirmReq.toString()).isEqualTo("ConfirmLinkGoogleRequest[redacted]");
+        assertThat(cancelReq.toString()).isEqualTo("CancelLinkGoogleRequest[redacted]");
+
+        AuthMailContent linked = AuthMailContent.googleLinked("Iván", "22/11/2026 13:15 (hora del centro de México)");
+        assertThat(linked.html()).contains("22/11/2026 13:15").contains("Tu correo electrónico principal no cambió");
+        assertThat(linked.text()).contains("Tu correo electrónico principal no cambió");
+
+        AuthMailContent unlinked = AuthMailContent.googleUnlinked("Iván", "22/11/2026 13:20 (hora del centro de México)");
+        assertThat(unlinked.html()).contains("22/11/2026 13:20").contains("desvincul&oacute; Google");
+        assertThat(unlinked.text()).contains("desvinculó Google").contains("correo y contraseña local");
     }
 
     @Test
