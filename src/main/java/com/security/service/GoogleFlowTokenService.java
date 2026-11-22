@@ -34,7 +34,7 @@ public class GoogleFlowTokenService {
     private static final String COL_SESSION_JTI = "session_jti";
     private static final String COL_EXPIRES_AT = "expires_at";
     private static final String COL_CONSUMED_AT = "consumed_at";
-    private static final String FLOW_TOKEN_PATTERN = "[A-Za-z0-9_-]{24,128}";
+    private static final String OPAQUE_FLOW_SHAPE = "[A-Za-z0-9_-]{24,128}";
 
     private final JdbcTemplate jdbc;
     private final GoogleAuthProperties properties;
@@ -212,7 +212,7 @@ public class GoogleFlowTokenService {
     }
 
     public PendingRegistrationFlow lockPendingRegistration(String rawToken) {
-        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
+        if (rawToken == null || !rawToken.matches(OPAQUE_FLOW_SHAPE)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "El registro con Google expiró o no es válido.");
         }
         String hash = sha256(rawToken);
@@ -281,7 +281,7 @@ public class GoogleFlowTokenService {
     }
 
     public PendingLinkConfirmFlow lockPendingLinkConfirmation(Long userId, String sessionJti, String rawToken) {
-        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
+        if (rawToken == null || !rawToken.matches(OPAQUE_FLOW_SHAPE)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST,
                     "La confirmación de vinculación expiró o no es válida. Vuelve a iniciar el proceso.");
         }
@@ -326,7 +326,7 @@ public class GoogleFlowTokenService {
     @Transactional
     public boolean cancelPendingLinkConfirmation(Long userId, String sessionJti, String rawToken) {
         if (userId == null || sessionJti == null || sessionJti.isBlank()
-                || rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
+                || rawToken == null || !rawToken.matches(OPAQUE_FLOW_SHAPE)) {
             return false;
         }
         int updated = jdbc.update("""
@@ -358,7 +358,7 @@ public class GoogleFlowTokenService {
 
     @Transactional
     public void consumeReauthToken(Long userId, String sessionJti, String rawToken, String expectedPurpose) {
-        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
+        if (rawToken == null || !rawToken.matches(OPAQUE_FLOW_SHAPE)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere verificación reciente con Google.");
         }
         String hash = sha256(rawToken);

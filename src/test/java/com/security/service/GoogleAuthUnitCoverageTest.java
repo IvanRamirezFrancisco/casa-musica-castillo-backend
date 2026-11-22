@@ -47,10 +47,11 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
@@ -169,11 +170,11 @@ class GoogleAuthUnitCoverageTest {
         queue.enqueueGoogleLinked(user, null);
         user.setFirstName("Ana");
         queue.enqueueGoogleUnlinked(user, LocalDateTime.now(fixedClock));
-        verify(jdbc, org.mockito.Mockito.times(2)).update(anyString(), any(), any(), any(), any(), any(), any(), any());
+        verify(jdbc, times(2)).update(anyString(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void googleFlowTokenServiceValidatesBoundChallengesLinkConfirmTokensAndLocks() {
+    void googleFlowTokenServiceValidatesBoundChallenges() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         GoogleAuthProperties props = new GoogleAuthProperties();
         Clock clock = Clock.fixed(Instant.parse("2026-11-22T20:00:00Z"), ZoneOffset.UTC);
@@ -198,12 +199,10 @@ class GoogleAuthUnitCoverageTest {
         String validNonce = "valid_nonce_token_1234567890";
         LocalDateTime future = LocalDateTime.now(clock).plusMinutes(5);
 
-        // Missing row
         when(jdbc.queryForList(anyString(), anyString())).thenReturn(Collections.emptyList());
         assertThatThrownBy(() -> service.consumeNonceChallenge(validNonce, "AUTH", null, null, false))
                 .isInstanceOf(AuthFlowException.class);
 
-        // Null expectedPurpose
         Map<String, Object> authRow = new HashMap<>();
         authRow.put("id", 10L);
         authRow.put("purpose", "AUTH");
@@ -213,7 +212,6 @@ class GoogleAuthUnitCoverageTest {
         assertThatThrownBy(() -> service.consumeNonceChallenge(validNonce, null, null, null, false))
                 .isInstanceOf(AuthFlowException.class);
 
-        // AUTH purpose with bound context must be rejected
         Map<String, Object> boundAuthRow = new HashMap<>(authRow);
         boundAuthRow.put("user_id", 7L);
         boundAuthRow.put("session_jti", "jti-7");
@@ -221,7 +219,6 @@ class GoogleAuthUnitCoverageTest {
         assertThatThrownBy(() -> service.consumeNonceChallenge(validNonce, "AUTH", 7L, "jti-7", false))
                 .isInstanceOf(AuthFlowException.class);
 
-        // Bound LINK row with missing/blank expectedUserId or expectedSessionJti
         Map<String, Object> boundLinkRow = new HashMap<>(authRow);
         boundLinkRow.put("purpose", "LINK");
         boundLinkRow.put("user_id", 7L);
@@ -234,13 +231,22 @@ class GoogleAuthUnitCoverageTest {
         assertThatThrownBy(() -> service.consumeNonceChallenge(validNonce, "LINK", 7L, "  ", true))
                 .isInstanceOf(AuthFlowException.class);
 
-        // Unbound LINK row when requireBoundContext=true -> rejected; when false -> accepted (returns false)
         Map<String, Object> unboundLinkRow = new HashMap<>(authRow);
         unboundLinkRow.put("purpose", "LINK");
         when(jdbc.queryForList(anyString(), anyString())).thenReturn(List.of(unboundLinkRow));
         assertThatThrownBy(() -> service.consumeNonceChallenge(validNonce, "LINK", 7L, "jti-7", true))
                 .isInstanceOf(AuthFlowException.class);
         assertThat(service.consumeNonceChallenge(validNonce, "LINK", 7L, "jti-7", false)).isFalse();
+    }
+
+    @Test
+    void googleFlowTokenServiceValidatesLinkConfirmTokensAndLocks() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        GoogleAuthProperties props = new GoogleAuthProperties();
+        Clock clock = Clock.fixed(Instant.parse("2026-11-22T20:00:00Z"), ZoneOffset.UTC);
+        GoogleFlowTokenService service = new GoogleFlowTokenService(
+                jdbc, props, mock(TotpService.class), mock(TotpSecretStorage.class), clock);
+        LocalDateTime future = LocalDateTime.now(clock).plusMinutes(5);
 
         // createPendingLinkConfirmation validation
         var verified = new GoogleIdTokenVerifierService.VerifiedGoogleIdentity(
@@ -392,6 +398,42 @@ class GoogleAuthUnitCoverageTest {
         when(sessions.belongsToUser("jti-ok", 1L)).thenReturn(true);
         when(flowTokens.cancelPendingLinkConfirmation(1L, "jti-ok", cancelReq.confirmationToken())).thenReturn(false);
         assertThat(service.cancelLinkGoogle(1L, "jti-ok", cancelReq)).containsEntry("cancelled", false);
+    }
+
+    @Test
+    void googleAuthServiceValidatesPasswordRequirementConflictsAndMailResilience() {
+        GoogleAuthProperties props = new GoogleAuthProperties();
+        props.setWebClientId("web-client-1");
+        GoogleIdTokenVerifierService verifier = mock(GoogleIdTokenVerifierService.class);
+        GoogleFlowTokenService flowTokens = mock(GoogleFlowTokenService.class);
+        UserRepository users = mock(UserRepository.class);
+        RoleRepository roles = mock(RoleRepository.class);
+        ExternalIdentityRepository extRepo = mock(ExternalIdentityRepository.class);
+        UserService userService = mock(UserService.class);
+        JwtTokenProvider jwtProvider = mock(JwtTokenProvider.class);
+        RefreshTokenService refreshService = mock(RefreshTokenService.class);
+        SessionManagementService sessions = mock(SessionManagementService.class);
+        LoginChallengeService loginChallenges = mock(LoginChallengeService.class);
+        TwoFactorService twoFactor = mock(TwoFactorService.class);
+        BackupCodeService backupCodes = mock(BackupCodeService.class);
+        RegistrationLegalPolicy legal = mock(RegistrationLegalPolicy.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        VerificationRequestLimit limits = mock(VerificationRequestLimit.class);
+        ActivationClientAddress clientAddr = mock(ActivationClientAddress.class);
+        PasswordEncoder encoder = mock(PasswordEncoder.class);
+        SecurityMailQueue mailQueue = mock(SecurityMailQueue.class);
+        Clock clock = Clock.fixed(Instant.parse("2026-11-22T20:00:00Z"), ZoneOffset.UTC);
+
+        GoogleAuthService service = new GoogleAuthService(
+                props, verifier, flowTokens, users, roles, extRepo, userService,
+                jwtProvider, refreshService, sessions, loginChallenges, twoFactor,
+                backupCodes, legal, audit, limits, clientAddr, encoder,
+                immediateTxManager(), clock, mailQueue);
+
+        when(sessions.isSessionValid("jti-ok")).thenReturn(true);
+        when(sessions.belongsToUser("jti-ok", 1L)).thenReturn(true);
+        var prepReq = new PrepareLinkGoogleRequest("id-tok", "nonce-1234567890123456", "Pass!123", null, null);
+        var confReq = new ConfirmLinkGoogleRequest("confirm-tok-1234567890123456", true);
 
         // User without local password on prepareLinkGoogle & confirmLinkGoogle
         User googleOnlyUser = new User();
@@ -449,7 +491,7 @@ class GoogleAuthUnitCoverageTest {
                 backupCodes, legal, audit, limits, clientAddr, encoder,
                 immediateTxManager(), clock, null);
         when(extRepo.findByProviderAndProviderSubject("GOOGLE", "sub-9")).thenReturn(Optional.empty());
-        org.mockito.Mockito.doReturn(selfExt).when(extRepo).saveAndFlush(any());
+        doReturn(selfExt).when(extRepo).saveAndFlush(any());
         assertThat(serviceNoMail.confirmLinkGoogle(1L, "jti-ok", confReq)).containsEntry("hasLocalPassword", true);
     }
 
