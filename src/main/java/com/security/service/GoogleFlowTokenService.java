@@ -29,6 +29,13 @@ import java.util.Map;
  */
 @Service
 public class GoogleFlowTokenService {
+    private static final String COL_PURPOSE = "purpose";
+    private static final String COL_USER_ID = "user_id";
+    private static final String COL_SESSION_JTI = "session_jti";
+    private static final String COL_EXPIRES_AT = "expires_at";
+    private static final String COL_CONSUMED_AT = "consumed_at";
+    private static final String FLOW_TOKEN_PATTERN = "[A-Za-z0-9_-]{24,128}";
+
     private final JdbcTemplate jdbc;
     private final GoogleAuthProperties properties;
     private final TotpService totpService;
@@ -117,38 +124,51 @@ public class GoogleFlowTokenService {
         }
         Map<String, Object> row = rows.get(0);
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime expiresAt = ((Timestamp) row.get("expires_at")).toLocalDateTime();
-        if (row.get("consumed_at") != null || !expiresAt.isAfter(now)) {
+        LocalDateTime expiresAt = ((Timestamp) row.get(COL_EXPIRES_AT)).toLocalDateTime();
+        if (row.get(COL_CONSUMED_AT) != null || !expiresAt.isAfter(now)) {
             throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "El desafío de seguridad ya fue utilizado o expiró.");
         }
-        String rowPurpose = (String) row.get("purpose");
+        String rowPurpose = (String) row.get(COL_PURPOSE);
         if (expectedPurpose == null || !expectedPurpose.equals(rowPurpose)) {
             throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "El desafío de seguridad no corresponde a esta operación.");
         }
 
-        Long rowUserId = row.get("user_id") instanceof Number number ? number.longValue() : null;
-        String rowSessionJti = (String) row.get("session_jti");
-        boolean hasBoundContext = rowUserId != null || rowSessionJti != null;
+        Long rowUserId = row.get(COL_USER_ID) instanceof Number number ? number.longValue() : null;
+        String rowSessionJti = (String) row.get(COL_SESSION_JTI);
+        assertNonceContext(expectedPurpose, expectedUserId, expectedSessionJti, requireBoundContext, rowUserId, rowSessionJti);
 
+        jdbc.update("UPDATE auth.google_auth_flows SET consumed_at = ? WHERE id = ?", now, ((Number) row.get("id")).longValue());
+        return rowUserId != null && rowSessionJti != null;
+    }
+
+    private static void assertNonceContext(
+            String expectedPurpose,
+            Long expectedUserId,
+            String expectedSessionJti,
+            boolean requireBoundContext,
+            Long rowUserId,
+            String rowSessionJti) {
+        boolean hasBoundContext = rowUserId != null || rowSessionJti != null;
         if ("AUTH".equals(expectedPurpose)) {
             if (hasBoundContext) {
                 throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "El desafío de seguridad no es válido para iniciar sesión.");
             }
-        } else if (hasBoundContext) {
-            if (rowUserId == null || rowSessionJti == null
-                    || expectedUserId == null || !expectedUserId.equals(rowUserId)
-                    || expectedSessionJti == null || expectedSessionJti.isBlank()
-                    || !expectedSessionJti.equals(rowSessionJti)) {
+            return;
+        }
+        if (hasBoundContext) {
+            boolean matchingOwner = expectedUserId != null && expectedUserId.equals(rowUserId);
+            boolean matchingSession = expectedSessionJti != null && !expectedSessionJti.isBlank()
+                    && expectedSessionJti.equals(rowSessionJti);
+            if (!matchingOwner || !matchingSession) {
                 throw new AuthFlowException(HttpStatus.UNAUTHORIZED,
                         "El desafío de seguridad no corresponde a esta sesión o cuenta.");
             }
-        } else if (requireBoundContext) {
+            return;
+        }
+        if (requireBoundContext) {
             throw new AuthFlowException(HttpStatus.UNAUTHORIZED,
                     "El desafío de seguridad no corresponde a esta sesión autenticada.");
         }
-
-        jdbc.update("UPDATE auth.google_auth_flows SET consumed_at = ? WHERE id = ?", now, ((Number) row.get("id")).longValue());
-        return rowUserId != null && rowSessionJti != null;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -192,7 +212,7 @@ public class GoogleFlowTokenService {
     }
 
     public PendingRegistrationFlow lockPendingRegistration(String rawToken) {
-        if (rawToken == null || !rawToken.matches("[A-Za-z0-9_-]{24,128}")) {
+        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "El registro con Google expiró o no es válido.");
         }
         String hash = sha256(rawToken);
@@ -207,8 +227,8 @@ public class GoogleFlowTokenService {
         }
         Map<String, Object> row = rows.get(0);
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime expiresAt = ((Timestamp) row.get("expires_at")).toLocalDateTime();
-        if (row.get("consumed_at") != null || !expiresAt.isAfter(now)) {
+        LocalDateTime expiresAt = ((Timestamp) row.get(COL_EXPIRES_AT)).toLocalDateTime();
+        if (row.get(COL_CONSUMED_AT) != null || !expiresAt.isAfter(now)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La sesión de registro con Google ya fue usada o expiró.");
         }
         return new PendingRegistrationFlow(
@@ -261,7 +281,7 @@ public class GoogleFlowTokenService {
     }
 
     public PendingLinkConfirmFlow lockPendingLinkConfirmation(Long userId, String sessionJti, String rawToken) {
-        if (rawToken == null || !rawToken.matches("[A-Za-z0-9_-]{24,128}")) {
+        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST,
                     "La confirmación de vinculación expiró o no es válida. Vuelve a iniciar el proceso.");
         }
@@ -279,12 +299,12 @@ public class GoogleFlowTokenService {
         }
         Map<String, Object> row = rows.get(0);
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime expiresAt = ((Timestamp) row.get("expires_at")).toLocalDateTime();
-        Long rowUserId = row.get("user_id") instanceof Number number ? number.longValue() : null;
-        String rowSessionJti = (String) row.get("session_jti");
-        String rowPurpose = (String) row.get("purpose");
+        LocalDateTime expiresAt = ((Timestamp) row.get(COL_EXPIRES_AT)).toLocalDateTime();
+        Long rowUserId = row.get(COL_USER_ID) instanceof Number number ? number.longValue() : null;
+        String rowSessionJti = (String) row.get(COL_SESSION_JTI);
+        String rowPurpose = (String) row.get(COL_PURPOSE);
 
-        if (row.get("consumed_at") != null
+        if (row.get(COL_CONSUMED_AT) != null
                 || !expiresAt.isAfter(now)
                 || rowUserId == null || !rowUserId.equals(userId)
                 || rowSessionJti == null || !rowSessionJti.equals(sessionJti)
@@ -306,7 +326,7 @@ public class GoogleFlowTokenService {
     @Transactional
     public boolean cancelPendingLinkConfirmation(Long userId, String sessionJti, String rawToken) {
         if (userId == null || sessionJti == null || sessionJti.isBlank()
-                || rawToken == null || !rawToken.matches("[A-Za-z0-9_-]{24,128}")) {
+                || rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
             return false;
         }
         int updated = jdbc.update("""
@@ -338,7 +358,7 @@ public class GoogleFlowTokenService {
 
     @Transactional
     public void consumeReauthToken(Long userId, String sessionJti, String rawToken, String expectedPurpose) {
-        if (rawToken == null || !rawToken.matches("[A-Za-z0-9_-]{24,128}")) {
+        if (rawToken == null || !rawToken.matches(FLOW_TOKEN_PATTERN)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere verificación reciente con Google.");
         }
         String hash = sha256(rawToken);
@@ -353,12 +373,12 @@ public class GoogleFlowTokenService {
         }
         Map<String, Object> row = rows.get(0);
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime expiresAt = ((Timestamp) row.get("expires_at")).toLocalDateTime();
-        Long rowUserId = ((Number) row.get("user_id")).longValue();
-        String rowSessionJti = (String) row.get("session_jti");
-        String rowPurpose = (String) row.get("purpose");
+        LocalDateTime expiresAt = ((Timestamp) row.get(COL_EXPIRES_AT)).toLocalDateTime();
+        Long rowUserId = ((Number) row.get(COL_USER_ID)).longValue();
+        String rowSessionJti = (String) row.get(COL_SESSION_JTI);
+        String rowPurpose = (String) row.get(COL_PURPOSE);
 
-        if (row.get("consumed_at") != null
+        if (row.get(COL_CONSUMED_AT) != null
                 || !expiresAt.isAfter(now)
                 || !userId.equals(rowUserId)
                 || (sessionJti != null && rowSessionJti != null && !sessionJti.equals(rowSessionJti))

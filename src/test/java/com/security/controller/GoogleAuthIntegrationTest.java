@@ -1112,7 +1112,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         String jwt = loginPassword(localEmail, pass);
         String nonce = issueAuthenticatedChallenge(jwt, "LINK");
         String idToken = "header.twostep.ok." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(idToken), eq(nonce))).thenReturn(
+        when(googleVerifier.verify(idToken, nonce)).thenReturn(
                 new VerifiedGoogleIdentity(sub, googleEmail, true, "Iván", "Castillo", "Iván Castillo",
                         "https://lh3.googleusercontent.com/avatar-a", Instant.now().plusSeconds(300)));
 
@@ -1209,7 +1209,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // 1. Prepare then cancel leaves zero external_identities and invalidates confirmation token
         String cancelNonce = issueAuthenticatedChallenge(jwt, "LINK");
         String cancelIdToken = "header.cancel.ok." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(cancelIdToken), eq(cancelNonce))).thenReturn(
+        when(googleVerifier.verify(cancelIdToken, cancelNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-cancel-1", email, true, "Ana", "Paz", null, null, Instant.now().plusSeconds(300)));
 
         MvcResult prepCancel = mvc.perform(post("/api/auth/google/link/prepare")
@@ -1242,7 +1242,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // 2. Re-prepare with fresh token and confirm same-email Google identity
         String okNonce = issueAuthenticatedChallenge(jwt, "LINK");
         String okIdToken = "header.same.ok." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(okIdToken), eq(okNonce))).thenReturn(
+        when(googleVerifier.verify(okIdToken, okNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-same-ok-1", email, true, "Ana", "Paz", null, null, Instant.now().plusSeconds(300)));
 
         MvcResult prepOk = mvc.perform(post("/api/auth/google/link/prepare")
@@ -1296,7 +1296,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // 1. Two-step prepare rejects Case B with 409 and reveals no info about userB
         String boundNonce = issueAuthenticatedChallenge(jwtA, "LINK");
         String tok1 = "header.caseb.prep." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tok1), eq(boundNonce))).thenReturn(
+        when(googleVerifier.verify(tok1, boundNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-fresh-caseb-1", emailB.toUpperCase(java.util.Locale.ROOT), true,
                         "B", "Owner", null, null, Instant.now().plusSeconds(300)));
 
@@ -1314,7 +1314,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         createGoogleUser(TEST_EMAIL_PREFIX + "holder.c@example.com", "holder.c", "sub-casec-owned");
         String caseCNonce = issueAuthenticatedChallenge(jwtA, "LINK");
         String tokCaseC = "header.casec.prep." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tokCaseC), eq(caseCNonce))).thenReturn(
+        when(googleVerifier.verify(tokCaseC, caseCNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-casec-owned", TEST_EMAIL_PREFIX + "alias.c@gmail.com", true,
                         "C", "Holder", null, null, Instant.now().plusSeconds(300)));
         mvc.perform(post("/api/auth/google/link/prepare")
@@ -1326,7 +1326,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // 2. Legacy v1.3 /link also rejects Case B with 409
         String legacyNonce = issueChallenge("LINK");
         String tok2 = "header.caseb.leg." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tok2), eq(legacyNonce))).thenReturn(
+        when(googleVerifier.verify(tok2, legacyNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-fresh-caseb-2", emailB, true, "B", "Owner", null, null, Instant.now().plusSeconds(300)));
 
         mvc.perform(post("/api/auth/google/link")
@@ -1343,7 +1343,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         String lateEmail = TEST_EMAIL_PREFIX + "late.owner@example.com";
         String lateNonce = issueAuthenticatedChallenge(jwtA, "LINK");
         String tok3 = "header.caseb.late." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tok3), eq(lateNonce))).thenReturn(
+        when(googleVerifier.verify(tok3, lateNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-late-caseb-3", lateEmail, true, "Late", "Owner", null, null, Instant.now().plusSeconds(300)));
 
         MvcResult prepLate = mvc.perform(post("/api/auth/google/link/prepare")
@@ -1515,7 +1515,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
 
         // User A's original Session 1 CAN still use linkNonceA1 to prepare!
         String okToken = "header.prepare.a1." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(okToken), eq(linkNonceA1))).thenReturn(
+        when(googleVerifier.verify(okToken, linkNonceA1)).thenReturn(
                 new VerifiedGoogleIdentity("sub-bind-a1", TEST_EMAIL_PREFIX + "newbind@gmail.com", true,
                         "Sec", "A", null, null, Instant.now().plusSeconds(300)));
         MvcResult prepA1 = mvc.perform(post("/api/auth/google/link/prepare")
@@ -1560,8 +1560,8 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         String emailA = TEST_EMAIL_PREFIX + "conc.a@example.com";
         String emailB = TEST_EMAIL_PREFIX + "conc.b@example.com";
         String pass = "Concurrent!2026";
-        User userA = createPasswordUser(emailA, "conc.a", pass);
-        User userB = createPasswordUser(emailB, "conc.b", pass);
+        createPasswordUser(emailA, "conc.a", pass);
+        createPasswordUser(emailB, "conc.b", pass);
 
         String jwtA = loginPassword(emailA, pass);
         String jwtB = loginPassword(emailB, pass);
@@ -1572,7 +1572,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
 
         String nonceA = issueAuthenticatedChallenge(jwtA, "LINK");
         String tokA = "header.conc.a." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tokA), eq(nonceA))).thenReturn(
+        when(googleVerifier.verify(tokA, nonceA)).thenReturn(
                 new VerifiedGoogleIdentity(sharedSub, sharedGoogleEmail, true, "C", "A", null, null, Instant.now().plusSeconds(300)));
         String confirmA = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
                         .header("Authorization", "Bearer " + jwtA)
@@ -1583,7 +1583,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
 
         String nonceB = issueAuthenticatedChallenge(jwtB, "LINK");
         String tokB = "header.conc.b." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tokB), eq(nonceB))).thenReturn(
+        when(googleVerifier.verify(tokB, nonceB)).thenReturn(
                 new VerifiedGoogleIdentity(sharedSub, sharedGoogleEmail, true, "C", "B", null, null, Instant.now().plusSeconds(300)));
         String confirmB = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
                         .header("Authorization", "Bearer " + jwtB)
@@ -1630,7 +1630,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         String jwtC = loginPassword(userC.getEmail(), pass);
         String nonceC = issueAuthenticatedChallenge(jwtC, "LINK");
         String tokC = "header.conc.c." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(tokC), eq(nonceC))).thenReturn(
+        when(googleVerifier.verify(tokC, nonceC)).thenReturn(
                 new VerifiedGoogleIdentity("sub-conc-c-" + SEQ.incrementAndGet(), TEST_EMAIL_PREFIX + "conc.cg@gmail.com",
                         true, "C", "C", null, null, Instant.now().plusSeconds(300)));
         String confirmC = json.readTree(mvc.perform(post("/api/auth/google/link/prepare")
@@ -1687,7 +1687,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // Published Android v1.3 calls public /challenge(LINK) + /link
         String legacyLinkNonce = issueChallenge("LINK");
         String legacyLinkToken = "header.v13.link." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(legacyLinkToken), eq(legacyLinkNonce))).thenReturn(
+        when(googleVerifier.verify(legacyLinkToken, legacyLinkNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-v13-legacy-1", TEST_EMAIL_PREFIX + "v13.g@gmail.com",
                         true, "V13", "Tester", null, null, Instant.now().plusSeconds(300)));
 
@@ -1711,7 +1711,7 @@ class GoogleAuthIntegrationTest extends LocalPostgresIntegrationTest {
         // Published Android v1.3 calls public /challenge(REAUTH) + /reauthenticate + /unlink
         String legacyReauthNonce = issueChallenge("REAUTH");
         String legacyReauthToken = "header.v13.reauth." + SEQ.incrementAndGet();
-        when(googleVerifier.verify(eq(legacyReauthToken), eq(legacyReauthNonce))).thenReturn(
+        when(googleVerifier.verify(legacyReauthToken, legacyReauthNonce)).thenReturn(
                 new VerifiedGoogleIdentity("sub-v13-legacy-1", TEST_EMAIL_PREFIX + "v13.g@gmail.com",
                         true, "V13", "Tester", null, null, Instant.now().plusSeconds(300)));
         String reauthToken = json.readTree(mvc.perform(post("/api/auth/google/reauthenticate")

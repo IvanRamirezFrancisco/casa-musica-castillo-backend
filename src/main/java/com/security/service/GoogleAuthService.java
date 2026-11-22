@@ -53,8 +53,13 @@ import java.util.regex.Pattern;
 public class GoogleAuthService {
     private static final Logger log = LoggerFactory.getLogger(GoogleAuthService.class);
     public static final String PROVIDER_GOOGLE = "GOOGLE";
-    private static final Set<String> CHALLENGE_PURPOSES = Set.of("AUTH", "LINK", "REAUTH");
-    private static final Set<String> AUTHENTICATED_CHALLENGE_PURPOSES = Set.of("LINK", "REAUTH");
+    private static final String PURPOSE_AUTH = "AUTH";
+    private static final String PURPOSE_LINK = "LINK";
+    private static final String PURPOSE_REAUTH = "REAUTH";
+    private static final String KEY_EXPIRES_IN_SECONDS = "expiresInSeconds";
+    private static final String AUDIT_ACTION_SECURITY = "SECURITY";
+    private static final Set<String> CHALLENGE_PURPOSES = Set.of(PURPOSE_AUTH, PURPOSE_LINK, PURPOSE_REAUTH);
+    private static final Set<String> AUTHENTICATED_CHALLENGE_PURPOSES = Set.of(PURPOSE_LINK, PURPOSE_REAUTH);
     private static final Pattern NON_USERNAME_CHARS = Pattern.compile("[^a-zA-Z0-9._-]");
 
     private final GoogleAuthProperties properties;
@@ -143,11 +148,11 @@ public class GoogleAuthService {
             throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE,
                     "El acceso con Google no está configurado en este servidor.");
         }
-        String normalizedPurpose = (purpose == null || purpose.isBlank()) ? "AUTH" : purpose.trim();
+        String normalizedPurpose = (purpose == null || purpose.isBlank()) ? PURPOSE_AUTH : purpose.trim();
         if (!CHALLENGE_PURPOSES.contains(normalizedPurpose)) {
             throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Propósito de desafío inválido.");
         }
-        if (!"AUTH".equals(normalizedPurpose)) {
+        if (!PURPOSE_AUTH.equals(normalizedPurpose)) {
             if (!properties.isAllowLegacyUnauthenticatedChallenge()) {
                 throw new AuthFlowException(HttpStatus.UNAUTHORIZED,
                         "Inicia sesión para solicitar este desafío de seguridad.");
@@ -158,7 +163,7 @@ public class GoogleAuthService {
         String nonce = flowTokens.createNonceChallenge(normalizedPurpose);
         return Map.of(
                 "nonce", nonce,
-                "expiresInSeconds", properties.getChallengeTtlSeconds());
+                KEY_EXPIRES_IN_SECONDS, properties.getChallengeTtlSeconds());
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -182,7 +187,7 @@ public class GoogleAuthService {
         });
         return Map.of(
                 "nonce", nonce,
-                "expiresInSeconds", properties.getChallengeTtlSeconds());
+                KEY_EXPIRES_IN_SECONDS, properties.getChallengeTtlSeconds());
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -372,7 +377,7 @@ public class GoogleAuthService {
 
             boolean bound = flowTokens.consumeNonceChallenge(
                     req.nonce(),
-                    "REAUTH",
+                    PURPOSE_REAUTH,
                     userId,
                     sessionJti,
                     !properties.isAllowLegacyUnauthenticatedChallenge());
@@ -389,11 +394,11 @@ public class GoogleAuthService {
 
             verifyAuthenticatedMfaIfEnabled(user, req.mfaMethod(), req.mfaCode());
             String reauthToken = flowTokens.createReauthToken(userId, sessionJti, req.purpose());
-            audit("SECURITY", "GOOGLE_REAUTHENTICATED", userId, "INFO", true);
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_REAUTHENTICATED", userId, "INFO", true);
 
             return Map.of(
                     "reauthToken", reauthToken,
-                    "expiresInSeconds", properties.getReauthTtlSeconds());
+                    KEY_EXPIRES_IN_SECONDS, properties.getReauthTtlSeconds());
         });
     }
 
@@ -406,18 +411,18 @@ public class GoogleAuthService {
         return requiresNewTx.execute(status -> {
             User user = assertLinkPreconditions(userId, sessionJti, req.currentPassword(), req.mfaMethod(), req.mfaCode());
 
-            flowTokens.consumeNonceChallenge(req.nonce(), "LINK", userId, sessionJti, true);
+            flowTokens.consumeNonceChallenge(req.nonce(), PURPOSE_LINK, userId, sessionJti, true);
             GoogleIdTokenVerifierService.VerifiedGoogleIdentity verified = verifier.verify(req.idToken(), req.nonce());
             flowTokens.markGoogleTokenConsumed(req.idToken(), verified.expiresAt());
 
             assertGoogleIdentityCanLink(userId, verified.subject(), verified.email());
 
             String confirmationToken = flowTokens.createPendingLinkConfirmation(userId, sessionJti, verified);
-            audit("SECURITY", "GOOGLE_LINK_PREPARED", userId, "INFO", true);
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_LINK_PREPARED", userId, "INFO", true);
 
             Map<String, Object> response = new HashMap<>();
             response.put("confirmationToken", confirmationToken);
-            response.put("expiresInSeconds", properties.getLinkConfirmTtlSeconds());
+            response.put(KEY_EXPIRES_IN_SECONDS, properties.getLinkConfirmTtlSeconds());
             response.put("currentAccountEmail", user.getEmail());
             response.put("googleEmail", verified.email());
             response.put("googleEmailVerified", verified.emailVerified());
@@ -469,7 +474,7 @@ public class GoogleAuthService {
             return flowTokens.cancelPendingLinkConfirmation(userId, sessionJti, req.confirmationToken());
         }));
         if (cancelled) {
-            audit("SECURITY", "GOOGLE_LINK_CANCELLED", userId, "INFO", true);
+            audit(AUDIT_ACTION_SECURITY, "GOOGLE_LINK_CANCELLED", userId, "INFO", true);
         }
         return Map.of("cancelled", cancelled);
     }
@@ -489,7 +494,7 @@ public class GoogleAuthService {
 
                 boolean bound = flowTokens.consumeNonceChallenge(
                         req.nonce(),
-                        "LINK",
+                        PURPOSE_LINK,
                         userId,
                         sessionJti,
                         !properties.isAllowLegacyUnauthenticatedChallenge());

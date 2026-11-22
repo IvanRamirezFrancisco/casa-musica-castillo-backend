@@ -92,16 +92,18 @@ class GoogleLinkSchemaUpgradeTest {
                     "SELECT count(*) FROM auth.security_mail_outbox WHERE purpose IN ('GOOGLE_LINKED', 'GOOGLE_UNLINKED')",
                     Integer.class)).isEqualTo(2);
 
+            String invalidFlowHash = "c".repeat(64);
             assertThatThrownBy(() -> jdbc.update("""
                     INSERT INTO auth.google_auth_flows(token_hash, flow_type, provider, created_at, expires_at)
                     VALUES (?, 'INVALID_FLOW', 'GOOGLE', now(), now() + interval '5 minutes')
-                    """, "c".repeat(64)))
+                    """, invalidFlowHash))
                     .isInstanceOf(DataIntegrityViolationException.class);
 
+            String invalidResetOpId = UUID.randomUUID().toString();
             assertThatThrownBy(() -> jdbc.update("""
                     INSERT INTO auth.security_mail_outbox(operation_id, purpose, user_id, reset_token_id, state, created_at, expires_at)
                     VALUES (?, 'PASSWORD_RESET', 1, NULL, 'PENDING', now(), now() + interval '1 day')
-                    """, UUID.randomUUID().toString()))
+                    """, invalidResetOpId))
                     .isInstanceOf(DataIntegrityViolationException.class);
         } finally {
             adminJdbc.execute("DROP DATABASE IF EXISTS " + DB_NAME + " WITH (FORCE)");
