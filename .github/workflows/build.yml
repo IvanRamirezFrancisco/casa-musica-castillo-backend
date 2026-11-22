@@ -44,6 +44,8 @@ jobs:
             -v catalog_password="$CMC_CATALOG_TEST_PASSWORD" <<'SQL'
           CREATE DATABASE auth_challenges_test;
           CREATE DATABASE schema50_upgrade_test;
+          CREATE DATABASE activation_upgrade_test;
+          CREATE DATABASE password_upgrade_test;
           CREATE ROLE catalog_search_test LOGIN PASSWORD :'catalog_password';
           CREATE DATABASE catalog_search_test OWNER catalog_search_test;
           SQL

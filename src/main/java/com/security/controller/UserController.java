@@ -3,6 +3,7 @@ package com.security.controller;
 import com.security.validation.BcryptPasswordValidator;
 
 import com.security.dto.request.ChangePasswordRequest;
+import com.security.dto.request.SetInitialPasswordRequest;
 import com.security.dto.response.ApiResponse;
 import com.security.dto.response.UserResponse;
 import com.security.entity.User;
@@ -10,6 +11,8 @@ import com.security.entity.Role;
 import com.security.repository.RoleRepository;
 import com.security.security.CurrentUser;
 import com.security.security.UserPrincipal;
+import com.security.service.GoogleAuthService;
+import com.security.service.RefreshTokenService;
 import com.security.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +43,12 @@ public class UserController {
 
         @Autowired
         private RoleRepository roleRepository;
+
+        @Autowired(required = false)
+        private GoogleAuthService googleAuthService;
+
+        @Autowired(required = false)
+        private RefreshTokenService refreshTokenService;
 
         /**
          * Obtener perfil del usuario actual autenticado
@@ -102,6 +111,22 @@ public class UserController {
                                         user.getTwoFactorType() != null ? user.getTwoFactorType().toString() : null);
                         securityData.put("emailVerified", user.isEmailVerified());
                         securityData.put("passwordChangeRevokesSessions", true);
+                        if (googleAuthService != null) {
+                                securityData.putAll(googleAuthService.buildSecurityCapabilities(user));
+                        } else {
+                                boolean hasPassword = user.hasLocalPassword();
+                                securityData.put("hasLocalPassword", hasPassword);
+                                securityData.put("googleLinked", false);
+                                securityData.put("googleConfigured", false);
+                                securityData.put("canSetInitialPassword", false);
+                                securityData.put("canChangePassword", hasPassword);
+                                securityData.put("canLinkGoogle", false);
+                                securityData.put("canUnlinkGoogle", false);
+                                securityData.put("hasValidAuthMethod", hasPassword);
+                                securityData.put("mfaActive", Boolean.TRUE.equals(user.getGoogleAuthEnabled())
+                                                || Boolean.TRUE.equals(user.getEmailEnabled()));
+                                securityData.put("requiresRecentAuth", true);
+                        }
 
                         return ResponseEntity.ok(new ApiResponse(true,
                                         "Security settings retrieved successfully", securityData));
@@ -122,7 +147,30 @@ public class UserController {
         public ResponseEntity<?> changePassword(@Valid @RequestBody ChangePasswordRequest request,
                         @CurrentUser UserPrincipal userPrincipal) {
                 userService.changeOwnPassword(userPrincipal.getId(), request.getCurrentPassword(), request.getNewPassword());
-                return ResponseEntity.ok(new ApiResponse(true, "Contraseña actualizada correctamente"));
+                org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                if (refreshTokenService != null) {
+                        headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                                        refreshTokenService.clearRefreshCookie().toString());
+                }
+                return ResponseEntity.ok().headers(headers)
+                                .body(new ApiResponse(true, "Contraseña actualizada correctamente"));
+        }
+
+        /**
+         * Configurar contraseña inicial para cuentas creadas únicamente con Google.
+         */
+        @PostMapping("/set-initial-password")
+        @PreAuthorize("isAuthenticated()")
+        public ResponseEntity<?> setInitialPassword(@Valid @RequestBody SetInitialPasswordRequest request,
+                        @CurrentUser UserPrincipal userPrincipal) {
+                userService.setInitialPassword(userPrincipal.getId(), request.reauthToken(), request.newPassword());
+                org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                if (refreshTokenService != null) {
+                        headers.add(org.springframework.http.HttpHeaders.SET_COOKIE,
+                                        refreshTokenService.clearRefreshCookie().toString());
+                }
+                return ResponseEntity.ok().headers(headers)
+                                .body(new ApiResponse(true, "Contraseña configurada correctamente"));
         }
 
         /**

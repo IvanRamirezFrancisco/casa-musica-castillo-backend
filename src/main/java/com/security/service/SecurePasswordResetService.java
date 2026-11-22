@@ -42,6 +42,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  */
 @Service
 public class SecurePasswordResetService {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger logger = LoggerFactory.getLogger(SecurePasswordResetService.class);
 
@@ -63,7 +65,7 @@ public class SecurePasswordResetService {
     @Autowired
     private AuditLogService auditLogService;
 
-    @Autowired(required = false)
+    @Autowired
     private SessionManagementService sessionManagementService;
 
     @Autowired(required = false)
@@ -90,6 +92,13 @@ public class SecurePasswordResetService {
 
     private record PendingReset(User recipient, String token) {}
 
+    @Autowired private SecurityMailQueue securityMail;
+    @Autowired private VerificationRequestLimit sharedLimits;
+    @Autowired private ActivationClientAddress clientAddresses;
+    @Autowired private java.time.Clock clock;
+    @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
+    @Value("${app.security.password-reset.cooldown-seconds:60}") private int resetCooldown;
     private final SecureRandom secureRandom = new SecureRandom();
 
     /**
@@ -106,7 +115,7 @@ public class SecurePasswordResetService {
     /**
      * Valida y resetea la contraseña usando el token
      */
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public boolean resetPassword(String token, String newPassword, HttpServletRequest request) {
         String ipAddress = getClientIpAddress(request);
         String userAgent = request != null ? request.getHeader("User-Agent") : null;
@@ -249,27 +258,7 @@ public class SecurePasswordResetService {
     }
 
     private String getClientIpAddress(HttpServletRequest request) {
-        if (request == null) {
-            return "127.0.0.1";
-        }
-        String[] headers = {
-                "CF-Connecting-IP",
-                "X-Forwarded-For",
-                "X-Real-IP",
-                "Proxy-Client-IP",
-                "WL-Proxy-Client-IP",
-                "HTTP_X_FORWARDED_FOR"
-        };
-
-        for (String header : headers) {
-            String ip = request.getHeader(header);
-            if (ip != null && !ip.isEmpty() && !"unknown".equalsIgnoreCase(ip)) {
-                ip = ip.split(",")[0].trim();
-                return normalizeIp(ip);
-            }
-        }
-
-        return normalizeIp(request.getRemoteAddr());
+        return request == null ? "127.0.0.1" : clientAddresses.resolve(request);
     }
 
     private String normalizeIp(String ip) {
@@ -285,159 +274,84 @@ public class SecurePasswordResetService {
         return input.trim().replaceAll("[<>\"'&]", "");
     }
 
+    @Transactional(readOnly=true)
     public boolean isTokenValid(String token) {
-        try {
-            String sanitizedToken = sanitizeInput(token);
-            if (sanitizedToken.isEmpty()) {
-                return false;
-            }
-
-            Optional<PasswordResetToken> tokenOpt = passwordResetTokenRepository.findByToken(sanitizedToken);
-            if (tokenOpt.isEmpty()) {
-                return false;
-            }
-
-            PasswordResetToken resetToken = tokenOpt.get();
-            return resetToken.isValid();
-
-        } catch (Exception e) {
-            logger.error("Error validating reset token: {}", e.getClass().getSimpleName());
-            return false;
-        }
+        if (token == null || !token.matches("[A-Za-z0-9_-]{1,512}")) return false;
+        return findResetToken(token).map(row -> {
+            User user = row.getUser();
+            return eligible(user) && !Boolean.TRUE.equals(row.getUsed()) && row.getExpiryDate().isAfter(LocalDateTime.now(clock))
+                && !java.util.Set.of("PENDING","FAILED","CANCELLED").contains(row.getDeliveryState());
+        }).orElse(false);
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public boolean requestPasswordResetFromController(String email, String ipAddress, String userAgent) {
-        String sanitizedEmail = sanitizeInput(email).toLowerCase(Locale.ROOT);
-        String sanitizedIp = sanitizeInput(ipAddress);
-        String sanitizedUserAgent = sanitizeInput(userAgent);
-
-        if (sanitizedEmail.isEmpty()) {
-            return false;
-        }
-
-        PendingReset pending = requiresNewTx != null
-                ? requiresNewTx.execute(status -> prepareResetFromControllerInTx(sanitizedEmail, sanitizedIp, sanitizedUserAgent))
-                : prepareResetFromControllerInTx(sanitizedEmail, sanitizedIp, sanitizedUserAgent);
-
-        if (pending == null) {
-            return true;
-        }
-
-        try {
-            emailService.sendPasswordResetEmail(pending.recipient(), pending.token());
-            logger.info("Password reset email dispatched for user: {} from IP: {}",
-                    maskEmail(sanitizedEmail), sanitizedIp);
-            return true;
-        } catch (Exception e) {
-            logger.error("Failed to send password reset email for {}: {}",
-                    maskEmail(sanitizedEmail), e.getClass().getSimpleName());
-            throw new AuthFlowException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "No se pudo procesar el envío del correo de recuperación en este momento. Intenta nuevamente más tarde.");
-        }
+        String address = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+        if (address.isEmpty()) return false;
+        sharedLimits.check("password-reset-request", ipAddress, 30);
+        requiresNewTx.execute(status -> prepareResetFromControllerInTx(address, ipAddress, ""));
+        return true;
     }
 
-    protected PendingReset prepareResetFromControllerInTx(String sanitizedEmail, String sanitizedIp, String sanitizedUserAgent) {
-        registrarIntento(sanitizedEmail, sanitizedIp, sanitizedUserAgent);
-
-        Optional<User> userOpt = userRepository.findByEmail(sanitizedEmail);
-        if (userOpt.isEmpty()) {
-            logger.info("Password reset requested for non-existent email: {}", maskEmail(sanitizedEmail));
-            return null;
-        }
-
-        User user = userOpt.get();
-        invalidateExistingTokens(user);
-
+    protected PendingReset prepareResetFromControllerInTx(String address, String ipAddress, String userAgent) {
+        User user = userRepository.findIdByEmailForVerification(address).flatMap(userRepository::findByIdForAuthUpdate).orElse(null);
+        if (!eligible(user)) return null;
+        LocalDateTime now = LocalDateTime.now(clock).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        if (passwordResetTokenRepository.findFirstByUserIdOrderByCreatedAtDescIdDesc(user.getId())
+            .filter(row -> row.getCreatedAt().isAfter(now.minusSeconds(Math.max(30, resetCooldown)))).isPresent()
+            || passwordResetTokenRepository.countByUserIdAndCreatedAtAfter(user.getId(), now.minusMinutes(5)) >= 3) return null;
+        if (!sharedLimits.reserveDeliveryFor("reset-recipient-day",address)) return null;
         String token = generateSecureToken();
-        long validSeconds = tokenExpirationMs > 0 ? (tokenExpirationMs / 1000) : 3600;
-        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(validSeconds);
-
-        PasswordResetToken resetToken = new PasswordResetToken();
-        resetToken.setToken(token);
-        resetToken.setUser(user);
-        resetToken.setExpiryDate(expiresAt);
-        resetToken.setCreatedAt(LocalDateTime.now());
-        resetToken.setIpAddress(sanitizedIp);
-        resetToken.setUserAgent(sanitizedUserAgent);
-        resetToken.setAttempts(0);
-        resetToken.setUsed(false);
-
-        passwordResetTokenRepository.save(resetToken);
-
-        User recipientSnapshot = new User();
-        recipientSnapshot.setId(user.getId());
-        recipientSnapshot.setEmail(user.getEmail());
-        recipientSnapshot.setFirstName(user.getFirstName());
-        recipientSnapshot.setLastName(user.getLastName());
-
-        return new PendingReset(recipientSnapshot, token);
+        LocalDateTime expires = now.plusSeconds(Math.max(60, Math.min(86400, tokenExpirationMs / 1000)));
+        PasswordResetToken row = new PasswordResetToken(resetDigest(token),user,expires);
+        row.setCreatedAt(now);row.setDeliveryState("PENDING");row.setIpAddress(null);row.setUserAgent(null);
+        passwordResetTokenRepository.saveAndFlush(row);
+        securityMail.enqueueReset(user,row.getId(),token,expires);
+        return null;
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public boolean resetPasswordFromController(String token, String newPassword, String ipAddress, String userAgent) {
-        try {
-            String sanitizedToken = sanitizeInput(token);
-            String sanitizedIp = sanitizeInput(ipAddress);
-            String sanitizedUserAgent = sanitizeInput(userAgent);
-
-            // NUNCA sanitizar ni mutar newPassword
-            if (sanitizedToken.isEmpty() || !isPasswordValid(newPassword)) {
-                logger.warn("Invalid input or weak password for password reset");
-                return false;
-            }
-
-            Optional<PasswordResetToken> tokenOpt = passwordResetTokenRepository.findByToken(sanitizedToken);
-            if (tokenOpt.isEmpty()) {
-                logger.warn("Reset token not found");
-                return false;
-            }
-
-            PasswordResetToken resetToken = tokenOpt.get();
-
-            if (!resetToken.isValid() || resetToken.getUsedAt() != null || resetToken.hasExceededMaxAttempts(5)) {
-                logger.warn("Invalid, expired, or already used token for reset");
-                return false;
-            }
-
-            User user = resetToken.getUser();
-            user.setPassword(passwordEncoder.encode(newPassword));
-            user.setCredentialsNonExpired(true);
-            user.setUpdatedAt(LocalDateTime.now());
-            userRepository.save(user);
-
-            resetToken.markAsUsed();
-            resetToken.setIpAddress(sanitizedIp);
-            resetToken.setUserAgent(sanitizedUserAgent);
-            passwordResetTokenRepository.save(resetToken);
-
-            List<PasswordResetToken> otherTokens = passwordResetTokenRepository.findByUserAndUsed(user, false);
-            for (PasswordResetToken otherToken : otherTokens) {
-                if (!otherToken.getToken().equals(sanitizedToken)) {
-                    otherToken.markAsUsed();
-                }
-            }
-            if (!otherTokens.isEmpty()) {
-                passwordResetTokenRepository.saveAll(otherTokens);
-            }
-
-            if (loginSecurityService != null) {
-                loginSecurityService.clearFailedAttempts(user.getEmail());
-            }
-            if (sessionManagementService != null) {
-                sessionManagementService.invalidateAllUserSessions(user.getEmail());
-            }
-
-            logger.info("Password reset successful for user: {} from IP: {}",
-                    maskEmail(user.getEmail()), sanitizedIp);
-
+        sharedLimits.check("password-reset-confirm", ipAddress, 60);
+        if (token == null || !token.matches("[A-Za-z0-9_-]{1,512}") || !isPasswordValid(newPassword)) return false;
+        return Boolean.TRUE.equals(requiresNewTx.execute(status -> {
+            PasswordResetToken row = findResetToken(token).orElse(null);
+            if (row == null) return false;
+            User user = userRepository.findByIdForAuthUpdate(row.getUser().getId()).orElse(null);
+            entityManager.refresh(row);
+            if (!eligible(user) || Boolean.TRUE.equals(row.getUsed()) || row.getUsedAt()!=null
+                || !row.getExpiryDate().isAfter(LocalDateTime.now(clock))
+                || java.util.Set.of("PENDING","FAILED","CANCELLED").contains(row.getDeliveryState())) return false;
+            if (user.hasLocalPassword() && passwordEncoder.matches(newPassword, user.getPassword())) return false;
+            LocalDateTime now=LocalDateTime.now(clock);
+            user.setPassword(passwordEncoder.encode(newPassword));user.setCredentialsNonExpired(true);user.setUpdatedAt(now);
+            row.markAsUsed();
+            sessionManagementService.invalidateAllUserSessions(user.getEmail());
+            jdbc.update("UPDATE auth.refresh_tokens SET revoked=true,revoked_at=?,revoke_reason='PASSWORD_RESET' WHERE user_id=? AND revoked=false", now, user.getId());
+            jdbc.update("UPDATE security.password_reset_tokens SET used=true,used_at=? WHERE user_id=?",now,user.getId());
+            jdbc.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",now,user.getId());
+            jdbc.update("UPDATE auth.security_mail_outbox SET payload=NULL,state='CANCELLED' WHERE user_id=? AND purpose='PASSWORD_RESET' AND state='PENDING'",user.getId());
+            securityMail.enqueueNotification(user);
+            try { auditLogService.log("UPDATE","PASSWORD_RESET","USER",user.getId(),null,null,"WARNING",true); }
+            catch (RuntimeException ex) { logger.warn("password_reset_audit_unavailable account={}",user.getId()); }
+            if (loginSecurityService!=null) loginSecurityService.clearFailedAttempts(user.getEmail());
+            logger.info("password_reset_confirmed account={}",user.getId());
             return true;
+        }));
+    }
 
-        } catch (Exception e) {
-            logger.error("Error during password reset confirmation: {}", e.getClass().getSimpleName());
-            return false;
-        }
+    private boolean eligible(User user) {
+        return user != null && Boolean.TRUE.equals(user.getEnabled()) && Boolean.TRUE.equals(user.getAccountNonLocked())
+            && Boolean.TRUE.equals(user.getAccountNonExpired()) && !user.isPendingSelfRegistration();
+    }
+    private Optional<PasswordResetToken> findResetToken(String raw) {
+        return passwordResetTokenRepository.findByToken(resetDigest(raw)).or(() -> passwordResetTokenRepository.findByToken(raw));
+    }
+    public static String resetDigest(String token) {
+        try {
+            return "pr1:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.GeneralSecurityException ex) { throw new IllegalStateException("Reset token protection unavailable"); }
     }
 
     private String maskEmail(String email) {
@@ -453,6 +367,7 @@ public class SecurePasswordResetService {
     @Scheduled(fixedRateString = "${app.security.password-reset.cleanup-interval:3600000}")
     @Transactional
     public void cleanupOldRecords() {
+        if (!maintenanceEnabled) return;
         try {
             LocalDateTime cutoff = LocalDateTime.now().minusDays(1);
 

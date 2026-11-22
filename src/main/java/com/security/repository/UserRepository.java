@@ -28,10 +28,17 @@ public interface UserRepository extends JpaRepository<User, Long> {
         @EntityGraph(attributePaths = { "roles", "roles.permissions" })
         Optional<User> findByEmail(String email);
 
+        @EntityGraph(attributePaths = { "roles", "roles.permissions" })
+        Optional<User> findByEmailIgnoreCase(String email);
+
         // Verificar existencia
         boolean existsByEmail(String email);
 
+        boolean existsByEmailIgnoreCase(String email);
+
         boolean existsByUsername(String username);
+
+        boolean existsByUsernameIgnoreCase(String username);
 
         // Búsqueda por username — también necesita roles + permisos para auth
         @EntityGraph(attributePaths = { "roles", "roles.permissions" })

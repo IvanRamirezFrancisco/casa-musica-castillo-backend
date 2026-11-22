@@ -2,7 +2,9 @@ package com.security.repository;
 
 import com.security.entity.RefreshToken;
 import com.security.entity.User;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,20 +17,25 @@ import java.util.Optional;
 @Repository
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
 
-    // Búsqueda por token
     Optional<RefreshToken> findByToken(String token);
 
-    // Búsqueda por usuario
+    @Query("SELECT rt.user.id FROM RefreshToken rt WHERE rt.token = :token")
+    Optional<Long> findUserIdByToken(@Param("token") String token);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT rt FROM RefreshToken rt WHERE rt.token = :token")
+    Optional<RefreshToken> findByTokenForUpdate(@Param("token") String token);
+
     List<RefreshToken> findByUser(User user);
 
     Optional<RefreshToken> findByUserId(Long userId);
 
-    // Verificar existencia
+    List<RefreshToken> findByFamilyId(String familyId);
+
     boolean existsByToken(String token);
 
     boolean existsByUserId(Long userId);
 
-    // Eliminación por usuario
     @Modifying
     @Query("DELETE FROM RefreshToken rt WHERE rt.user = :user")
     void deleteByUser(@Param("user") User user);
@@ -37,26 +44,50 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     @Query("DELETE FROM RefreshToken rt WHERE rt.user.id = :userId")
     void deleteByUserId(@Param("userId") Long userId);
 
-    // Limpieza de tokens expirados
     @Modifying
     @Query("DELETE FROM RefreshToken rt WHERE rt.expiryDate < :currentTime")
     void deleteExpiredTokens(@Param("currentTime") LocalDateTime currentTime);
 
-    // Búsqueda de tokens expirados
+    @Modifying
+    @Query("""
+            UPDATE RefreshToken rt
+            SET rt.revoked = true, rt.revokedAt = :now, rt.revokeReason = :reason
+            WHERE rt.familyId = :familyId AND rt.revoked = false
+            """)
+    int revokeFamily(@Param("familyId") String familyId,
+                     @Param("now") LocalDateTime now,
+                     @Param("reason") String reason);
+
+    @Modifying
+    @Query("""
+            UPDATE RefreshToken rt
+            SET rt.revoked = true, rt.revokedAt = :now, rt.revokeReason = :reason
+            WHERE rt.sessionJti = :sessionJti AND rt.revoked = false
+            """)
+    int revokeBySessionJti(@Param("sessionJti") String sessionJti,
+                           @Param("now") LocalDateTime now,
+                           @Param("reason") String reason);
+
+    @Modifying
+    @Query("""
+            UPDATE RefreshToken rt
+            SET rt.revoked = true, rt.revokedAt = :now, rt.revokeReason = :reason
+            WHERE rt.user.id = :userId AND rt.revoked = false
+            """)
+    int revokeAllByUserId(@Param("userId") Long userId,
+                          @Param("now") LocalDateTime now,
+                          @Param("reason") String reason);
+
     List<RefreshToken> findByExpiryDateBefore(LocalDateTime currentTime);
 
-    // Tokens válidos (no expirados)
     @Query("SELECT rt FROM RefreshToken rt WHERE rt.expiryDate > :currentTime")
     List<RefreshToken> findValidTokens(@Param("currentTime") LocalDateTime currentTime);
 
-    // Contar tokens por usuario
     long countByUserId(Long userId);
 
-    // Últimos tokens creados
     @Query("SELECT rt FROM RefreshToken rt ORDER BY rt.createdAt DESC")
     List<RefreshToken> findRecentTokens();
 
-    // Tokens por rango de fechas
     @Query("SELECT rt FROM RefreshToken rt WHERE rt.createdAt BETWEEN :startDate AND :endDate")
     List<RefreshToken> findByCreatedAtBetween(@Param("startDate") LocalDateTime startDate,
             @Param("endDate") LocalDateTime endDate);

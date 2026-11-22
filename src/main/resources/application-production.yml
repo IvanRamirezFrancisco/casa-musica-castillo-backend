@@ -79,6 +79,21 @@ app:
       secret: ${APP_SECURITY_JWT_SECRET:${JWT_SECRET}}
       expiration: 86400000  # 24 horas
       refresh-expiration: 604800000  # 7 días
+      refresh-inactivity-ms: ${APP_SECURITY_JWT_REFRESH_INACTIVITY_MS:604800000}
+      refresh-absolute-ms: ${APP_SECURITY_JWT_REFRESH_ABSOLUTE_MS:2592000000}
+      refresh-cookie-name: ${APP_SECURITY_JWT_REFRESH_COOKIE_NAME:cmc_refresh_token}
+      refresh-cookie-secure: ${APP_SECURITY_JWT_REFRESH_COOKIE_SECURE:true}
+      refresh-cookie-same-site: ${APP_SECURITY_JWT_REFRESH_COOKIE_SAME_SITE:None}
+
+    google:
+      enabled: ${APP_SECURITY_GOOGLE_ENABLED:true}
+      web-client-id: ${APP_SECURITY_GOOGLE_WEB_CLIENT_ID:${GOOGLE_OAUTH_WEB_CLIENT_ID:}}
+      allowed-client-ids: ${APP_SECURITY_GOOGLE_ALLOWED_CLIENT_IDS:${GOOGLE_OAUTH_ALLOWED_CLIENT_IDS:}}
+      jwk-set-uri: ${APP_SECURITY_GOOGLE_JWK_SET_URI:https://www.googleapis.com/oauth2/v3/certs}
+      clock-skew-seconds: ${APP_SECURITY_GOOGLE_CLOCK_SKEW_SECONDS:60}
+      challenge-ttl-seconds: ${APP_SECURITY_GOOGLE_CHALLENGE_TTL_SECONDS:300}
+      registration-ttl-seconds: ${APP_SECURITY_GOOGLE_REGISTRATION_TTL_SECONDS:600}
+      reauth-ttl-seconds: ${APP_SECURITY_GOOGLE_REAUTH_TTL_SECONDS:300}
 
     # Configuración de sesiones
     session:

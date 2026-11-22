@@ -28,7 +28,7 @@ import java.util.UUID;
 
 @RestController
 public class AccountPrivacyController {
-    public record DeletionRequest(@NotBlank @Size(max = 255) String currentPassword, boolean confirmed) {}
+    public record DeletionRequest(@Size(max = 255) String currentPassword, @Size(max = 128) String reauthToken, boolean confirmed) {}
     public record PublicDeletionEmailRequest(@NotBlank @Email @Size(max = 180) String email) {}
     public record PublicDeletionConfirmRequest(@NotBlank @Size(min = 20, max = 255) String token, boolean confirmed) {}
     public record AdminApproveRequest(@Size(max = 500) String resolutionNotes) {}
@@ -99,10 +99,15 @@ public class AccountPrivacyController {
             @Valid @RequestBody DeletionRequest request, HttpServletRequest client) {
         requireIntake();
         if (!request.confirmed()) throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Confirma la solicitud de eliminación.");
+        boolean hasPassword = request.currentPassword() != null && !request.currentPassword().isBlank();
+        boolean hasReauth = request.reauthToken() != null && !request.reauthToken().isBlank();
+        if (!hasPassword && !hasReauth) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Confirma tu identidad para solicitar la eliminación.");
+        }
         limits.check("deletion-account", principal.getId().toString(), 5);
         limits.check("deletion-address", client.getRemoteAddr(), 30);
         return ResponseEntity.accepted().cacheControl(CacheControl.noStore())
-                .body(deletions.request(principal.getId(), request.currentPassword()));
+                .body(deletions.request(principal.getId(), request.currentPassword(), request.reauthToken()));
     }
 
     @GetMapping("/api/users/me/deletion-requests")

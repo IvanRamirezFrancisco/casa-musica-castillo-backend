@@ -183,3 +183,9 @@ uploads/payment-proofs/view_def.txt
 /view_def.txt
 /uploads/payment-proofs/
 /uploads/payment-proofs/**
+
+# Private local cluster/configuration; never use production credentials for local.
+/.local-dev/
+!src/main/resources/application-local.properties
+!src/test/resources/spring.properties
+__pycache__/

@@ -130,6 +130,10 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private com.security.service.VerificationService verification;
+    @Autowired private com.security.service.SecurityMailQueue securityMail;
+
     @MockitoBean
     private com.security.config.MercadoPagoConfiguration mercadoPagoConfiguration;
 
@@ -211,6 +215,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(registerPayload)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
 
         User savedUser = userRepository.findByEmail(email).orElseThrow();
         assertFalse(savedUser.getEnabled(), "El usuario recién registrado debe tener enabled=false hasta verificar su correo");
@@ -246,6 +251,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         // Escenario H: Token expirado
         VerificationToken vtEntity = verificationTokenRepository.findByToken(digestLink(firstToken)).orElseThrow();
         vtEntity.setExpiryDate(LocalDateTime.now().minusHours(2));
+        jdbcTemplate.update("UPDATE auth.verification_tokens SET created_at = created_at - interval '31 seconds' WHERE id = ?", vtEntity.getId());
         verificationTokenRepository.save(vtEntity);
 
         mvc.perform(post("/api/auth/verify-email")
@@ -262,6 +268,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(Map.of("email", email))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
 
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size(), "El reenvío debe emitir un nuevo correo");
         CapturedEmail resentMail = SMTP_SERVER.getCapturedEmails().get(0);
@@ -300,11 +307,13 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(Map.of("email", email))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
         mvc.perform(post("/api/auth/resend-verification")
                         .contentType("application/json")
                         .content(json.writeValueAsString(Map.of("email", "noexiste@example.invalid"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "No debe enviarse correo para cuentas ya activas o inexistentes");
 
         // Login exitoso con la contraseña exacta (incluyendo '<' y '>')
@@ -337,6 +346,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(firstAttempt)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").doesNotExist()).andReturn().getResponse().getContentAsString();
+        verification.dispatchPending();
 
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size());
         String firstToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
@@ -358,6 +368,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(secondAttempt)))
                 .andExpect(status().isOk())
                 .andExpect(content().json(accepted));
+        verification.dispatchPending();
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "Un duplicado pendiente no debe enviar otro correo");
         User pending = userRepository.findByEmail(email).orElseThrow();
         assertEquals("dup_user_1", pending.getUsername());
@@ -383,6 +394,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(thirdAttempt)))
                 .andExpect(status().isOk())
                 .andExpect(content().json(accepted));
+        verification.dispatchPending();
 
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "No debe enviar correo de verificación a cuenta ya activa");
 
@@ -418,6 +430,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(result -> assertFalse(result.getResponse().getContentAsString().contains(weakSecret),
                         "No debe reflejar la contraseña rechazada en la respuesta"));
+        verification.dispatchPending();
 
         // Contraseña que excede 72 bytes UTF-8
         String over72BytesPassword = "Valid1!A" + "a".repeat(66); // 74 bytes
@@ -430,6 +443,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "lastName", "López"
                         ))))
                 .andExpect(status().isBadRequest());
+        verification.dispatchPending();
 
         // Email inválido
         mvc.perform(post("/api/auth/register")
@@ -441,6 +455,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "lastName", "López"
                         ))))
                 .andExpect(status().isBadRequest());
+        verification.dispatchPending();
 
         // Nombre inválido con dígitos
         mvc.perform(post("/api/auth/register")
@@ -452,6 +467,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "lastName", "López"
                         ))))
                 .andExpect(status().isBadRequest());
+        verification.dispatchPending();
 
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty());
     }
@@ -478,6 +494,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "lastName", "Gómez"
                         ))))
                 .andExpect(status().isOk());
+        verification.dispatchPending();
 
         String verifToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
                 "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
@@ -503,12 +520,14 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         mvc.perform(post("/api/auth/forgot-password").param("email", "inexistente.recuperacion@example.invalid"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        securityMail.dispatchPending();
         assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty(), "No debe enviarse correo para un email inexistente");
 
         // Escenarios J y K: Solicitud de recuperación para usuario real y captura de correo
         mvc.perform(post("/api/auth/forgot-password").param("email", email))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        securityMail.dispatchPending();
 
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size(), "Debe haberse enviado el correo de recuperación");
         CapturedEmail resetMail = SMTP_SERVER.getCapturedEmails().get(0);
@@ -534,7 +553,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
 
-        PasswordResetToken consumedToken = passwordResetTokenRepository.findByToken(resetToken).orElseThrow();
+        PasswordResetToken consumedToken = passwordResetTokenRepository.findByToken(com.security.service.SecurePasswordResetService.resetDigest(resetToken)).orElseThrow();
         assertTrue(Boolean.TRUE.equals(consumedToken.getUsed()), "El token de recuperación debe quedar marcado como usado");
 
         // Verificar que la sesión JWT anterior fue revocada tras el cambio de contraseña
@@ -573,7 +592,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
      * manteniendo el registro pendiente en BD para poder recuperar mediante reenvío cuando el servicio vuelve.
      */
     @Test
-    void mailProviderFailureReturns503WithoutFalsePositiveAndAllowsSubsequentRecovery() throws Exception {
+    void activationProviderFailureStaysNeutralAndAllowsExplicitRecovery() throws Exception {
         String email = registerEmail("fallo.smtp");
         String password = "ClaveSegura2026!Smtp";
 
@@ -587,12 +606,16 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "firstName", "Roberto",
                                 "lastName", "Sánchez"
                         ))))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.success").value(false));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
 
         // El usuario queda registrado como no verificado (enabled=false) fuera de la llamada de red fallida
         User pendingUser = userRepository.findByEmail(email).orElseThrow();
         assertFalse(pendingUser.getEnabled());
+        assertEquals("UNKNOWN", verificationTokenRepository.findByUserId(pendingUser.getId()).getFirst().getDeliveryState());
+        assertTrue(SMTP_SERVER.getCapturedEmails().isEmpty());
+        jdbcTemplate.update("UPDATE auth.verification_tokens SET created_at = created_at - interval '31 seconds' WHERE user_id = ?", pendingUser.getId());
 
         // Cuando el servicio SMTP se restablece, el usuario puede reenviar el correo de verificación y activar su cuenta
         SMTP_SERVER.setFailMode(false);
@@ -603,6 +626,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         .content(json.writeValueAsString(Map.of("email", email))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true));
+        verification.dispatchPending();
 
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size());
         String verifToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
@@ -617,8 +641,11 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         // Ahora simulamos caída del proveedor de correo durante forgot-password -> debe devolver 503
         SMTP_SERVER.setFailMode(true);
         mvc.perform(post("/api/auth/forgot-password").param("email", email))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.success").value(false));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
+        securityMail.dispatchPending();
+        assertEquals("UNKNOWN", jdbcTemplate.queryForObject("SELECT state FROM auth.security_mail_outbox WHERE user_id=? AND purpose='PASSWORD_RESET' ORDER BY id DESC LIMIT 1", String.class, pendingUser.getId()));
+
     }
 
     /**
@@ -640,6 +667,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                                 "lastName", "Méndez"
                         ))))
                 .andExpect(status().isOk());
+        verification.dispatchPending();
 
         String verifToken = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
                 "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
@@ -737,16 +765,19 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .content(json.writeValueAsString(Map.of("username", userOf(email), "email", email,
                         "password", password, "firstName", "Prueba", "lastName", "Expirada"))))
                 .andExpect(status().isOk());
+        verification.dispatchPending();
         User user = userRepository.findByEmail(email).orElseThrow();
         user.setEnabled(true);
+        user.recordEmailVerification(LocalDateTime.now());
         userRepository.save(user);
         SMTP_SERVER.clear();
         mvc.perform(post("/api/auth/forgot-password").param("email", email)).andExpect(status().isOk());
+        securityMail.dispatchPending();
         assertEquals(1, SMTP_SERVER.getCapturedEmails().size());
         String token = extractQueryToken(SMTP_SERVER.getCapturedEmails().get(0).body,
                 "/reset-password\\?token=([A-Za-z0-9_\\-]+)");
         assertNotNull(token);
-        PasswordResetToken entity = passwordResetTokenRepository.findByToken(token).orElseThrow();
+        PasswordResetToken entity = passwordResetTokenRepository.findByToken(com.security.service.SecurePasswordResetService.resetDigest(token)).orElseThrow();
         entity.setExpiryDate(LocalDateTime.now().minusMinutes(1));
         passwordResetTokenRepository.save(entity);
         mvc.perform(get("/api/auth/validate-reset-token").param("token", token)).andExpect(status().isBadRequest());
@@ -754,7 +785,7 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                 .content(json.writeValueAsString(Map.of("token", token, "newPassword", "NuevaClave2026!Exp"))))
                 .andExpect(status().isBadRequest());
         assertEquals(user.getPassword(), userRepository.findByEmail(email).orElseThrow().getPassword());
-        assertFalse(passwordResetTokenRepository.findByToken(token).orElseThrow().getUsed());
+        assertFalse(passwordResetTokenRepository.findByToken(com.security.service.SecurePasswordResetService.resetDigest(token)).orElseThrow().getUsed());
     }
     @Test
     void emailCodeIsSingleUseAndInvalidatesTheLink() throws Exception {
@@ -762,8 +793,9 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         mvc.perform(post("/api/auth/register").contentType("application/json").content(json.writeValueAsString(Map.of(
                 "username", userOf(email), "email", email, "password", "ClaveSegura2026!#",
                 "firstName", "Cuenta", "lastName", "Sintetica")))).andExpect(status().isOk());
+        verification.dispatchPending();
         String body = SMTP_SERVER.getCapturedEmails().getFirst().body;
-        String code = extractQueryToken(body, "Código de activación: ([0-9]{6})");
+        String code = extractActivationCode(body);
         String token = extractQueryToken(body, "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
         assertNotNull(code);
         assertNotNull(token);
@@ -786,8 +818,9 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
                         "username", userOf(email), "email", email, "password", "ClaveSegura2026!#",
                         "firstName", "Cuenta", "lastName", "Sintetica"))))
                 .andExpect(status().isOk());
+        verification.dispatchPending();
         String body = SMTP_SERVER.getCapturedEmails().getFirst().body;
-        String code = extractQueryToken(body, "Código de activación: ([0-9]{6})");
+        String code = extractActivationCode(body);
         String token = extractQueryToken(body, "/verify-account\\?token=([A-Za-z0-9_\\-]+)");
         assertNotNull(code);
         assertNotNull(token);
@@ -804,6 +837,11 @@ class AuthEmailFlowsIntegrationTest extends LocalPostgresIntegrationTest {
         mvc.perform(post("/api/auth/verify-email").contentType("application/json")
                 .content(json.writeValueAsString(Map.of("token", token)))).andExpect(status().isOk());
         assertTrue(userRepository.findByEmail(email).orElseThrow().isEmailVerified());
+    }
+
+    private static String extractActivationCode(String body) {
+        Matcher match = Pattern.compile("<p[^>]*>\\s*([0-9]{6})\\s*</p>").matcher(body);
+        return match.find() ? match.group(1) : extractQueryToken(body, "Código de activación: ([0-9]{6})");
     }
 
     private static String digestLink(String token) {

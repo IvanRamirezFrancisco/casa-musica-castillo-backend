@@ -60,6 +60,7 @@ Cuando otra herramienta de IA o desarrollador continúe un trabajo iniciado prev
 
 ## 4. Referencia Rápida del Repositorio Backend
 
-- **Rama funcional activa de cierre MFA/Auth**: `fix/backend-auth-mfa-integration` (worktree `.local-worktrees/antigravity-cierre-produccion-backend`).
+- **Rama funcional activa de activación, recuperación y contraseñas**: `fix/account-activation-hardening`, en el checkout original `segundo proyecto`. Base de desarrollo autorizada: PostgreSQL local original `security_db` en 5432. Configuración, revisión de migraciones y arranque: `docs/LOCAL_DATABASE_RECOVERY.md`. No crear clústeres ni bases alternativas para sustituirla.
+- **Rama previa de cierre MFA/Auth**: `fix/backend-auth-mfa-integration` (worktree `.local-worktrees/antigravity-cierre-produccion-backend`, conservado).
 - **Rama funcional previa de contratos Auth**: `fix/backend-auth-contracts` (worktree `.local-worktrees/cierre-android`).
 - **Guía detallada de flujo Git**: consultar [`docs/GIT_WORKFLOW.md`](docs/GIT_WORKFLOW.md).

@@ -32,6 +32,8 @@ import java.util.Map;
 @Service
 @Transactional(noRollbackFor = AuthFlowException.class)
 public class LoginChallengeService {
+    @org.springframework.beans.factory.annotation.Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
     private final JdbcTemplate jdbc;
     private final UserRepository users;
     private final TwoFactorService factors;
@@ -54,6 +56,11 @@ public class LoginChallengeService {
     public record PendingLogin(boolean twoFactorRequired, String preAuthChallenge,
                                Map<String, Boolean> availableMethods) {
         @Override public String toString() { return "PendingLogin[redacted]"; }
+    }
+
+    public static boolean requiresTwoFactor(User user) {
+        return user != null && (Boolean.TRUE.equals(user.getGoogleAuthEnabled())
+                || Boolean.TRUE.equals(user.getEmailEnabled()));
     }
 
     public PendingLogin create(Long userId) {
@@ -206,6 +213,7 @@ public class LoginChallengeService {
 
     @Scheduled(fixedDelay = 3600000)
     public void cleanup() {
+        if (!maintenanceEnabled) return;
         jdbc.update("DELETE FROM auth.login_challenges WHERE expires_at < ?", LocalDateTime.now().minusDays(1));
     }
 

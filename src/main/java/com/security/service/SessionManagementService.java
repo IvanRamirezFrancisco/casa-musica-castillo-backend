@@ -3,6 +3,7 @@ package com.security.service;
 import com.security.entity.ActiveSession;
 import com.security.entity.User;
 import com.security.repository.ActiveSessionRepository;
+import com.security.repository.RefreshTokenRepository;
 import com.security.repository.UserRepository;
 import com.security.util.LogSanitizer;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,8 @@ import java.util.UUID;
 @Service
 @Transactional
 public class SessionManagementService {
+    @Value("${app.maintenance.enabled:true}")
+    private boolean maintenanceEnabled = true;
 
     private static final Logger logger = LoggerFactory.getLogger(SessionManagementService.class);
 
@@ -35,6 +38,9 @@ public class SessionManagementService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired(required = false)
+    private RefreshTokenRepository refreshTokenRepository;
 
     // Configuración desde application.yml
     @Value("${app.security.session.max-concurrent-sessions:3}")
@@ -78,6 +84,7 @@ public class SessionManagementService {
             if (oldestSession.isPresent()) {
                 ActiveSession sessionToRevoke = oldestSession.get();
                 sessionRepository.revokeSession(sessionToRevoke.getId());
+                revokeRefreshTokensForSession(sessionToRevoke.getJwtTokenId(), "CONCURRENT_SESSION_LIMIT");
                 activeSessions.remove(sessionToRevoke);
                 activeCount--;
                 logger.info("Sesion mas antigua revocada por limite de sesiones concurrentes (JTI: {}...)",
@@ -151,7 +158,9 @@ public class SessionManagementService {
      * REQUISITO 2: Cierra sesión específica (logout en un dispositivo)
      */
     public void invalidateSession(String jti) {
+        if (jti == null || jti.isBlank()) return;
         sessionRepository.revokeByTokenId(jti);
+        revokeRefreshTokensForSession(jti, "SESSION_INVALIDATED");
         // LogSanitizer.maskToken() sanitiza y muestra solo los 8 primeros chars del JTI
         // (CWE-117)
         logger.info("Sesion cerrada manualmente para JTI: {}", LogSanitizer.maskToken(jti));
@@ -169,9 +178,12 @@ public class SessionManagementService {
 
         // Revocar todas en la base de datos
         sessionRepository.revokeAllUserSessions(user);
+        if (refreshTokenRepository != null) {
+            refreshTokenRepository.revokeAllByUserId(user.getId(), LocalDateTime.now(), "LOGOUT_ALL");
+        }
 
-        logger.info("Todas las sesiones cerradas para {} ({} sesiones)",
-                userEmail, userSessions.size());
+        logger.info("Sesiones revocadas para cuenta={} cantidad={}",
+                user.getId(), userSessions.size());
     }
 
     /**
@@ -207,6 +219,7 @@ public class SessionManagementService {
      */
     @Scheduled(fixedRate = 300000) // 5 minutos
     public void cleanupExpiredSessions() {
+        if (!maintenanceEnabled) return;
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime inactivityThreshold = now.minusMinutes(inactivityTimeoutMinutes);
 
@@ -244,7 +257,14 @@ public class SessionManagementService {
         var session = sessionRepository.findByJwtTokenId(jti);
         if (session.isEmpty() || !session.get().getUser().getEmail().equals(email)) return false;
         sessionRepository.revokeByTokenId(jti);
+        revokeRefreshTokensForSession(jti, "SESSION_REVOKED");
         return true;
+    }
+
+    private void revokeRefreshTokensForSession(String jti, String reason) {
+        if (refreshTokenRepository != null && jti != null && !jti.isBlank()) {
+            refreshTokenRepository.revokeBySessionJti(jti, LocalDateTime.now(), reason);
+        }
     }
 
     // Utilidades privadas

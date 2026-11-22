@@ -81,6 +81,7 @@ class AuthPersistenceIntegrationTest extends LocalPostgresIntegrationTest {
 
     @Test void confirmedEmailIsRecordedIndependentlyOfAccountStatus() throws Exception {
         user.setEnabled(false);
+        user.markPendingSelfRegistration();
         user = users.save(user);
         String token = verification.generateVerificationToken(user);
         mvc.perform(post("/api/auth/verify-email").contentType("application/json")

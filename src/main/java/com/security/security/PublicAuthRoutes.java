@@ -8,6 +8,9 @@ public final class PublicAuthRoutes {
         "/api/auth/resend-verification", "/api/auth/verify-email-code", "/api/auth/forgot-password",
         "/api/auth/validate-reset-token", "/api/auth/reset-password",
         "/api/auth/password-reset/request", "/api/auth/password-reset/confirm",
+        "/api/auth/google/config", "/api/auth/google/challenge",
+        "/api/auth/google/authenticate", "/api/auth/google/complete-registration",
+        "/api/auth/session/refresh",
         "/api/2fa/send-login-code", "/api/2fa/verify", "/api/public/legal/deletion/status",
         "/api/public/legal/deletion/request", "/api/public/legal/deletion/confirm"
     };

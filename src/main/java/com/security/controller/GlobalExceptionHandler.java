@@ -36,7 +36,10 @@ public class GlobalExceptionHandler {
 
         @ExceptionHandler(AuthFlowException.class)
         public ResponseEntity<com.security.dto.response.ApiResponse> handleAuthFlow(AuthFlowException ex) {
-                return ResponseEntity.status(ex.getStatus()).body(new com.security.dto.response.ApiResponse(false, ex.getMessage()));
+                var builder = ResponseEntity.status(ex.getStatus());
+                if (ex instanceof com.security.exception.ActivationLimitException limit)
+                        builder.header("Retry-After", Long.toString(limit.getRetryAfter()));
+                return builder.body(new com.security.dto.response.ApiResponse(false, ex.getMessage()));
         }
 
         /**

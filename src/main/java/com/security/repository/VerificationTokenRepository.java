@@ -24,6 +24,7 @@ public interface VerificationTokenRepository extends JpaRepository<VerificationT
 
     Optional<VerificationToken> findFirstByUserIdAndTokenTypeAndUsedFalseOrderByCreatedAtDescIdDesc(
             Long userId, TokenType type);
+    Optional<VerificationToken> findFirstByUserIdAndTokenTypeOrderByCreatedAtDescIdDesc(Long userId, TokenType type);
 
     long countByUserIdAndTokenTypeAndCreatedAtAfter(Long userId, TokenType type, LocalDateTime since);
 

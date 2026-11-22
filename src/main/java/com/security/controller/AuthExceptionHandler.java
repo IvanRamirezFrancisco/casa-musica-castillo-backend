@@ -15,14 +15,17 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /** Never include rejected input, parser messages, SQL values or token-bearing paths. */
 @Order(Ordered.HIGHEST_PRECEDENCE)
-@RestControllerAdvice(assignableTypes = {AuthController.class, TwoFactorController.class,
+@RestControllerAdvice(assignableTypes = {AuthController.class, GoogleAuthController.class, TwoFactorController.class,
         PasswordResetController.class, SecurePasswordResetController.class, AcceptInvitationController.class})
 public class AuthExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(AuthExceptionHandler.class);
 
     @ExceptionHandler(AuthFlowException.class)
     public ResponseEntity<ApiResponse> flow(AuthFlowException ex) {
-        return ResponseEntity.status(ex.getStatus()).body(new ApiResponse(false, ex.getMessage()));
+        var response = ResponseEntity.status(ex.getStatus());
+        if (ex instanceof com.security.exception.ActivationLimitException limit)
+            response.header("Retry-After", Long.toString(limit.getRetryAfter()));
+        return response.body(new ApiResponse(false, ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

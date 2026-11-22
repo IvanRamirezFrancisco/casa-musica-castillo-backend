@@ -6,6 +6,8 @@ import com.security.entity.Role;
 import com.security.entity.User;
 import com.security.exception.AuthFlowException;
 import com.security.exception.ResourceNotFoundException;
+import com.security.repository.ExternalIdentityRepository;
+import com.security.repository.RefreshTokenRepository;
 import com.security.repository.RoleRepository;
 import com.security.repository.UserRepository;
 import com.security.util.LogSanitizer;
@@ -60,9 +62,23 @@ public class UserService {
 
     @Autowired
     private SessionManagementService sessionManagementService;
+    @Autowired private SecurityMailQueue securityMail;
+    @Autowired private VerificationRequestLimit passwordLimits;
 
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @Autowired(required = false)
+    private ExternalIdentityRepository externalIdentityRepository;
+
+    @Autowired(required = false)
+    private RefreshTokenRepository refreshTokenRepository;
+
+    @Autowired(required = false)
+    private GoogleFlowTokenService googleFlowTokenService;
+
+    @Autowired(required = false)
+    private com.security.util.PasswordValidator passwordValidator;
 
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
@@ -94,21 +110,19 @@ public class UserService {
             if (!userRepository.existsByEmail(email) && !userRepository.existsByUsername(username)) throw ex;
             prepared = null;
         }
-        if (prepared == null) {
-            verificationService.resendVerificationEmail(email);
-        } else {
-            verificationService.deliver(prepared);
-        }
+        // Issuance is queued in the registration transaction. Duplicate registration never resends.
     }
 
     private VerificationService.PendingVerification prepareRegistrationInTx(RegisterRequest request, String email, String username) {
+        // Same password work for valid duplicate/new submissions; never persist a duplicate's hash.
+        String encodedPassword = passwordEncoder.encode(request.getPassword());
         if (userRepository.existsByEmail(email) || userRepository.existsByUsername(username)) return null;
         User user = new User();
         user.setUsername(username);
         user.setFirstName(request.getFirstName().trim());
         user.setLastName(request.getLastName().trim());
         user.setEmail(email);
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setPassword(encodedPassword);
         user.setPhone(request.getPhone() == null || request.getPhone().isBlank() ? null : request.getPhone().trim());
         user.setEnabled(false);
         user.markPendingSelfRegistration();
@@ -189,11 +203,17 @@ public class UserService {
     }
 
     public void disableUser(Long userId) {
-        User user = getUserById(userId);
+        User user = lockAccount(userId);
         assertCanActOn(user, "DISABLE");
         user.setEnabled(false);
+        user.cancelPendingSelfRegistration();
+        verificationService.cancelForUser(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
+        sessionManagementService.invalidateAllUserSessions(user.getEmail());
+        if (refreshTokenRepository != null) {
+            refreshTokenRepository.revokeAllByUserId(userId, LocalDateTime.now(), "ACCOUNT_DISABLED");
+        }
 
         try {
             auditLogService.log("UPDATE", "USER_DISABLE", "USER", userId,
@@ -215,7 +235,8 @@ public class UserService {
     public <T> T completePasswordLogin(com.security.security.UserPrincipal authenticated,
             java.util.function.Function<User, T> issueLogin) {
         User user = lockAccount(authenticated.getId());
-        if (!java.util.Objects.equals(user.getPassword(), authenticated.getPassword())
+        if (!user.hasLocalPassword()
+                || !java.util.Objects.equals(user.getPassword(), authenticated.getPassword())
                 || !Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())
                 || !Boolean.TRUE.equals(user.getAccountNonExpired()) || !Boolean.TRUE.equals(user.getCredentialsNonExpired())) {
             throw new AuthFlowException(HttpStatus.UNAUTHORIZED, "Credenciales inválidas");
@@ -224,24 +245,54 @@ public class UserService {
     }
 
     public void requireStepUp(Long userId, Map<String, String> body) {
-        String currentPassword = body == null ? null : body.get("currentPassword");
-        if (currentPassword == null || currentPassword.isBlank()) {
-            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere confirmar la contrase\u00f1a actual");
-        }
         User user = getUserById(userId);
         if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
             throw new AuthFlowException(HttpStatus.FORBIDDEN);
         }
+        String reauthToken = body == null ? null : body.get("reauthToken");
+        if (reauthToken != null && !reauthToken.isBlank()) {
+            if (googleFlowTokenService == null) {
+                throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE, "Verificación reciente no disponible.");
+            }
+            String requestJti = currentAuthenticatedJti();
+            if (hasServletRequest() && (requestJti == null || !sessionManagementService.isSessionValid(requestJti))) {
+                throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
+            }
+            googleFlowTokenService.consumeReauthToken(userId, requestJti, reauthToken.trim(), "SECURITY_STEP_UP");
+            return;
+        }
+        String currentPassword = body == null ? null : body.get("currentPassword");
+        if (!user.hasLocalPassword()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST,
+                    "Tu cuenta requiere verificación reciente con Google para confirmar esta acción.");
+        }
+        if (currentPassword == null || currentPassword.isBlank()) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "Se requiere confirmar la contraseña actual");
+        }
         if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
                 || !passwordEncoder.matches(currentPassword, user.getPassword())) {
-            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contrase\u00f1a actual es incorrecta");
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST, "La contraseña actual es incorrecta");
         }
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void changeOwnPassword(Long userId, String currentPassword, String newPassword) {
+        passwordLimits.check("password-stepup-account", userId.toString(), 5);
+        String requestJti = currentAuthenticatedJti();
+        if (hasServletRequest() && requestJti == null) throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
+        if (requestJti != null) passwordLimits.check("password-stepup-session", userId + ":" + requestJti, 5);
+        requiresNewTx.executeWithoutResult(status -> changeOwnPasswordInTx(userId,currentPassword,newPassword,requestJti));
+    }
+    private void changeOwnPasswordInTx(Long userId, String currentPassword, String newPassword, String requestJti) {
         User user = lockAccount(userId);
+        if (requestJti != null && (!sessionManagementService.isSessionValid(requestJti)
+                || !sessionManagementService.belongsToUser(requestJti,userId))) throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
         if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
             throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (!user.hasLocalPassword()) {
+            throw new AuthFlowException(HttpStatus.CONFLICT,
+                    "Tu cuenta utiliza Google para iniciar sesión y aún no tiene contraseña local. Usa Configurar contraseña.");
         }
         if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(currentPassword)
                 || !passwordEncoder.matches(currentPassword, user.getPassword())) {
@@ -254,9 +305,78 @@ public class UserService {
         user.setPassword(passwordEncoder.encode(newPassword));
         user.setCredentialsNonExpired(true);
         user.setUpdatedAt(now);
+        revokeCredentialsArtifacts(user, userId, now, "PASSWORD_CHANGED");
+        securityMail.enqueueNotification(user);
+        try { auditLogService.log("UPDATE","USER_PASSWORD_CHANGE","USER",userId,null,null,"WARNING",true); }
+        catch (RuntimeException ex) { logger.warn("password_change_audit_unavailable account={}",userId); }
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void setInitialPassword(Long userId, String reauthToken, String newPassword) {
+        if (googleFlowTokenService == null || externalIdentityRepository == null) {
+            throw new AuthFlowException(HttpStatus.SERVICE_UNAVAILABLE, "Configuración inicial de contraseña no disponible.");
+        }
+        passwordLimits.check("password-stepup-account", userId.toString(), 5);
+        String requestJti = currentAuthenticatedJti();
+        if (hasServletRequest() && requestJti == null) throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
+        if (requestJti != null) passwordLimits.check("password-stepup-session", userId + ":" + requestJti, 5);
+        requiresNewTx.executeWithoutResult(status -> setInitialPasswordInTx(userId, reauthToken, newPassword, requestJti));
+    }
+
+    private void setInitialPasswordInTx(Long userId, String reauthToken, String newPassword, String requestJti) {
+        User user = lockAccount(userId);
+        if (requestJti != null && (!sessionManagementService.isSessionValid(requestJti)
+                || !sessionManagementService.belongsToUser(requestJti, userId))) {
+            throw new AuthFlowException(HttpStatus.UNAUTHORIZED);
+        }
+        if (!Boolean.TRUE.equals(user.getEnabled()) || !Boolean.TRUE.equals(user.getAccountNonLocked())) {
+            throw new AuthFlowException(HttpStatus.FORBIDDEN);
+        }
+        if (user.hasLocalPassword()) {
+            throw new AuthFlowException(HttpStatus.CONFLICT,
+                    "Tu cuenta ya tiene una contraseña configurada. Utiliza Cambiar contraseña.");
+        }
+        if (!externalIdentityRepository.existsByUserIdAndProvider(userId, "GOOGLE")) {
+            throw new AuthFlowException(HttpStatus.CONFLICT,
+                    "Tu cuenta no tiene una identidad de Google vinculada para esta operación.");
+        }
+        if (!com.security.validation.BcryptPasswordValidator.isWithinLimit(newPassword)
+                || (passwordValidator != null && !passwordValidator.validatePassword(newPassword).isValid())) {
+            throw new AuthFlowException(HttpStatus.BAD_REQUEST,
+                    "La contraseña no cumple con la política de seguridad vigente.");
+        }
+        googleFlowTokenService.consumeReauthToken(userId, requestJti, reauthToken.trim(), "SET_INITIAL_PASSWORD");
+
+        LocalDateTime now = LocalDateTime.now();
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setCredentialsNonExpired(true);
+        user.setUpdatedAt(now);
+        revokeCredentialsArtifacts(user, userId, now, "INITIAL_PASSWORD_SET");
+        securityMail.enqueueNotification(user);
+        try { auditLogService.log("UPDATE", "USER_INITIAL_PASSWORD_SET", "USER", userId, null, null, "WARNING", true); }
+        catch (RuntimeException ex) { logger.warn("initial_password_audit_unavailable account={}", userId); }
+    }
+
+    private void revokeCredentialsArtifacts(User user, Long userId, LocalDateTime now, String refreshReason) {
         sessionManagementService.invalidateAllUserSessions(user.getEmail());
+        if (refreshTokenRepository != null) {
+            refreshTokenRepository.revokeAllByUserId(userId, now, refreshReason);
+        }
         jdbcTemplate.update("UPDATE auth.login_challenges SET consumed_at=?,email_code_hash=NULL WHERE user_id=? AND consumed_at IS NULL",
                 now, userId);
+        jdbcTemplate.update("UPDATE security.password_reset_tokens SET used=true,used_at=? WHERE user_id=?", now, userId);
+        jdbcTemplate.update("UPDATE auth.security_mail_outbox SET payload=NULL,state='CANCELLED' WHERE user_id=? AND purpose='PASSWORD_RESET' AND state='PENDING'", userId);
+    }
+
+    private static boolean hasServletRequest() {
+        return org.springframework.web.context.request.RequestContextHolder.getRequestAttributes() != null;
+    }
+
+    private static String currentAuthenticatedJti() {
+        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        return attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet
+                ? (String) servlet.getRequest().getAttribute("authenticatedJti")
+                : null;
     }
 
     public void changePassword(Long userId, String newPassword) {
@@ -325,11 +445,16 @@ public class UserService {
     public UserResponse convertToUserResponse(User user) {
         UserResponse userResponse = new UserResponse();
         userResponse.setId(user.getId());
+        userResponse.setUsername(user.getUsername());
         userResponse.setProtectedOwner(adminHierarchyService.isProtectedOwner(user));
         userResponse.setFirstName(user.getFirstName());
         userResponse.setLastName(user.getLastName());
         userResponse.setEmail(user.getEmail());
         userResponse.setPhone(user.getPhone());
+        userResponse.setAvatarUrl(user.getAvatarUrl());
+        userResponse.setHasLocalPassword(user.hasLocalPassword());
+        userResponse.setGoogleLinked(externalIdentityRepository != null && user.getId() != null
+                && externalIdentityRepository.existsByUserIdAndProvider(user.getId(), "GOOGLE"));
         userResponse.setEnabled(Boolean.TRUE.equals(user.getEnabled()));
         userResponse.setEmailVerified(user.isEmailVerified());
         userResponse.setGoogleAuthEnabled(user.getGoogleAuthEnabled());

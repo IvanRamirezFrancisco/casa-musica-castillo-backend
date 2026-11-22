@@ -71,7 +71,10 @@ public class SecurityConfig {
 
                         @Override
                         public boolean matches(CharSequence rawPassword, String encodedPassword) {
-                                return BcryptPasswordValidator.isWithinLimit(rawPassword)
+                                return rawPassword != null
+                                                && encodedPassword != null
+                                                && !encodedPassword.isBlank()
+                                                && BcryptPasswordValidator.isWithinLimit(rawPassword)
                                                 && bcrypt.matches(rawPassword, encodedPassword);
                         }
 
@@ -130,7 +133,7 @@ public class SecurityConfig {
                 // Headers permitidos - solo los necesarios
                 config.setAllowedHeaders(Arrays.asList(
                                 "Authorization", "Content-Type", "Accept", "Origin",
-                                "X-Requested-With", "Cache-Control",
+                                "X-Requested-With", "X-Client-Platform", "Cache-Control",
                                 // Fase 7C: headers de webhook de Mercado Pago
                                 "x-signature", "x-request-id"));
 

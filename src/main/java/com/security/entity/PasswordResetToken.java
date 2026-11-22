@@ -1,7 +1,6 @@
 package com.security.entity;
 
 import jakarta.persistence.*;
-import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
 
@@ -14,6 +13,10 @@ public class PasswordResetToken {
 
     @Column(nullable = false, unique = true)
     private String token;
+    @Column(name="delivery_state",nullable=false,length=20)
+    private String deliveryState="ACCEPTED";
+    public String getDeliveryState() { return deliveryState; }
+    public void setDeliveryState(String state) { deliveryState=state; }
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
@@ -25,7 +28,6 @@ public class PasswordResetToken {
     @Column(nullable = false)
     private Boolean used = false;
 
-    @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -48,6 +50,7 @@ public class PasswordResetToken {
     }
 
     public PasswordResetToken(String token, User user, LocalDateTime expiryDate) {
+        this();
         this.token = token;
         this.user = user;
         this.expiryDate = expiryDate;

@@ -1,9 +1,20 @@
 # Perfil "test": valores NO sensibles, solo para ejecutar la suite de pruebas.
 # PostgreSQL sintético local; los tests de integración fuerzan estas propiedades por encima del entorno.
 app:
+  activation:
+    jobs-enabled: false
   security:
     jwt:
       secret: test-only-jwt-secret-do-not-use-anywhere-else-0123456789-abcdefghijklmnopqrstuvwxyz
+      refresh-inactivity-ms: 604800000
+      refresh-absolute-ms: 2592000000
+      refresh-cookie-name: cmc_refresh_token
+      refresh-cookie-secure: false
+      refresh-cookie-same-site: Lax
+    google:
+      enabled: true
+      web-client-id: synthetic-web-client.apps.googleusercontent.com
+      allowed-client-ids: synthetic-web-client.apps.googleusercontent.com
 
 pickup:
   code:
@@ -16,6 +27,9 @@ spring:
     url: jdbc:postgresql://127.0.0.1:55439/backend_hardening_test
     username: auth_test
     password: synthetic-test-only
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
   flyway:
     locations: classpath:db/test-baseline,classpath:db/migration
   task:
